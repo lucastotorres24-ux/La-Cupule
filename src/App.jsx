@@ -229,25 +229,46 @@ function parseMensajeIndividual(bloqueOriginal) {
 function parseMensajesTelegram(textoCompleto) {
   if (!textoCompleto || !textoCompleto.trim()) return [];
 
-  // Cada candidato nuevo empieza con una línea que trae una banderita de país (🇵🇾, 🇨🇴, etc.)
-  // — la usamos como separador principal, porque muchas veces vienen pegados sin línea en blanco entre uno y otro.
   const lineas = textoCompleto.split("\n");
-  const esInicioDeBloque = (linea) => /^[\u{1F1E6}-\u{1F1FF}]{2}/u.test(linea.trim());
-  const bloquesPorBandera = [];
-  let actual = [];
-  lineas.forEach((linea) => {
-    if (esInicioDeBloque(linea) && actual.length > 0) {
-      bloquesPorBandera.push(actual.join("\n"));
-      actual = [linea];
-    } else {
-      actual.push(linea);
-    }
-  });
-  if (actual.length) bloquesPorBandera.push(actual.join("\n"));
 
-  // Si no se detectó ninguna banderita (mensajes en otro formato, ej. solo "Nombre:"),
-  // usamos como respaldo el separador clásico de líneas en blanco.
-  const bloquesCrudos = bloquesPorBandera.length > 1 ? bloquesPorBandera : textoCompleto.split(/\n\s*\n+/);
+  // La única señal 100% confiable de "aquí empieza un candidato nuevo" es la línea del nombre
+  // ("Nombre:" o "Ім'я") — no las líneas en blanco (a veces separan candidatos, a veces separan
+  // campos de UN MISMO candidato) ni las banderitas (no todos los formatos las traen).
+  const esLineaNombre = (linea) => {
+    const t = linea.trim();
+    if (!t) return false;
+    const lower = t.toLowerCase();
+    return lower.includes("ім") || /^nombre[s]?\s*:/i.test(t) || /^name\s*:/i.test(t);
+  };
+
+  const indicesNombre = [];
+  lineas.forEach((l, i) => { if (esLineaNombre(l)) indicesNombre.push(i); });
+
+  let bloquesCrudos = [];
+  if (indicesNombre.length > 0) {
+    // Cada bloque empieza en su línea de "Nombre" — pero se extiende hacia atrás para
+    // incluir líneas de encabezado justo antes (como la banderita), sin invadir el
+    // bloque del candidato anterior (nos detenemos si topamos con una línea que ya
+    // tiene ":" — esa seguramente es el último campo del candidato de arriba).
+    const limiteInicio = indicesNombre.map((idx, k) => {
+      const limiteAnterior = k === 0 ? 0 : indicesNombre[k - 1] + 1;
+      let inicio = idx;
+      while (inicio - 1 >= limiteAnterior) {
+        const anterior = lineas[inicio - 1].trim();
+        if (!anterior || anterior.includes(":")) break;
+        inicio -= 1;
+      }
+      return inicio;
+    });
+    for (let k = 0; k < indicesNombre.length; k++) {
+      const inicio = limiteInicio[k];
+      const fin = k + 1 < indicesNombre.length ? limiteInicio[k + 1] : lineas.length;
+      bloquesCrudos.push(lineas.slice(inicio, fin).join("\n"));
+    }
+  } else {
+    // Respaldo: si no se reconoce ninguna línea de nombre, usa el separador clásico de líneas en blanco.
+    bloquesCrudos = textoCompleto.split(/\n\s*\n+/);
+  }
 
   const resultados = [];
   bloquesCrudos.forEach((bloque) => {
@@ -1957,6 +1978,12 @@ function EquipoView({ usuarios }) {
 const VEINTICUATRO_HORAS_MS = 24 * 60 * 60 * 1000;
 const SESION_STORAGE_KEY = "cupula_sesion";
 const SESION_DURACION_MS = 30 * VEINTICUATRO_HORAS_MS; // se mantiene mientras se siga usando (30 días desde el último uso)
+
+// 👉 REINICIAR TODO EL SISTEMA PARA TODOS: sube este número (t3, t4, t5...) y listo,
+// nadie va a tener datos guardados — arrancan de cero como recién instalado.
+// Cuando ya esté oficial y confirmado que todo funciona bien, deja de subirlo.
+const DATA_VERSION = "t2";
+function k(nombre) { return `${nombre}_${DATA_VERSION}`; }
 const TAMANO_MAX_ARCHIVO = 350 * 1024; // ~350KB, límite prudente para no saturar el almacenamiento
 
 function leerArchivoComoDataUrl(file) {
@@ -2219,18 +2246,18 @@ export default function LaCupula() {
 
   useEffect(() => {
     (async () => {
-      const u = await loadOrSeed("users_v2", seedUsers);
-      const c = await loadOrSeed("candidatos_v4", seedCandidatos);
-      const t = await loadOrSeed("tareas_v3", seedTareas);
-      let m = await loadOrSeed("chat_mensajes", seedChatMensajes);
+      const u = await loadOrSeed(k("users"), seedUsers);
+      const c = await loadOrSeed(k("candidatos"), seedCandidatos);
+      const t = await loadOrSeed(k("tareas"), seedTareas);
+      let m = await loadOrSeed(k("chat_mensajes"), seedChatMensajes);
       // Poda automática: los mensajes normales se borran cada 24 horas.
       const mPodado = m.filter((msg) => Date.now() - msg.ts < VEINTICUATRO_HORAS_MS);
-      if (mPodado.length !== m.length) { await saveData("chat_mensajes", mPodado); }
+      if (mPodado.length !== m.length) { await saveData(k("chat_mensajes"), mPodado); }
       m = mPodado;
-      const ma = await loadOrSeed("chat_archivo", () => []);
-      const cfg = await loadOrSeed("chat_config", seedChatConfig);
-      const p = await loadOrSeed("orden_asignacion_puntero_v2", seedPuntero);
-      const asis = await loadOrSeed("asistencia", () => ({}));
+      const ma = await loadOrSeed(k("chat_archivo"), () => []);
+      const cfg = await loadOrSeed(k("chat_config"), seedChatConfig);
+      const p = await loadOrSeed(k("puntero"), seedPuntero);
+      const asis = await loadOrSeed(k("asistencia"), () => ({}));
       setUsers(u); setCandidatos(c); setTareas(t); setMensajes(m); setMensajesArchivo(ma); setChatConfig(cfg); setPuntero(p); setAsistencia(asis); setLoading(false);
 
       // Restaura la sesión guardada (si no ha expirado) para no tener que loguearse
@@ -2257,23 +2284,23 @@ export default function LaCupula() {
     try { window.localStorage.setItem(SESION_STORAGE_KEY, JSON.stringify({ userId: session.id, ts: Date.now() })); } catch (e) {}
     const id = setInterval(async () => {
       try { window.localStorage.setItem(SESION_STORAGE_KEY, JSON.stringify({ userId: session.id, ts: Date.now() })); } catch (e) {}
-      const m = await fetchData("chat_mensajes");
+      const m = await fetchData(k("chat_mensajes"));
       if (m) setMensajes(m.filter((msg) => Date.now() - msg.ts < VEINTICUATRO_HORAS_MS));
-      const ma = await fetchData("chat_archivo");
+      const ma = await fetchData(k("chat_archivo"));
       if (ma) setMensajesArchivo(ma);
-      const cfg = await fetchData("chat_config");
+      const cfg = await fetchData(k("chat_config"));
       if (cfg) setChatConfig(cfg);
-      const asis = await fetchData("asistencia");
+      const asis = await fetchData(k("asistencia"));
       if (asis) setAsistencia(asis);
       // Estos son los que hacen que Tráfico/Candidatos/Tareas se vean en tiempo real
       // entre el líder y los agentes, no solo en el celular donde se hizo el cambio.
-      const c = await fetchData("candidatos_v4");
+      const c = await fetchData(k("candidatos"));
       if (c) setCandidatos(c);
-      const t = await fetchData("tareas_v3");
+      const t = await fetchData(k("tareas"));
       if (t) setTareas(t);
-      const u = await fetchData("users_v2");
+      const u = await fetchData(k("users"));
       if (u) setUsers(u);
-      const p = await fetchData("orden_asignacion_puntero_v2");
+      const p = await fetchData(k("puntero"));
       if (p !== null && p !== undefined) setPuntero(p);
     }, 4000);
     return () => clearInterval(id);
@@ -2287,43 +2314,43 @@ export default function LaCupula() {
     setSession(null); setActive("dashboard");
     try { window.localStorage.removeItem(SESION_STORAGE_KEY); } catch (e) {}
   };
-  const updateCandidatos = useCallback((next) => { setCandidatos(next); saveData("candidatos_v4", next); }, []);
-  const updatePuntero = useCallback((next) => { setPuntero(next); saveData("orden_asignacion_puntero_v2", next); }, []);
-  const updateTareas = useCallback((next) => { setTareas(next); saveData("tareas_v3", next); }, []);
+  const updateCandidatos = useCallback((next) => { setCandidatos(next); saveData(k("candidatos"), next); }, []);
+  const updatePuntero = useCallback((next) => { setPuntero(next); saveData(k("puntero"), next); }, []);
+  const updateTareas = useCallback((next) => { setTareas(next); saveData(k("tareas"), next); }, []);
   const updateUsers = useCallback((next) => {
-    setUsers(next); saveData("users_v2", next);
+    setUsers(next); saveData(k("users"), next);
     setSession((s) => (s ? next.find((u) => u.id === s.id) || s : s));
   }, []);
   const enviarMensaje = useCallback((msg) => {
     setMensajes((prev) => {
       const podado = prev.filter((m) => Date.now() - m.ts < VEINTICUATRO_HORAS_MS);
       const next = [...podado, msg];
-      saveData("chat_mensajes", next);
+      saveData(k("chat_mensajes"), next);
       return next;
     });
   }, []);
   const cambiarModoChat = useCallback((modo) => {
-    const next = { modo }; setChatConfig(next); saveData("chat_config", next);
+    const next = { modo }; setChatConfig(next); saveData(k("chat_config"), next);
   }, []);
   const guardarEnArchivo = useCallback((msg) => {
     setMensajesArchivo((prev) => {
       if (prev.some((m) => m.id === msg.id)) return prev; // ya archivado
       const next = [...prev, msg];
-      saveData("chat_archivo", next);
+      saveData(k("chat_archivo"), next);
       return next;
     });
   }, []);
   const eliminarDelArchivo = useCallback((id) => {
     setMensajesArchivo((prev) => {
       const next = prev.filter((m) => m.id !== id);
-      saveData("chat_archivo", next);
+      saveData(k("chat_archivo"), next);
       return next;
     });
   }, []);
   const ajustarPuntos = useCallback((userId, delta) => {
     updateUsers(users.map((u) => (u.id === userId ? { ...u, puntos: Math.max(0, u.puntos + delta) } : u)));
   }, [users, updateUsers]);
-  const updateAsistencia = useCallback((next) => { setAsistencia(next); saveData("asistencia", next); }, []);
+  const updateAsistencia = useCallback((next) => { setAsistencia(next); saveData(k("asistencia"), next); }, []);
 
   // IMPORTANTE: estos hooks deben llamarse SIEMPRE, en todos los renders,
   // por eso van antes de cualquier "return" condicional (loading, !session, etc.)
