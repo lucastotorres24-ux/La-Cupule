@@ -277,6 +277,8 @@ function GlobalStyle() {
   return (
     <style>{`
       ${FONT_IMPORT}
+      html, body, #root { margin: 0; padding: 0; width: 100%; overflow-x: hidden; }
+      * { box-sizing: border-box; }
       @keyframes scanUpDown {
         0% { top: 0%; opacity: 1; } 23% { top: 100%; } 27% { opacity: 0.3; } 30% { opacity: 1; }
         50% { top: 0%; } 73% { top: 100%; } 77% { opacity: 0.3; } 80% { opacity: 1; } 100% { top: 0%; }
@@ -353,7 +355,7 @@ function GlobeBackdrop() {
   return (
     <div style={{
       position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)",
-      width: "min(96vh, 980px)", height: "min(96vh, 980px)", zIndex: -1, pointerEvents: "none",
+      width: "min(96vh, 90vw, 980px)", height: "min(96vh, 90vw, 980px)", zIndex: -1, pointerEvents: "none",
       animation: "globeSpin 40s linear infinite", opacity: 0.5,
     }}>
       <svg viewBox="0 0 400 400" width="100%" height="100%">
@@ -387,6 +389,7 @@ function GlobeBackdrop() {
 }
 
 function CodeSnippets() {
+  const isMobile = useIsMobile();
   const leftLines = [
     "struct buffer result;",
     "allocate_buffer(size_t size)", "{", "  result = malloc(sizeof(struct buffer));",
@@ -401,6 +404,7 @@ function CodeSnippets() {
     "> verify.identity()", "socket.connect(9091)", "cipher: AES-256-GCM",
     "node_sync: 98.2%", "trace: /var/log/auth", "ping mesh.local -c4",
   ];
+  if (isMobile) return null;
   const colStyle = { position: "absolute", top: 40, width: 210, fontFamily: FONT_MONO, fontSize: 10.5, lineHeight: 1.7, color: COLORS.neonBlue, opacity: 0.28, whiteSpace: "pre", pointerEvents: "none", zIndex: 0 };
   return (
     <>
@@ -417,7 +421,7 @@ function SkullBackground() {
   return (
     <div style={{
       position: "absolute", left: "50%", top: "46%", transform: "translate(-50%, -50%)",
-      width: "min(92vh, 900px)", height: "min(96vh, 945px)", zIndex: 0, animation: "boneGlow 6s ease-in-out infinite", pointerEvents: "none",
+      width: "min(92vh, 92vw, 900px)", height: "min(96vh, 92vw, 945px)", zIndex: 0, animation: "boneGlow 6s ease-in-out infinite", pointerEvents: "none",
       filter: "drop-shadow(0 0 30px rgba(240,242,245,0.3))",
     }}>
       <svg viewBox="0 0 400 420" width="100%" height="100%">
@@ -533,6 +537,7 @@ function LoginScreen({ users, onLogin }) {
   const [error, setError] = useState("");
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState("");
+  const isMobile = useIsMobile();
   const titulo = "LA CÚPULA".split("");
 
   const submit = () => {
@@ -563,8 +568,8 @@ function LoginScreen({ users, onLogin }) {
         <div style={{ display: "flex", justifyContent: "center", gap: 2 }}>
           {titulo.map((ch, i) => (
             <span key={i} style={{
-              display: "inline-block", fontFamily: FONT_TITLE, fontSize: 54, fontWeight: 400, color: "#D8D9DC",
-              letterSpacing: 1, "--flash-color": "#B0102A",
+              display: "inline-block", fontFamily: FONT_TITLE, fontSize: isMobile ? 34 : 54, fontWeight: 400, color: "#D8D9DC",
+              letterSpacing: isMobile ? 0 : 1, "--flash-color": "#B0102A",
               textShadow: `2px 2px 0 #B0102A, -1px -1px 0 #000, 3px 3px 6px rgba(0,0,0,0.85), 0 0 18px #B0102A44`,
               WebkitTextStroke: "1px #000",
               animation: `letterFall 0.9s cubic-bezier(.2,.8,.3,1) ${i * 0.06}s both, impactFlash 0.7s ease-out ${i * 0.06 + 0.55}s both`,
@@ -577,11 +582,11 @@ function LoginScreen({ users, onLogin }) {
         </div>
       </div>
       <div style={{
-        width: 380, background: `linear-gradient(180deg, ${COLORS.bgPanel}f2, #050506f2)`,
+        width: "min(380px, 90vw)", background: `linear-gradient(180deg, ${COLORS.bgPanel}f2, #050506f2)`,
         backdropFilter: "blur(2px)",
-        border: `2px solid ${COLORS.steel}`, borderRadius: 6, padding: "38px 34px",
+        border: `2px solid ${COLORS.steel}`, borderRadius: 6, padding: "38px 28px",
         boxShadow: `0 0 0 1px ${COLORS.neonRed}22, 0 0 50px ${COLORS.neonRed}22, inset 0 1px 0 ${COLORS.white}0a`,
-        position: "relative", overflow: "hidden", zIndex: 2,
+        position: "relative", overflow: "hidden", zIndex: 2, boxSizing: "border-box",
       }}>
         <CornerFrame color={COLORS.neonRed} thickness={3} size={22} />
         {scanning && (
@@ -615,44 +620,74 @@ function LoginScreen({ users, onLogin }) {
   );
 }
 
-function Sidebar({ user, active, setActive, onLogout }) {
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(typeof window !== "undefined" ? window.innerWidth <= 820 : false);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= 820);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return isMobile;
+}
+
+function Sidebar({ user, active, setActive, onLogout, isMobile, abierto, onCerrar }) {
   const itemsLider = [
     { id: "dashboard", label: "Dashboard" }, { id: "trafico", label: "Tráfico" },
     { id: "importar", label: "Importar" },
     { id: "asistencia", label: "Asistencia" },
-    { id: "postulaciones", label: "Postulaciones" }, { id: "tareas", label: "Tareas" },
+    { id: "candidatos", label: "Candidatos" }, { id: "tareas", label: "Tareas" },
     { id: "ranking", label: "Ranking" }, { id: "equipo", label: "Equipo" }, { id: "chat", label: "Chat" },
     { id: "cupulaai", label: "Cúpula AI" },
     { id: "papelera", label: "Papelera" },
   ];
   const itemsAgente = [
     { id: "dashboard", label: "Dashboard" }, { id: "trafico", label: "Tráfico" },
+    { id: "candidatos", label: "Candidatos" },
     { id: "tareas", label: "Mis tareas" }, { id: "ranking", label: "Ranking" },
     { id: "equipo", label: "Equipo" }, { id: "chat", label: "Chat" },
     { id: "cupulaai", label: "Cúpula AI" },
   ];
   const items = user.rol === "lider" ? itemsLider : itemsAgente;
+
+  const seleccionar = (id) => {
+    setActive(id);
+    if (isMobile) onCerrar();
+  };
+
   return (
-    <div style={{ width: 210, background: COLORS.bgPanel, borderRight: `1px solid ${COLORS.border}`, display: "flex", flexDirection: "column", padding: "22px 14px", boxSizing: "border-box" }}>
-      <div style={{ fontFamily: FONT_DISPLAY, fontSize: 22, letterSpacing: 3, color: COLORS.white, marginBottom: 4, paddingLeft: 6, textShadow: `0 0 12px ${COLORS.neonRed}66` }}>LA CÚPULA</div>
-      <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: COLORS.neonBlue, letterSpacing: 2, paddingLeft: 6, marginBottom: 26 }}>NYC 420 STYLE</div>
-      {items.map((it) => (
-        <button key={it.id} onClick={() => setActive(it.id)} style={{
-          textAlign: "left", padding: "10px 12px", marginBottom: 4, borderRadius: 4,
-          background: active === it.id ? COLORS.neonRedSoft : "transparent",
-          border: active === it.id ? `1px solid ${COLORS.neonRed}88` : "1px solid transparent",
-          borderLeft: active === it.id ? `3px solid ${COLORS.neonRed}` : "3px solid transparent",
-          color: active === it.id ? COLORS.white : COLORS.textMuted,
-          fontFamily: FONT_BODY, fontSize: 14, fontWeight: 700, cursor: "pointer", letterSpacing: 0.5, textTransform: "uppercase",
-        }}>{it.label}</button>
-      ))}
-      <div style={{ flex: 1 }} />
-      <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 14, marginTop: 14 }}>
-        <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.white, fontWeight: 700, textTransform: "uppercase" }}>{user.nombre}</div>
-        <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.neonBlue, marginBottom: 10 }}>{user.rol === "lider" ? "LÍDER" : "AGENTE"} · NVL {user.nivel}</div>
-        <button onClick={onLogout} style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline", letterSpacing: 1 }}>CERRAR SESIÓN</button>
+    <>
+      {isMobile && abierto && (
+        <div onClick={onCerrar} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 199 }} />
+      )}
+      <div style={{
+        width: 210, background: COLORS.bgPanel, borderRight: `1px solid ${COLORS.border}`,
+        display: "flex", flexDirection: "column", padding: "22px 14px", boxSizing: "border-box",
+        ...(isMobile ? {
+          position: "fixed", top: 0, bottom: 0, left: 0, zIndex: 200, height: "100%",
+          transform: abierto ? "translateX(0)" : "translateX(-100%)",
+          transition: "transform 0.25s ease",
+        } : {}),
+      }}>
+        <div style={{ fontFamily: FONT_DISPLAY, fontSize: 22, letterSpacing: 3, color: COLORS.white, marginBottom: 4, paddingLeft: 6, textShadow: `0 0 12px ${COLORS.neonRed}66` }}>LA CÚPULA</div>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: COLORS.neonBlue, letterSpacing: 2, paddingLeft: 6, marginBottom: 26 }}>NYC 420 STYLE</div>
+        {items.map((it) => (
+          <button key={it.id} onClick={() => seleccionar(it.id)} style={{
+            textAlign: "left", padding: "12px 12px", marginBottom: 4, borderRadius: 4,
+            background: active === it.id ? COLORS.neonRedSoft : "transparent",
+            border: active === it.id ? `1px solid ${COLORS.neonRed}88` : "1px solid transparent",
+            borderLeft: active === it.id ? `3px solid ${COLORS.neonRed}` : "3px solid transparent",
+            color: active === it.id ? COLORS.white : COLORS.textMuted,
+            fontFamily: FONT_BODY, fontSize: 14, fontWeight: 700, cursor: "pointer", letterSpacing: 0.5, textTransform: "uppercase",
+          }}>{it.label}</button>
+        ))}
+        <div style={{ flex: 1 }} />
+        <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 14, marginTop: 14 }}>
+          <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.white, fontWeight: 700, textTransform: "uppercase" }}>{user.nombre}</div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.neonBlue, marginBottom: 10 }}>{user.rol === "lider" ? "LÍDER" : "AGENTE"} · NVL {user.nivel}</div>
+          <button onClick={onLogout} style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline", letterSpacing: 1 }}>CERRAR SESIÓN</button>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -843,11 +878,18 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
   const marcarResultado = (candId, resultado) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, resultado } : c)));
   const toggleLlamado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, llamado: !c.llamado } : c)));
   const toggleContestado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, contestado: !c.contestado } : c)));
+  const toggleDesechado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, desechado: !c.desechado } : c)));
+  const toggleEnviadoEntrevista = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, enviadoEntrevista: !c.enviadoEntrevista, fechaEnvioEntrevista: !c.enviadoEntrevista ? Date.now() : null } : c)));
   const eliminarCandidato = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, eliminado: true } : c)));
 
   const agregarCandidato = () => {
     if (!nombre.trim() || !telefono.trim()) return;
-    const nuevo = { id: "c" + Date.now(), nombre: nombre.trim(), telefono: telefono.trim(), pais: pais.trim(), estadoLlamada: null, resultado: null, agenteId: user.id, fecha: todayStr(), aprobadoLider: null, idiomas: "", experiencia: "", llamado: false, contestado: false, eliminado: false, archivos: [] };
+    const nuevo = {
+      id: "c" + Date.now(), nombre: nombre.trim(), telefono: telefono.trim(), pais: pais.trim(), estadoLlamada: null, resultado: null,
+      agenteId: user.id, fecha: todayStr(), aprobadoLider: null, idiomas: "", experiencia: "", llamado: false, contestado: false,
+      eliminado: false, desechado: false, archivos: [], enviadoEntrevista: false, entrevistaAprobada: false, documentosAprobados: false,
+      poligrafoAprobado: false, enviadoAAgente: false, fechaInicio: null,
+    };
     onUpdate([nuevo, ...candidatos]);
     setNombre(""); setTelefono(""); setPais("");
   };
@@ -859,12 +901,14 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
   const paisesDisponibles = Array.from(new Set(activos.map((c) => c.pais).filter(Boolean))).sort();
 
   const filtrados = asignadosOTodos.filter((c) => {
+    if (filtro !== "desechados" && c.desechado) return false; // ocultos por defecto, no borrados
     if (busqueda.trim()) {
       const q = busqueda.trim().toLowerCase();
       if (!c.nombre.toLowerCase().includes(q) && !c.telefono.toLowerCase().includes(q)) return false;
     }
     if (filtro === "pendientes" && c.llamado) return false;
     if (filtro === "no_contesto" && !(c.llamado && !c.contestado)) return false;
+    if (filtro === "desechados" && !c.desechado) return false;
     if (filtroPais !== "todos" && c.pais !== filtroPais) return false;
     return true;
   });
@@ -913,6 +957,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
           <NeonButton small active={filtro === "todos"} onClick={() => { setFiltro("todos"); setPagina(1); }}>Todos</NeonButton>
           <NeonButton small active={filtro === "pendientes"} onClick={() => { setFiltro("pendientes"); setPagina(1); }}>Pendientes por llamar</NeonButton>
           <NeonButton small active={filtro === "no_contesto"} onClick={() => { setFiltro("no_contesto"); setPagina(1); }}>No contestó</NeonButton>
+          <NeonButton small active={filtro === "desechados"} onClick={() => { setFiltro("desechados"); setPagina(1); }}>Desechados</NeonButton>
           <select value={filtroPais} onChange={(e) => { setFiltroPais(e.target.value); setPagina(1); }}
             style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "7px 10px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 12, outline: "none" }}>
             <option value="todos">Todos los países</option>
@@ -948,12 +993,14 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
             </div>
             <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
               {c.resultado && <Badge color={RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.color}>{RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.label}</Badge>}
+              {c.desechado && <Badge color={COLORS.textMuted}>Desechado</Badge>}
+              <button onClick={() => toggleDesechado(c.id)} title={c.desechado ? "Restaurar a la bandeja" : "Desechar (no se borra, solo se esconde)"} style={{ background: "none", border: "none", color: c.desechado ? COLORS.neonSuccess : COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>{c.desechado ? "↩" : "🗂"}</button>
               {esLider && (
                 <button onClick={() => eliminarCandidato(c.id)} title="Enviar a la papelera" style={{ background: "none", border: "none", color: COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>🗑</button>
               )}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 14, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${COLORS.border}` }}>
+          <div style={{ display: "flex", gap: 14, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${COLORS.border}`, flexWrap: "wrap" }}>
             <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.llamado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
               <input type="checkbox" checked={!!c.llamado} onChange={() => toggleLlamado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
               Llamado
@@ -961,6 +1008,10 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
             <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.contestado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
               <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
               Contestó
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.enviadoEntrevista ? COLORS.neonAmber : COLORS.textMuted, textTransform: "uppercase" }}>
+              <input type="checkbox" checked={!!c.enviadoEntrevista} onChange={() => toggleEnviadoEntrevista(c.id)} style={{ accentColor: COLORS.neonAmber, width: 15, height: 15, cursor: "pointer" }} />
+              Envió datos entrevista
             </label>
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
@@ -1242,34 +1293,152 @@ function PapeleraView({ candidatos, onUpdate }) {
   );
 }
 
-function PostulacionesView({ candidatos, onUpdate }) {
-  const decidir = (id, val) => onUpdate(candidatos.map((c) => (c.id === id ? { ...c, aprobadoLider: val } : c)));
+const ETAPAS_PIPELINE = [
+  { id: "entrevista", label: "Esperando entrevista", color: COLORS.neonBlue },
+  { id: "documentos", label: "En revisión de documentos", color: COLORS.neonBlue },
+  { id: "poligrafo", label: "En polígrafo", color: COLORS.neonBlue },
+  { id: "listo", label: "Listo para trabajar", color: COLORS.neonAmber },
+  { id: "enviado", label: "Enviado al agente", color: COLORS.neonSuccess },
+];
+
+function etapaDe(c) {
+  if (c.enviadoAAgente) return "enviado";
+  if (c.poligrafoAprobado) return "listo";
+  if (c.documentosAprobados) return "poligrafo";
+  if (c.entrevistaAprobada) return "documentos";
+  return "entrevista";
+}
+
+function CandidatosView({ user, candidatos, onUpdate, usuarios }) {
+  const [filtroEtapa, setFiltroEtapa] = useState("todos");
+  const [filtroAgente, setFiltroAgente] = useState("todos");
+  const [busqueda, setBusqueda] = useState("");
+
+  const nombreDe = (id) => usuarios.find((u) => u.id === id)?.nombre || id;
+  const agentes = usuarios.filter((u) => u.rol === "agente");
+
+  const actualizar = (id, campo, valor) => onUpdate(candidatos.map((c) => (c.id === id ? { ...c, [campo]: valor } : c)));
+
+  const pipelineCompleto = candidatos.filter((c) => c.enviadoEntrevista && !c.eliminado);
+
+  const base = user.rol === "lider" ? pipelineCompleto : pipelineCompleto.filter((c) => c.agenteId === user.id);
+
+  const filtrados = base.filter((c) => {
+    if (filtroEtapa !== "todos" && etapaDe(c) !== filtroEtapa) return false;
+    if (user.rol === "lider" && filtroAgente !== "todos" && c.agenteId !== filtroAgente) return false;
+    if (busqueda.trim() && !c.nombre.toLowerCase().includes(busqueda.trim().toLowerCase())) return false;
+    return true;
+  });
+
+  const marcarEntrevista = (c, val) => {
+    if (val) actualizar(c.id, "entrevistaAprobada", true);
+    else onUpdate(candidatos.map((x) => (x.id === c.id ? { ...x, entrevistaAprobada: false, documentosAprobados: false, poligrafoAprobado: false } : x)));
+  };
+  const marcarDocumentos = (c, val) => {
+    if (val) actualizar(c.id, "documentosAprobados", true);
+    else onUpdate(candidatos.map((x) => (x.id === c.id ? { ...x, documentosAprobados: false, poligrafoAprobado: false } : x)));
+  };
+  const marcarPoligrafo = (c, val) => actualizar(c.id, "poligrafoAprobado", val);
+  const enviarAAgente = (c) => actualizar(c.id, "enviadoAAgente", true);
+  const setFechaInicio = (c, val) => actualizar(c.id, "fechaInicio", val);
+
   return (
     <div>
-      <SectionTitle>Postulaciones — decisión final</SectionTitle>
-      {candidatos.filter((c) => c.resultado).map((c) => (
-        <Card key={c.id} style={{ marginBottom: 10 }}>
-          <CornerFrame color={COLORS.steel} size={14} thickness={2} />
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontSize: 14, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
-              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted }}>
-                {c.agenteId ? USUARIOS_REALES.find((u) => u.id === c.agenteId)?.nombre : "Sin agente"} · {RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.label}
+      <SectionTitle>Candidatos</SectionTitle>
+
+      <Card style={{ marginBottom: 14 }}>
+        <CornerFrame color={COLORS.steel} size={12} thickness={2} />
+        <input
+          value={busqueda} onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="Buscar por nombre..."
+          style={{ width: "100%", background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "9px 12px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 13, outline: "none", boxSizing: "border-box", marginBottom: 10 }}
+        />
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <NeonButton small active={filtroEtapa === "todos"} onClick={() => setFiltroEtapa("todos")}>Todas las etapas</NeonButton>
+          {ETAPAS_PIPELINE.map((e) => (
+            <NeonButton key={e.id} small active={filtroEtapa === e.id} onClick={() => setFiltroEtapa(e.id)}>{e.label}</NeonButton>
+          ))}
+          {user.rol === "lider" && (
+            <select value={filtroAgente} onChange={(e) => setFiltroAgente(e.target.value)}
+              style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "7px 10px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 12, outline: "none" }}>
+              <option value="todos">Todos los agentes</option>
+              {agentes.map((a) => <option key={a.id} value={a.id}>{a.nombre}</option>)}
+            </select>
+          )}
+        </div>
+      </Card>
+
+      {filtrados.length === 0 && (
+        <Card><div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, textAlign: "center", padding: "10px 0" }}>No hay candidatos en esta etapa todavía.</div></Card>
+      )}
+
+      {filtrados.map((c) => {
+        const etapa = etapaDe(c);
+        const listo = c.poligrafoAprobado;
+        return (
+          <Card key={c.id} style={{
+            marginBottom: 12,
+            background: listo ? "#3a2408" : COLORS.bgPanel,
+            border: listo ? `1px solid ${COLORS.neonAmber}` : `1px solid ${COLORS.border}`,
+          }}>
+            <CornerFrame color={listo ? COLORS.neonAmber : COLORS.steel} size={14} thickness={2} />
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
+                <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
+                  {c.telefono} · Agente: {nombreDe(c.agenteId)}
+                </div>
               </div>
+              <Badge color={ETAPAS_PIPELINE.find((e) => e.id === etapa)?.color}>{ETAPAS_PIPELINE.find((e) => e.id === etapa)?.label}</Badge>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {c.aprobadoLider === true && <Badge color={COLORS.neonSuccess}>Aprobado</Badge>}
-              {c.aprobadoLider === false && <Badge color={COLORS.neonRed}>Rechazado</Badge>}
-              {c.aprobadoLider == null && (
-                <>
-                  <NeonButton small active onClick={() => decidir(c.id, true)}>Aprobar</NeonButton>
-                  <NeonButton small onClick={() => decidir(c.id, false)}>Rechazar</NeonButton>
-                </>
-              )}
-            </div>
-          </div>
-        </Card>
-      ))}
+
+            {user.rol === "lider" ? (
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", paddingTop: 8, borderTop: `1px solid ${COLORS.border}55` }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.entrevistaAprobada ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
+                  <input type="checkbox" checked={!!c.entrevistaAprobada} onChange={(e) => marcarEntrevista(c, e.target.checked)} style={{ accentColor: COLORS.neonSuccess, width: 16, height: 16, cursor: "pointer" }} />
+                  Entrevista aprobada
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: c.entrevistaAprobada ? "pointer" : "not-allowed", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.documentosAprobados ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase", opacity: c.entrevistaAprobada ? 1 : 0.4 }}>
+                  <input type="checkbox" disabled={!c.entrevistaAprobada} checked={!!c.documentosAprobados} onChange={(e) => marcarDocumentos(c, e.target.checked)} style={{ accentColor: COLORS.neonSuccess, width: 16, height: 16, cursor: "pointer" }} />
+                  Documentos aprobados
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: c.documentosAprobados ? "pointer" : "not-allowed", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.poligrafoAprobado ? COLORS.neonAmber : COLORS.textMuted, textTransform: "uppercase", opacity: c.documentosAprobados ? 1 : 0.4 }}>
+                  <input type="checkbox" disabled={!c.documentosAprobados} checked={!!c.poligrafoAprobado} onChange={(e) => marcarPoligrafo(c, e.target.checked)} style={{ accentColor: COLORS.neonAmber, width: 16, height: 16, cursor: "pointer" }} />
+                  Polígrafo aprobado
+                </label>
+
+                {listo && !c.enviadoAAgente && (
+                  <NeonButton small active onClick={() => enviarAAgente(c)}>Enviar a {nombreDe(c.agenteId)}</NeonButton>
+                )}
+                {c.enviadoAAgente && <Badge color={COLORS.neonSuccess}>Enviado a {nombreDe(c.agenteId)}</Badge>}
+              </div>
+            ) : (
+              <div style={{ paddingTop: 8, borderTop: `1px solid ${COLORS.border}55` }}>
+                {c.enviadoAAgente ? (
+                  <div>
+                    <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonAmber, marginBottom: 8, letterSpacing: 0.5 }}>
+                      LISTO PARA EMPEZAR — define la fecha y hora de inicio
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <input
+                        type="datetime-local"
+                        value={c.fechaInicio || ""}
+                        onChange={(e) => setFechaInicio(c, e.target.value)}
+                        style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "8px 10px", color: COLORS.white, fontFamily: FONT_MONO, fontSize: 13, outline: "none" }}
+                      />
+                      {c.fechaInicio && <Badge color={COLORS.neonSuccess}>Programado</Badge>}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted }}>
+                    Esperando que el líder complete el proceso (entrevista → documentos → polígrafo).
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+        );
+      })}
     </div>
   );
 }
@@ -2002,6 +2171,9 @@ export default function LaCupula() {
     );
   }
 
+  const isMobile = useIsMobile();
+  const [sidebarAbierto, setSidebarAbierto] = useState(false);
+
   if (!session) return <LoginScreen users={users} onLogin={handleLogin} />;
 
   if (active === "equipo") {
@@ -2009,17 +2181,34 @@ export default function LaCupula() {
   }
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: COLORS.bgBase, fontFamily: FONT_BODY, position: "relative" }}>
+    <div style={{ display: "flex", minHeight: "100vh", background: COLORS.bgBase, fontFamily: FONT_BODY, position: "relative", flexDirection: isMobile ? "column" : "row" }}>
       <GlobalStyle />
-      <CornerFrame color={COLORS.steel} size={30} thickness={2} />
-      <Sidebar user={session} active={active} setActive={setActive} onLogout={handleLogout} />
-      <div style={{ flex: 1, padding: "28px 32px", overflowY: "auto" }}>
+      {!isMobile && <CornerFrame color={COLORS.steel} size={30} thickness={2} />}
+      {isMobile && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}`, background: COLORS.bgPanel,
+          position: "sticky", top: 0, zIndex: 50,
+        }}>
+          <button onClick={() => setSidebarAbierto(true)} style={{
+            background: "none", border: `1px solid ${COLORS.steel}`, borderRadius: 4, color: COLORS.white,
+            fontSize: 18, padding: "6px 12px", cursor: "pointer",
+          }}>☰</button>
+          <div style={{ fontFamily: FONT_DISPLAY, fontSize: 18, letterSpacing: 2, color: COLORS.white }}>LA CÚPULA</div>
+          <div style={{ width: 34 }} />
+        </div>
+      )}
+      <Sidebar
+        user={session} active={active} setActive={setActive} onLogout={handleLogout}
+        isMobile={isMobile} abierto={isMobile ? sidebarAbierto : true} onCerrar={() => setSidebarAbierto(false)}
+      />
+      <div style={{ flex: 1, padding: isMobile ? "16px" : "28px 32px", overflowY: "auto", minWidth: 0, boxSizing: "border-box" }}>
         {active === "dashboard" && session.rol === "lider" && <DashboardLider candidatos={candidatos} tareas={tareas} usuarios={users} />}
         {active === "dashboard" && session.rol === "agente" && <DashboardAgente user={session} tareas={tareas} candidatos={candidatos} />}
         {active === "trafico" && <TraficoView user={session} candidatos={candidatos} onUpdate={updateCandidatos} esLider={session.rol === "lider"} />}
         {active === "importar" && session.rol === "lider" && <ImportarContactosView candidatos={candidatos} onUpdateCandidatos={updateCandidatos} puntero={puntero} onUpdatePuntero={updatePuntero} usuarios={users} asistenciaHoy={asistencia[todayStr()] || null} />}
         {active === "asistencia" && session.rol === "lider" && <AsistenciaView usuarios={users} asistencia={asistencia} onUpdateAsistencia={updateAsistencia} />}
-        {active === "postulaciones" && session.rol === "lider" && <PostulacionesView candidatos={candidatos} onUpdate={updateCandidatos} />}
+        {active === "candidatos" && <CandidatosView user={session} candidatos={candidatos} onUpdate={updateCandidatos} usuarios={users} />}
         {active === "tareas" && <TareasView user={session} tareas={tareas} onUpdate={updateTareas} usuarios={users} onUpdateUsuarios={updateUsers} />}
         {active === "ranking" && <RankingView usuarios={users} esLider={session.rol === "lider"} onAjustarPuntos={ajustarPuntos} />}
         {active === "chat" && <ChatView user={session} mensajes={mensajes} mensajesArchivo={mensajesArchivo} chatConfig={chatConfig} onEnviar={enviarMensaje} onCambiarModo={cambiarModoChat} onGuardarArchivo={guardarEnArchivo} onEliminarArchivo={eliminarDelArchivo} />}
