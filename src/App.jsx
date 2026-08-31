@@ -158,61 +158,67 @@ function parseMensajeIndividual(bloqueOriginal) {
 
   const lineas = bloque.split("\n").map((l) => l.trim()).filter(Boolean);
 
-  // Teléfono: prioriza el campo con indicativo completo (Móvil / Мобільний / Celular),
-  // porque el de WhatsApp/Telegram suele venir sin indicativo de país.
-  let telefono = "";
-  const telLabelMatch = bloque.match(/(?:м[оo]б[іi]льний|m[oó]vil|celular)\s*:?\s*(\+?\d[\d\s().-]{6,}\d)/i);
-  if (telLabelMatch) {
-    telefono = telLabelMatch[1].trim();
-  } else {
-    const telGenericoMatch = bloque.match(/(\+?\d[\d\s().-]{6,}\d)/);
-    telefono = telGenericoMatch ? telGenericoMatch[0].trim() : "";
+  let nombre = "";
+  let telefonoMovil = "";
+  let telefonoOtro = "";
+  let idiomas = "";
+  let experienciaValor = "";
+  let experienciaEncontrada = false;
+
+  // Recorre línea por línea — mucho más confiable que una expresión sobre todo el bloque.
+  // Regla principal (la que pediste): la línea que contenga "ім" (así se ve "Ім'я" en minúscula,
+  // sin importar el tipo de apóstrofe) → todo lo que sigue después de los dos puntos es el nombre.
+  lineas.forEach((linea) => {
+    const lower = linea.toLowerCase();
+    const idxColon = linea.indexOf(":");
+    const valor = idxColon !== -1 ? linea.slice(idxColon + 1).trim() : "";
+
+    if (!nombre && (lower.includes("ім") || /^nombre[s]?\s*:/i.test(linea) || /^name\s*:/i.test(linea))) {
+      nombre = valor;
+    } else if (lower.includes("мобільн") || lower.includes("móvil") || lower.includes("movil") || lower.includes("celular")) {
+      const m = linea.match(/(\+?\d[\d\s().-]{6,}\d)/);
+      if (m) telefonoMovil = m[0].trim();
+    } else if (lower.includes("вотс") || lower.includes("телеграм") || lower.includes("whatsapp") || lower.includes("telegram")) {
+      const m = linea.match(/(\+?\d[\d\s().-]{6,}\d)/);
+      if (m) telefonoOtro = m[0].trim();
+    } else if (!idiomas && (lower.includes("мов") || lower.includes("idioma"))) {
+      idiomas = valor;
+    } else if (!experienciaEncontrada && (lower.includes("досвід") || lower.includes("experiencia"))) {
+      experienciaValor = valor;
+      experienciaEncontrada = true;
+    }
+  });
+
+  // Teléfono: prioriza el que trae indicativo completo (Móvil/Мобільний), y si no hay,
+  // usa el de WhatsApp/Telegram o cualquier número largo que aparezca en el mensaje.
+  let telefono = (telefonoMovil || telefonoOtro || "").replace(/\s{2,}/g, " ").trim();
+  if (!telefono) {
+    const m = bloque.match(/(\+?\d[\d\s().-]{6,}\d)/);
+    telefono = m ? m[0].trim() : "";
   }
-  telefono = telefono.replace(/\s{2,}/g, " ").trim();
-  if (!telefono) return null;
+  if (!telefono) return null; // sin teléfono, no es un mensaje de candidato válido
 
   // País: se detecta automáticamente por el indicativo telefónico, no por texto.
   const pais = detectarPaisPorTelefono(telefono);
 
-  // Idiomas: busca coincidencias de idiomas conocidos en todo el bloque.
-  const idiomasEncontrados = IDIOMAS_CONOCIDOS.filter((idi) => idi.match.test(bloque)).map((idi) => idi.label);
-  const idiomas = idiomasEncontrados.length ? idiomasEncontrados.join(", ") : "";
+  // Idiomas: si no vino de una etiqueta explícita, busca nombres de idiomas conocidos en todo el bloque.
+  if (!idiomas) {
+    const idiomasEncontrados = IDIOMAS_CONOCIDOS.filter((idi) => idi.match.test(bloque)).map((idi) => idi.label);
+    idiomas = idiomasEncontrados.join(", ");
+  }
 
-  // Experiencia: reconoce "experiencia" (español) o "досвід" (ucraniano), normalizado a Sí / No / No especifica.
+  // Experiencia normalizada a Sí / No / No especifica.
   let experiencia = "No especifica";
-  const expMatch = bloque.match(/(?:experiencia|досв[іi]д)[^\n:]*:?\s*([^\n]*)/i);
-  if (expMatch) {
-    const valor = (expMatch[1] || "").toLowerCase();
-    const etiquetaCompleta = expMatch[0].toLowerCase();
-    if (/\bno\s+teng|\bno\s+cuent|^\s*no\b|sin\s+experiencia/.test(valor) || /\bsin\b/.test(etiquetaCompleta)) {
-      experiencia = "No";
-    } else if (/\bs[ií]\b|\btengo\b|\ba[ñn]os\b|\bmeses\b|\d+\s*(a[ñn]o|mes)/.test(valor)) {
-      experiencia = "Sí";
-    } else if (valor.trim()) {
-      experiencia = "Sí";
-    }
+  if (experienciaEncontrada) {
+    const val = experienciaValor.toLowerCase();
+    if (/\bno\s+teng|\bno\s+cuent|^\s*no\b|sin\s+experiencia/.test(val)) experiencia = "No";
+    else if (val.trim()) experiencia = "Sí";
   }
 
-  // Nombre: reconoce "Nombre:" (español), "Ім'я" (ucraniano), o "Name:" (inglés).
-  let nombre = "";
-  const nombreLabelMatch = bloque.match(/(?:nombre[s]?|name|ім['’`]?я)\s*:?\s*([^\n]+)/i);
-  if (nombreLabelMatch) {
-    nombre = nombreLabelMatch[1].trim();
-  } else {
-    const candidataLinea = lineas.find((l) => {
-      const lower = l.toLowerCase();
-      if (l.replace(/[^\d]/g, "").length >= 7) return false; // es el teléfono
-      if (/idioma|experiencia|tel[eé]fono|n[uú]mero|celular|whatsapp|м[оo]б[іi]льний|мов|досв[іi]д|вік/i.test(lower)) return false;
-      return true;
-    });
-    nombre = candidataLinea || "";
-  }
-  // Si aún no se encontró nada, se usa la primera línea del mensaje como último recurso
-  // (mejor un nombre con emojis/símbolos de sobra que "Sin nombre" — se puede corregir en la revisión antes de importar).
+  // Si después de todo esto no se encontró nombre, se usa la primera línea como último recurso.
   if (!nombre.trim() && lineas[0]) {
     nombre = lineas[0].replace(/[\u{1F1E6}-\u{1F1FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, "").trim();
   }
-  // Limpia prefijos comunes que puedan quedar pegados
   nombre = nombre.replace(/^[-•*]\s*/, "").trim();
   if (!nombre) nombre = "Sin nombre";
 
@@ -2214,7 +2220,7 @@ export default function LaCupula() {
   useEffect(() => {
     (async () => {
       const u = await loadOrSeed("users_v2", seedUsers);
-      const c = await loadOrSeed("candidatos_v3", seedCandidatos);
+      const c = await loadOrSeed("candidatos_v4", seedCandidatos);
       const t = await loadOrSeed("tareas_v3", seedTareas);
       let m = await loadOrSeed("chat_mensajes", seedChatMensajes);
       // Poda automática: los mensajes normales se borran cada 24 horas.
@@ -2223,7 +2229,7 @@ export default function LaCupula() {
       m = mPodado;
       const ma = await loadOrSeed("chat_archivo", () => []);
       const cfg = await loadOrSeed("chat_config", seedChatConfig);
-      const p = await loadOrSeed("orden_asignacion_puntero", seedPuntero);
+      const p = await loadOrSeed("orden_asignacion_puntero_v2", seedPuntero);
       const asis = await loadOrSeed("asistencia", () => ({}));
       setUsers(u); setCandidatos(c); setTareas(t); setMensajes(m); setMensajesArchivo(ma); setChatConfig(cfg); setPuntero(p); setAsistencia(asis); setLoading(false);
 
@@ -2261,13 +2267,13 @@ export default function LaCupula() {
       if (asis) setAsistencia(asis);
       // Estos son los que hacen que Tráfico/Candidatos/Tareas se vean en tiempo real
       // entre el líder y los agentes, no solo en el celular donde se hizo el cambio.
-      const c = await fetchData("candidatos_v3");
+      const c = await fetchData("candidatos_v4");
       if (c) setCandidatos(c);
       const t = await fetchData("tareas_v3");
       if (t) setTareas(t);
       const u = await fetchData("users_v2");
       if (u) setUsers(u);
-      const p = await fetchData("orden_asignacion_puntero");
+      const p = await fetchData("orden_asignacion_puntero_v2");
       if (p !== null && p !== undefined) setPuntero(p);
     }, 4000);
     return () => clearInterval(id);
@@ -2281,8 +2287,8 @@ export default function LaCupula() {
     setSession(null); setActive("dashboard");
     try { window.localStorage.removeItem(SESION_STORAGE_KEY); } catch (e) {}
   };
-  const updateCandidatos = useCallback((next) => { setCandidatos(next); saveData("candidatos_v3", next); }, []);
-  const updatePuntero = useCallback((next) => { setPuntero(next); saveData("orden_asignacion_puntero", next); }, []);
+  const updateCandidatos = useCallback((next) => { setCandidatos(next); saveData("candidatos_v4", next); }, []);
+  const updatePuntero = useCallback((next) => { setPuntero(next); saveData("orden_asignacion_puntero_v2", next); }, []);
   const updateTareas = useCallback((next) => { setTareas(next); saveData("tareas_v3", next); }, []);
   const updateUsers = useCallback((next) => {
     setUsers(next); saveData("users_v2", next);
