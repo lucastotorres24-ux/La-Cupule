@@ -2252,6 +2252,11 @@ export default function LaCupula() {
   }, [users, updateUsers]);
   const updateAsistencia = useCallback((next) => { setAsistencia(next); saveData("asistencia", next); }, []);
 
+  // IMPORTANTE: estos hooks deben llamarse SIEMPRE, en todos los renders,
+  // por eso van antes de cualquier "return" condicional (loading, !session, etc.)
+  const isMobile = useIsMobile();
+  const [sidebarAbierto, setSidebarAbierto] = useState(false);
+
   if (loading) {
     return (
       <div style={{ minHeight: "100vh", background: COLORS.bgBase, display: "flex", alignItems: "center", justifyContent: "center", color: COLORS.neonRed, fontFamily: FONT_MONO, fontSize: 13, letterSpacing: 3 }}>
@@ -2259,9 +2264,6 @@ export default function LaCupula() {
       </div>
     );
   }
-
-  const isMobile = useIsMobile();
-  const [sidebarAbierto, setSidebarAbierto] = useState(false);
 
   if (!session) return <LoginScreen users={users} onLogin={handleLogin} />;
 
