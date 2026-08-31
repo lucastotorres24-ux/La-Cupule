@@ -193,9 +193,9 @@ function parseMensajeIndividual(bloqueOriginal) {
     }
   }
 
-  // Nombre: reconoce "Nombre:" (español) o "Ім'я" (ucraniano, con apóstrofe recto o tipográfico).
+  // Nombre: reconoce "Nombre:" (español), "Ім'я" (ucraniano), o "Name:" (inglés).
   let nombre = "";
-  const nombreLabelMatch = bloque.match(/(?:nombre[s]?|ім['’`]?я)\s*:?\s*([^\n]+)/i);
+  const nombreLabelMatch = bloque.match(/(?:nombre[s]?|name|ім['’`]?я)\s*:?\s*([^\n]+)/i);
   if (nombreLabelMatch) {
     nombre = nombreLabelMatch[1].trim();
   } else {
@@ -205,10 +205,16 @@ function parseMensajeIndividual(bloqueOriginal) {
       if (/idioma|experiencia|tel[eé]fono|n[uú]mero|celular|whatsapp|м[оo]б[іi]льний|мов|досв[іi]д|вік/i.test(lower)) return false;
       return true;
     });
-    nombre = candidataLinea || "Sin nombre";
+    nombre = candidataLinea || "";
+  }
+  // Si aún no se encontró nada, se usa la primera línea del mensaje como último recurso
+  // (mejor un nombre con emojis/símbolos de sobra que "Sin nombre" — se puede corregir en la revisión antes de importar).
+  if (!nombre.trim() && lineas[0]) {
+    nombre = lineas[0].replace(/[\u{1F1E6}-\u{1F1FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, "").trim();
   }
   // Limpia prefijos comunes que puedan quedar pegados
   nombre = nombre.replace(/^[-•*]\s*/, "").trim();
+  if (!nombre) nombre = "Sin nombre";
 
   return { nombre, telefono, pais, idiomas, experiencia };
 }
@@ -872,7 +878,15 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
   const [filtro, setFiltro] = useState("todos");
   const [filtroPais, setFiltroPais] = useState("todos");
   const [pagina, setPagina] = useState(1);
+  const [fechaSeleccionada, setFechaSeleccionada] = useState(todayStr());
   const POR_PAGINA = 30;
+
+  const cambiarDia = (delta) => {
+    const d = new Date(fechaSeleccionada + "T12:00:00");
+    d.setDate(d.getDate() + delta);
+    setFechaSeleccionada(d.toISOString().slice(0, 10));
+    setPagina(1);
+  };
 
   const marcarLlamada = (candId, estadoLlamada) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, estadoLlamada } : c)));
   const marcarResultado = (candId, resultado) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, resultado } : c)));
@@ -901,6 +915,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
   const paisesDisponibles = Array.from(new Set(activos.map((c) => c.pais).filter(Boolean))).sort();
 
   const filtrados = asignadosOTodos.filter((c) => {
+    if (c.fecha !== fechaSeleccionada) return false; // páginas por día
     if (filtro !== "desechados" && c.desechado) return false; // ocultos por defecto, no borrados
     if (busqueda.trim()) {
       const q = busqueda.trim().toLowerCase();
@@ -926,6 +941,23 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
   return (
     <div>
       <SectionTitle>Tráfico de contactos</SectionTitle>
+
+      <Card style={{ marginBottom: 14 }}>
+        <CornerFrame color={COLORS.neonBlue} size={12} thickness={2} />
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap" }}>
+          <NeonButton small onClick={() => cambiarDia(-1)}>← Día anterior</NeonButton>
+          <input
+            type="date" value={fechaSeleccionada}
+            onChange={(e) => { setFechaSeleccionada(e.target.value); setPagina(1); }}
+            style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "8px 10px", color: COLORS.white, fontFamily: FONT_MONO, fontSize: 13, outline: "none" }}
+          />
+          <NeonButton small onClick={() => cambiarDia(1)}>Día siguiente →</NeonButton>
+          {fechaSeleccionada !== todayStr() && (
+            <NeonButton small active onClick={() => { setFechaSeleccionada(todayStr()); setPagina(1); }}>Hoy</NeonButton>
+          )}
+        </div>
+      </Card>
+
       {user.rol === "agente" && (
         <Card style={{ marginBottom: 16 }}>
           <CornerFrame color={prog >= CUOTA_DIARIA_ENTREVISTA ? COLORS.neonSuccess : COLORS.neonRed} size={14} thickness={2} />
@@ -1049,7 +1081,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
   );
 }
 
-function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpdatePuntero, usuarios, asistenciaHoy }) {
+function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpdatePuntero, usuarios, asistenciaHoy, ultimaImportacion, onImportado, onDeshacerImportacion }) {
   const [texto, setTexto] = useState("");
   const [borradores, setBorradores] = useState(null); // null = aún no analizado
 
@@ -1125,10 +1157,18 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
       llamado: false,
       contestado: false,
       eliminado: false,
+      desechado: false,
       archivos: [],
+      enviadoEntrevista: false,
+      entrevistaAprobada: false,
+      documentosAprobados: false,
+      poligrafoAprobado: false,
+      enviadoAAgente: false,
+      fechaInicio: null,
     }));
     onUpdateCandidatos([...nuevos, ...candidatos]);
     onUpdatePuntero((puntero + borradores.length) % presentes.length);
+    onImportado(nuevos.map((n) => n.id));
     setBorradores(null);
     setTexto("");
   };
@@ -1136,6 +1176,17 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
   return (
     <div>
       <SectionTitle>Importar contactos de Telegram</SectionTitle>
+      {ultimaImportacion && ultimaImportacion.ids.length > 0 && (
+        <Card style={{ marginBottom: 16, borderColor: COLORS.neonRed }}>
+          <CornerFrame color={COLORS.neonRed} size={12} thickness={2} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>
+              Última importación: {ultimaImportacion.ids.length} contacto(s), hace un momento.
+            </div>
+            <NeonButton small onClick={onDeshacerImportacion}>Deshacer última importación</NeonButton>
+          </div>
+        </Card>
+      )}
       <Card style={{ marginBottom: 16 }}>
         <CornerFrame color={COLORS.neonSuccess} size={14} thickness={2} />
         <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonSuccess, marginBottom: 4, letterSpacing: 1 }}>
@@ -1831,6 +1882,8 @@ function EquipoView({ usuarios }) {
 }
 
 const VEINTICUATRO_HORAS_MS = 24 * 60 * 60 * 1000;
+const SESION_STORAGE_KEY = "cupula_sesion";
+const SESION_DURACION_MS = 30 * VEINTICUATRO_HORAS_MS; // se mantiene mientras se siga usando (30 días desde el último uso)
 const TAMANO_MAX_ARCHIVO = 350 * 1024; // ~350KB, límite prudente para no saturar el almacenamiento
 
 function leerArchivoComoDataUrl(file) {
@@ -2086,6 +2139,7 @@ export default function LaCupula() {
   const [chatConfig, setChatConfig] = useState(null);
   const [puntero, setPuntero] = useState(0);
   const [asistencia, setAsistencia] = useState(null);
+  const [ultimaImportacion, setUltimaImportacion] = useState(null);
   const [session, setSession] = useState(null);
   const [active, setActive] = useState("dashboard");
   const [loading, setLoading] = useState(true);
@@ -2105,12 +2159,31 @@ export default function LaCupula() {
       const p = await loadOrSeed("orden_asignacion_puntero", seedPuntero);
       const asis = await loadOrSeed("asistencia", () => ({}));
       setUsers(u); setCandidatos(c); setTareas(t); setMensajes(m); setMensajesArchivo(ma); setChatConfig(cfg); setPuntero(p); setAsistencia(asis); setLoading(false);
+
+      // Restaura la sesión guardada (si no ha expirado) para no tener que loguearse
+      // otra vez cada vez que se recarga la página o se reabre la app.
+      try {
+        const raw = window.localStorage.getItem(SESION_STORAGE_KEY);
+        if (raw) {
+          const guardada = JSON.parse(raw);
+          if (guardada && Date.now() - guardada.ts < SESION_DURACION_MS) {
+            const usuarioGuardado = u.find((usr) => usr.id === guardada.userId);
+            if (usuarioGuardado) setSession(usuarioGuardado);
+          } else {
+            window.localStorage.removeItem(SESION_STORAGE_KEY);
+          }
+        }
+      } catch (e) {}
     })();
   }, []);
 
   useEffect(() => {
     if (!session) return;
+    // Renueva la fecha de la sesión guardada cada vez que la app está activa,
+    // así dura "mientras se siga usando" en vez de vencerse a fecha fija.
+    try { window.localStorage.setItem(SESION_STORAGE_KEY, JSON.stringify({ userId: session.id, ts: Date.now() })); } catch (e) {}
     const id = setInterval(async () => {
+      try { window.localStorage.setItem(SESION_STORAGE_KEY, JSON.stringify({ userId: session.id, ts: Date.now() })); } catch (e) {}
       const m = await fetchData("chat_mensajes");
       if (m) setMensajes(m.filter((msg) => Date.now() - msg.ts < VEINTICUATRO_HORAS_MS));
       const ma = await fetchData("chat_archivo");
@@ -2119,12 +2192,28 @@ export default function LaCupula() {
       if (cfg) setChatConfig(cfg);
       const asis = await fetchData("asistencia");
       if (asis) setAsistencia(asis);
+      // Estos son los que hacen que Tráfico/Candidatos/Tareas se vean en tiempo real
+      // entre el líder y los agentes, no solo en el celular donde se hizo el cambio.
+      const c = await fetchData("candidatos_v3");
+      if (c) setCandidatos(c);
+      const t = await fetchData("tareas_v3");
+      if (t) setTareas(t);
+      const u = await fetchData("users_v2");
+      if (u) setUsers(u);
+      const p = await fetchData("orden_asignacion_puntero");
+      if (p !== null && p !== undefined) setPuntero(p);
     }, 4000);
     return () => clearInterval(id);
   }, [session]);
 
-  const handleLogin = (u) => setSession(u);
-  const handleLogout = () => { setSession(null); setActive("dashboard"); };
+  const handleLogin = (u) => {
+    setSession(u);
+    try { window.localStorage.setItem(SESION_STORAGE_KEY, JSON.stringify({ userId: u.id, ts: Date.now() })); } catch (e) {}
+  };
+  const handleLogout = () => {
+    setSession(null); setActive("dashboard");
+    try { window.localStorage.removeItem(SESION_STORAGE_KEY); } catch (e) {}
+  };
   const updateCandidatos = useCallback((next) => { setCandidatos(next); saveData("candidatos_v3", next); }, []);
   const updatePuntero = useCallback((next) => { setPuntero(next); saveData("orden_asignacion_puntero", next); }, []);
   const updateTareas = useCallback((next) => { setTareas(next); saveData("tareas_v3", next); }, []);
@@ -2206,7 +2295,19 @@ export default function LaCupula() {
         {active === "dashboard" && session.rol === "lider" && <DashboardLider candidatos={candidatos} tareas={tareas} usuarios={users} />}
         {active === "dashboard" && session.rol === "agente" && <DashboardAgente user={session} tareas={tareas} candidatos={candidatos} />}
         {active === "trafico" && <TraficoView user={session} candidatos={candidatos} onUpdate={updateCandidatos} esLider={session.rol === "lider"} />}
-        {active === "importar" && session.rol === "lider" && <ImportarContactosView candidatos={candidatos} onUpdateCandidatos={updateCandidatos} puntero={puntero} onUpdatePuntero={updatePuntero} usuarios={users} asistenciaHoy={asistencia[todayStr()] || null} />}
+        {active === "importar" && session.rol === "lider" && (
+          <ImportarContactosView
+            candidatos={candidatos} onUpdateCandidatos={updateCandidatos} puntero={puntero} onUpdatePuntero={updatePuntero}
+            usuarios={users} asistenciaHoy={asistencia[todayStr()] || null}
+            ultimaImportacion={ultimaImportacion}
+            onImportado={(ids) => setUltimaImportacion({ ids, ts: Date.now() })}
+            onDeshacerImportacion={() => {
+              if (!ultimaImportacion) return;
+              updateCandidatos(candidatos.filter((c) => !ultimaImportacion.ids.includes(c.id)));
+              setUltimaImportacion(null);
+            }}
+          />
+        )}
         {active === "asistencia" && session.rol === "lider" && <AsistenciaView usuarios={users} asistencia={asistencia} onUpdateAsistencia={updateAsistencia} />}
         {active === "candidatos" && <CandidatosView user={session} candidatos={candidatos} onUpdate={updateCandidatos} usuarios={users} />}
         {active === "tareas" && <TareasView user={session} tareas={tareas} onUpdate={updateTareas} usuarios={users} onUpdateUsuarios={updateUsers} />}
