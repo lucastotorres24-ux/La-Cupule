@@ -222,8 +222,27 @@ function parseMensajeIndividual(bloqueOriginal) {
 // Divide el texto pegado (varios mensajes de Telegram) en bloques individuales y los parsea.
 function parseMensajesTelegram(textoCompleto) {
   if (!textoCompleto || !textoCompleto.trim()) return [];
-  // Los mensajes suelen venir separados por una o más líneas en blanco.
-  const bloquesCrudos = textoCompleto.split(/\n\s*\n+/);
+
+  // Cada candidato nuevo empieza con una línea que trae una banderita de país (🇵🇾, 🇨🇴, etc.)
+  // — la usamos como separador principal, porque muchas veces vienen pegados sin línea en blanco entre uno y otro.
+  const lineas = textoCompleto.split("\n");
+  const esInicioDeBloque = (linea) => /^[\u{1F1E6}-\u{1F1FF}]{2}/u.test(linea.trim());
+  const bloquesPorBandera = [];
+  let actual = [];
+  lineas.forEach((linea) => {
+    if (esInicioDeBloque(linea) && actual.length > 0) {
+      bloquesPorBandera.push(actual.join("\n"));
+      actual = [linea];
+    } else {
+      actual.push(linea);
+    }
+  });
+  if (actual.length) bloquesPorBandera.push(actual.join("\n"));
+
+  // Si no se detectó ninguna banderita (mensajes en otro formato, ej. solo "Nombre:"),
+  // usamos como respaldo el separador clásico de líneas en blanco.
+  const bloquesCrudos = bloquesPorBandera.length > 1 ? bloquesPorBandera : textoCompleto.split(/\n\s*\n+/);
+
   const resultados = [];
   bloquesCrudos.forEach((bloque) => {
     const parsed = parseMensajeIndividual(bloque);
@@ -877,15 +896,14 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
   const [busqueda, setBusqueda] = useState("");
   const [filtro, setFiltro] = useState("todos");
   const [filtroPais, setFiltroPais] = useState("todos");
-  const [pagina, setPagina] = useState(1);
   const [fechaSeleccionada, setFechaSeleccionada] = useState(todayStr());
-  const POR_PAGINA = 30;
+  const [mostrarAnteriores, setMostrarAnteriores] = useState(false);
 
   const cambiarDia = (delta) => {
     const d = new Date(fechaSeleccionada + "T12:00:00");
     d.setDate(d.getDate() + delta);
     setFechaSeleccionada(d.toISOString().slice(0, 10));
-    setPagina(1);
+    setMostrarAnteriores(false);
   };
 
   const marcarLlamada = (candId, estadoLlamada) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, estadoLlamada } : c)));
@@ -900,7 +918,8 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
     if (!nombre.trim() || !telefono.trim()) return;
     const nuevo = {
       id: "c" + Date.now(), nombre: nombre.trim(), telefono: telefono.trim(), pais: pais.trim(), estadoLlamada: null, resultado: null,
-      agenteId: user.id, fecha: todayStr(), aprobadoLider: null, idiomas: "", experiencia: "", llamado: false, contestado: false,
+      agenteId: user.id, fecha: todayStr(), loteId: Date.now(), loteHora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
+      aprobadoLider: null, idiomas: "", experiencia: "", llamado: false, contestado: false,
       eliminado: false, desechado: false, archivos: [], enviadoEntrevista: false, entrevistaAprobada: false, documentosAprobados: false,
       poligrafoAprobado: false, enviadoAAgente: false, fechaInicio: null,
     };
@@ -928,15 +947,18 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
     return true;
   });
 
-  const totalPaginas = Math.max(1, Math.ceil(filtrados.length / POR_PAGINA));
-  const paginaSegura = Math.min(pagina, totalPaginas);
-  const visibles = filtrados.slice((paginaSegura - 1) * POR_PAGINA, paginaSegura * POR_PAGINA);
-
-  const borrarPaginaAntigua = () => {
-    // Elimina (soft-delete) los contactos de la página 1 actual — la más antigua en la lista.
-    const idsPagina1 = filtrados.slice(0, POR_PAGINA).map((c) => c.id);
-    onUpdate(candidatos.map((c) => (idsPagina1.includes(c.id) ? { ...c, eliminado: true } : c)));
-  };
+  // Agrupa por "lote" (tanda de envío/actualización) — así se ve organizado por tandas,
+  // no todo el contenido junto en una sola página.
+  const gruposPorLote = {};
+  filtrados.forEach((c) => {
+    const key = String(c.loteId || "sin-lote");
+    if (!gruposPorLote[key]) gruposPorLote[key] = [];
+    gruposPorLote[key].push(c);
+  });
+  const lotesOrdenados = Object.keys(gruposPorLote).sort((a, b) => Number(b) - Number(a));
+  const loteMasReciente = lotesOrdenados[0];
+  const lotesAnteriores = lotesOrdenados.slice(1);
+  const totalAnteriores = lotesAnteriores.reduce((s, k) => s + gruposPorLote[k].length, 0);
 
   return (
     <div>
@@ -948,12 +970,12 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
           <NeonButton small onClick={() => cambiarDia(-1)}>← Día anterior</NeonButton>
           <input
             type="date" value={fechaSeleccionada}
-            onChange={(e) => { setFechaSeleccionada(e.target.value); setPagina(1); }}
+            onChange={(e) => { setFechaSeleccionada(e.target.value); setMostrarAnteriores(false); }}
             style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "8px 10px", color: COLORS.white, fontFamily: FONT_MONO, fontSize: 13, outline: "none" }}
           />
           <NeonButton small onClick={() => cambiarDia(1)}>Día siguiente →</NeonButton>
           {fechaSeleccionada !== todayStr() && (
-            <NeonButton small active onClick={() => { setFechaSeleccionada(todayStr()); setPagina(1); }}>Hoy</NeonButton>
+            <NeonButton small active onClick={() => { setFechaSeleccionada(todayStr()); setMostrarAnteriores(false); }}>Hoy</NeonButton>
           )}
         </div>
       </Card>
@@ -981,16 +1003,16 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
       <Card style={{ marginBottom: 14 }}>
         <CornerFrame color={COLORS.steel} size={12} thickness={2} />
         <input
-          value={busqueda} onChange={(e) => { setBusqueda(e.target.value); setPagina(1); }}
+          value={busqueda} onChange={(e) => { setBusqueda(e.target.value); setMostrarAnteriores(false); }}
           placeholder="Buscar por nombre o teléfono..."
           style={{ width: "100%", background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "9px 12px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 13, outline: "none", boxSizing: "border-box", marginBottom: 10 }}
         />
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <NeonButton small active={filtro === "todos"} onClick={() => { setFiltro("todos"); setPagina(1); }}>Todos</NeonButton>
-          <NeonButton small active={filtro === "pendientes"} onClick={() => { setFiltro("pendientes"); setPagina(1); }}>Pendientes por llamar</NeonButton>
-          <NeonButton small active={filtro === "no_contesto"} onClick={() => { setFiltro("no_contesto"); setPagina(1); }}>No contestó</NeonButton>
-          <NeonButton small active={filtro === "desechados"} onClick={() => { setFiltro("desechados"); setPagina(1); }}>Desechados</NeonButton>
-          <select value={filtroPais} onChange={(e) => { setFiltroPais(e.target.value); setPagina(1); }}
+          <NeonButton small active={filtro === "todos"} onClick={() => { setFiltro("todos"); setMostrarAnteriores(false); }}>Todos</NeonButton>
+          <NeonButton small active={filtro === "pendientes"} onClick={() => { setFiltro("pendientes"); setMostrarAnteriores(false); }}>Pendientes por llamar</NeonButton>
+          <NeonButton small active={filtro === "no_contesto"} onClick={() => { setFiltro("no_contesto"); setMostrarAnteriores(false); }}>No contestó</NeonButton>
+          <NeonButton small active={filtro === "desechados"} onClick={() => { setFiltro("desechados"); setMostrarAnteriores(false); }}>Desechados</NeonButton>
+          <select value={filtroPais} onChange={(e) => { setFiltroPais(e.target.value); setMostrarAnteriores(false); }}
             style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "7px 10px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 12, outline: "none" }}>
             <option value="todos">Todos los países</option>
             {paisesDisponibles.map((p) => <option key={p} value={p}>{p}</option>)}
@@ -1000,81 +1022,122 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
 
       {user.rol === "agente" && (
         <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-          <NeonButton small active={!verTodos} onClick={() => { setVerTodos(false); setPagina(1); }}>Mis asignados</NeonButton>
-          <NeonButton small active={verTodos} onClick={() => { setVerTodos(true); setPagina(1); }}>Ver todos</NeonButton>
+          <NeonButton small active={!verTodos} onClick={() => { setVerTodos(false); setMostrarAnteriores(false); }}>Mis asignados</NeonButton>
+          <NeonButton small active={verTodos} onClick={() => { setVerTodos(true); setMostrarAnteriores(false); }}>Ver todos</NeonButton>
         </div>
       )}
 
-      {visibles.length === 0 && (
+      {filtrados.length === 0 && (
         <Card><div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, textAlign: "center", padding: "10px 0" }}>No hay contactos que coincidan.</div></Card>
       )}
-      {visibles.map((c) => (
-        <Card key={c.id} style={{ marginBottom: 12 }}>
-          <CornerFrame color={COLORS.steel} size={14} thickness={2} />
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-            <div>
-              <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
-              <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
-                {c.telefono}{c.pais ? ` · ${c.pais}` : ""}{c.agenteId ? ` · asignado a ${USUARIOS_REALES.find((u) => u.id === c.agenteId)?.nombre || c.agenteId}` : ""}
+
+      {loteMasReciente && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonAmber, marginBottom: 10, letterSpacing: 1 }}>
+            🆕 RECIÉN ENVIADOS{gruposPorLote[loteMasReciente][0]?.loteHora ? ` — Actualización ${gruposPorLote[loteMasReciente][0].loteHora}` : ""} ({gruposPorLote[loteMasReciente].length})
+          </div>
+          {gruposPorLote[loteMasReciente].map((c) => (
+            <Card key={c.id} style={{ marginBottom: 12 }}>
+              <CornerFrame color={COLORS.steel} size={14} thickness={2} />
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
+                  <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
+                    {c.telefono}{c.pais ? ` · ${c.pais}` : ""}{c.agenteId ? ` · asignado a ${USUARIOS_REALES.find((u) => u.id === c.agenteId)?.nombre || c.agenteId}` : ""}
+                  </div>
+                  {(c.idiomas || c.experiencia) && (
+                    <div style={{ fontSize: 11, color: COLORS.neonBlue, fontFamily: FONT_MONO, marginTop: 4 }}>
+                      {c.idiomas ? `Idiomas: ${c.idiomas}` : ""}{c.idiomas && c.experiencia ? " · " : ""}{c.experiencia ? `Experiencia: ${c.experiencia}` : ""}
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                  {c.resultado && <Badge color={RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.color}>{RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.label}</Badge>}
+                  {c.desechado && <Badge color={COLORS.textMuted}>Desechado</Badge>}
+                  <button onClick={() => toggleDesechado(c.id)} title={c.desechado ? "Restaurar a la bandeja" : "Desechar (no se borra, solo se esconde)"} style={{ background: "none", border: "none", color: c.desechado ? COLORS.neonSuccess : COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>{c.desechado ? "↩" : "🗂"}</button>
+                  {esLider && (
+                    <button onClick={() => eliminarCandidato(c.id)} title="Enviar a la papelera" style={{ background: "none", border: "none", color: COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>🗑</button>
+                  )}
+                </div>
               </div>
-              {(c.idiomas || c.experiencia) && (
-                <div style={{ fontSize: 11, color: COLORS.neonBlue, fontFamily: FONT_MONO, marginTop: 4 }}>
-                  {c.idiomas ? `Idiomas: ${c.idiomas}` : ""}{c.idiomas && c.experiencia ? " · " : ""}{c.experiencia ? `Experiencia: ${c.experiencia}` : ""}
+              <div style={{ display: "flex", gap: 14, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${COLORS.border}`, flexWrap: "wrap" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.llamado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
+                  <input type="checkbox" checked={!!c.llamado} onChange={() => toggleLlamado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
+                  Llamado
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.contestado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
+                  <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
+                  Contestó
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.enviadoEntrevista ? COLORS.neonAmber : COLORS.textMuted, textTransform: "uppercase" }}>
+                  <input type="checkbox" checked={!!c.enviadoEntrevista} onChange={() => toggleEnviadoEntrevista(c.id)} style={{ accentColor: COLORS.neonAmber, width: 15, height: 15, cursor: "pointer" }} />
+                  Envió datos entrevista
+                </label>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                {ESTADOS_LLAMADA.map((e) => (
+                  <NeonButton key={e.id} small active={c.estadoLlamada === e.id} onClick={() => marcarLlamada(c.id, e.id)}>{e.label}</NeonButton>
+                ))}
+              </div>
+              {(c.estadoLlamada === "interesado" || c.estadoLlamada === "requisitos") && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, paddingTop: 8, borderTop: `1px solid ${COLORS.border}` }}>
+                  {RESULTADOS_FINALES.map((r) => (
+                    <button key={r.id} onClick={() => marcarResultado(c.id, r.id)} style={{
+                      fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 4, cursor: "pointer",
+                      background: c.resultado === r.id ? r.color + "22" : "transparent", border: `1px solid ${c.resultado === r.id ? r.color : COLORS.steel}`,
+                      color: c.resultado === r.id ? r.color : COLORS.textMuted, fontFamily: FONT_BODY, textTransform: "uppercase", letterSpacing: 0.3,
+                    }}>{r.label}</button>
+                  ))}
                 </div>
               )}
-            </div>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-              {c.resultado && <Badge color={RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.color}>{RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.label}</Badge>}
-              {c.desechado && <Badge color={COLORS.textMuted}>Desechado</Badge>}
-              <button onClick={() => toggleDesechado(c.id)} title={c.desechado ? "Restaurar a la bandeja" : "Desechar (no se borra, solo se esconde)"} style={{ background: "none", border: "none", color: c.desechado ? COLORS.neonSuccess : COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>{c.desechado ? "↩" : "🗂"}</button>
-              {esLider && (
-                <button onClick={() => eliminarCandidato(c.id)} title="Enviar a la papelera" style={{ background: "none", border: "none", color: COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>🗑</button>
-              )}
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 14, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${COLORS.border}`, flexWrap: "wrap" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.llamado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
-              <input type="checkbox" checked={!!c.llamado} onChange={() => toggleLlamado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
-              Llamado
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.contestado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
-              <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
-              Contestó
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.enviadoEntrevista ? COLORS.neonAmber : COLORS.textMuted, textTransform: "uppercase" }}>
-              <input type="checkbox" checked={!!c.enviadoEntrevista} onChange={() => toggleEnviadoEntrevista(c.id)} style={{ accentColor: COLORS.neonAmber, width: 15, height: 15, cursor: "pointer" }} />
-              Envió datos entrevista
-            </label>
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-            {ESTADOS_LLAMADA.map((e) => (
-              <NeonButton key={e.id} small active={c.estadoLlamada === e.id} onClick={() => marcarLlamada(c.id, e.id)}>{e.label}</NeonButton>
-            ))}
-          </div>
-          {(c.estadoLlamada === "interesado" || c.estadoLlamada === "requisitos") && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, paddingTop: 8, borderTop: `1px solid ${COLORS.border}` }}>
-              {RESULTADOS_FINALES.map((r) => (
-                <button key={r.id} onClick={() => marcarResultado(c.id, r.id)} style={{
-                  fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 4, cursor: "pointer",
-                  background: c.resultado === r.id ? r.color + "22" : "transparent", border: `1px solid ${c.resultado === r.id ? r.color : COLORS.steel}`,
-                  color: c.resultado === r.id ? r.color : COLORS.textMuted, fontFamily: FONT_BODY, textTransform: "uppercase", letterSpacing: 0.3,
-                }}>{r.label}</button>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {lotesAnteriores.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <NeonButton small onClick={() => setMostrarAnteriores(!mostrarAnteriores)}>
+            {mostrarAnteriores ? "Ocultar enviados anteriormente" : `Ver enviados anteriormente (${totalAnteriores} más, este día)`}
+          </NeonButton>
+          {mostrarAnteriores && lotesAnteriores.map((loteKey) => (
+            <div key={loteKey} style={{ marginTop: 16 }}>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginBottom: 10, letterSpacing: 1 }}>
+                Actualización {gruposPorLote[loteKey][0]?.loteHora || ""} ({gruposPorLote[loteKey].length})
+              </div>
+              {gruposPorLote[loteKey].map((c) => (
+                <Card key={c.id} style={{ marginBottom: 12 }}>
+                  <CornerFrame color={COLORS.steel} size={14} thickness={2} />
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
+                      <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
+                        {c.telefono}{c.pais ? ` · ${c.pais}` : ""}{c.agenteId ? ` · asignado a ${USUARIOS_REALES.find((u) => u.id === c.agenteId)?.nombre || c.agenteId}` : ""}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                      {c.resultado && <Badge color={RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.color}>{RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.label}</Badge>}
+                      <button onClick={() => toggleDesechado(c.id)} title={c.desechado ? "Restaurar" : "Desechar"} style={{ background: "none", border: "none", color: c.desechado ? COLORS.neonSuccess : COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>{c.desechado ? "↩" : "🗂"}</button>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.llamado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
+                      <input type="checkbox" checked={!!c.llamado} onChange={() => toggleLlamado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
+                      Llamado
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.contestado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
+                      <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
+                      Contestó
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.enviadoEntrevista ? COLORS.neonAmber : COLORS.textMuted, textTransform: "uppercase" }}>
+                      <input type="checkbox" checked={!!c.enviadoEntrevista} onChange={() => toggleEnviadoEntrevista(c.id)} style={{ accentColor: COLORS.neonAmber, width: 15, height: 15, cursor: "pointer" }} />
+                      Envió datos entrevista
+                    </label>
+                  </div>
+                </Card>
               ))}
             </div>
-          )}
-        </Card>
-      ))}
-
-      {filtrados.length > 0 && (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <NeonButton small onClick={() => setPagina((p) => Math.max(1, p - 1))} disabled={paginaSegura <= 1}>← Anterior</NeonButton>
-            <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>Página {paginaSegura} de {totalPaginas} ({filtrados.length} contactos)</span>
-            <NeonButton small onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))} disabled={paginaSegura >= totalPaginas}>Siguiente →</NeonButton>
-          </div>
-          {esLider && totalPaginas >= 10 && (
-            <NeonButton small onClick={borrarPaginaAntigua}>Borrar página más antigua (papelera)</NeonButton>
-          )}
+          ))}
         </div>
       )}
     </div>
@@ -1142,6 +1205,8 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
 
   const confirmarImportacion = () => {
     if (!borradores || borradores.length === 0) return;
+    const loteId = Date.now();
+    const loteHora = new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" });
     const nuevos = borradores.map((b, i) => ({
       id: "c" + Date.now() + "_" + i,
       nombre: b.nombre || "Sin nombre",
@@ -1151,6 +1216,8 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
       experiencia: b.experiencia || "",
       agenteId: b.agenteId,
       fecha: todayStr(),
+      loteId,
+      loteHora,
       estadoLlamada: null,
       resultado: null,
       aprobadoLider: null,
