@@ -915,11 +915,12 @@ function DashboardAgente({ user, tareas, candidatos }) {
   );
 }
 
-function TraficoView({ user, candidatos, onUpdate, esLider }) {
+function TraficoView({ user, candidatos, onUpdate, esLider, usuarios }) {
   const [nombre, setNombre] = useState("");
   const [telefono, setTelefono] = useState("");
   const [pais, setPais] = useState("");
   const [verTodos, setVerTodos] = useState(user.rol === "lider");
+  const [filtroAgenteTrafico, setFiltroAgenteTrafico] = useState("todos");
   const [busqueda, setBusqueda] = useState("");
   const [filtro, setFiltro] = useState("todos");
   const [filtroPais, setFiltroPais] = useState("todos");
@@ -938,14 +939,27 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
   const toggleLlamado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, llamado: !c.llamado } : c)));
   const toggleContestado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, contestado: !c.contestado } : c)));
   const toggleDesechado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, desechado: !c.desechado } : c)));
-  const toggleEnviadoEntrevista = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, enviadoEntrevista: !c.enviadoEntrevista, fechaEnvioEntrevista: !c.enviadoEntrevista ? Date.now() : null } : c)));
+  // Al enviar al líder: el candidato NUNCA se quita ni se modifica en Tráfico — se queda exactamente
+  // igual ahí, solo se marca para que también aparezca en "Candidatos" (líder y agente lo ven ahí).
+  const toggleEnviadoEntrevista = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? {
+    ...c, enviadoEntrevista: !c.enviadoEntrevista, fechaEnvioEntrevista: !c.enviadoEntrevista ? Date.now() : null,
+    ultimaEtapaVista: !c.enviadoEntrevista ? "entrevista" : c.ultimaEtapaVista,
+  } : c)));
   const eliminarCandidato = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, eliminado: true } : c)));
 
   const agregarCandidato = () => {
     if (!nombre.trim() || !telefono.trim()) return;
+    // Se suma a la tanda de HOY que ya exista (si hay una), para no crear una tanda nueva
+    // que esconda a los que ya estaban visibles como "Recién enviados".
+    const candidatosHoy = candidatos.filter((c) => c.fecha === todayStr() && c.agenteId === user.id);
+    const loteExistente = candidatosHoy.length > 0
+      ? candidatosHoy.reduce((mas, c) => (Number(c.loteId) > Number(mas.loteId) ? c : mas), candidatosHoy[0])
+      : null;
+    const loteId = loteExistente ? loteExistente.loteId : Date.now();
+    const loteHora = loteExistente ? loteExistente.loteHora : new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" });
     const nuevo = {
       id: "c" + Date.now(), nombre: nombre.trim(), telefono: telefono.trim(), pais: pais.trim(), estadoLlamada: null, resultado: null,
-      agenteId: user.id, fecha: todayStr(), loteId: Date.now(), loteHora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
+      agenteId: user.id, fecha: todayStr(), loteId, loteHora,
       aprobadoLider: null, idiomas: "", experiencia: "", llamado: false, contestado: false,
       eliminado: false, desechado: false, archivos: [], enviadoEntrevista: false, entrevistaAprobada: false, documentosAprobados: false,
       poligrafoAprobado: false, enviadoAAgente: false, fechaInicio: null, comentarios: [], documentos: [],
@@ -959,10 +973,15 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
   const asignadosOTodos = (user.rol === "agente" && !verTodos) ? activos.filter((c) => c.agenteId === user.id) : activos;
 
   const paisesDisponibles = Array.from(new Set(activos.map((c) => c.pais).filter(Boolean))).sort();
+  const agentesDisponibles = usuarios ? usuarios.filter((u) => u.rol === "agente") : [];
 
   const filtrados = asignadosOTodos.filter((c) => {
     if (c.fecha !== fechaSeleccionada) return false; // páginas por día
     if (filtro !== "desechados" && c.desechado) return false; // ocultos por defecto, no borrados
+    if (esLider) {
+      if (filtroAgenteTrafico === "mios" && c.agenteId !== user.id) return false;
+      if (filtroAgenteTrafico !== "todos" && filtroAgenteTrafico !== "mios" && c.agenteId !== filtroAgenteTrafico) return false;
+    }
     if (busqueda.trim()) {
       const q = busqueda.trim().toLowerCase();
       if (!c.nombre.toLowerCase().includes(q) && !c.telefono.toLowerCase().includes(q)) return false;
@@ -1100,6 +1119,14 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
             <option value="todos">Todos los países</option>
             {paisesDisponibles.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
+          {esLider && (
+            <select value={filtroAgenteTrafico} onChange={(e) => { setFiltroAgenteTrafico(e.target.value); setMostrarAnteriores(false); }}
+              style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.neonRed}`, borderRadius: 4, padding: "7px 10px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 12, outline: "none" }}>
+              <option value="todos">Todos los agentes</option>
+              <option value="mios">Solo los míos</option>
+              {agentesDisponibles.map((a) => <option key={a.id} value={a.id}>{a.nombre}</option>)}
+            </select>
+          )}
         </div>
       </Card>
 
@@ -1152,10 +1179,11 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
                   <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
                   Contestó
                 </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.enviadoEntrevista ? COLORS.neonAmber : COLORS.textMuted, textTransform: "uppercase" }}>
-                  <input type="checkbox" checked={!!c.enviadoEntrevista} onChange={() => toggleEnviadoEntrevista(c.id)} style={{ accentColor: COLORS.neonAmber, width: 15, height: 15, cursor: "pointer" }} />
-                  Envió datos entrevista
-                </label>
+                {c.enviadoEntrevista ? (
+                  <Badge color={COLORS.neonAmber}>✓ Enviado al líder</Badge>
+                ) : (
+                  <NeonButton small active onClick={() => toggleEnviadoEntrevista(c.id)}>Enviar al líder →</NeonButton>
+                )}
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
                 {ESTADOS_LLAMADA.map((e) => (
@@ -1212,10 +1240,11 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
                       <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
                       Contestó
                     </label>
-                    <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.enviadoEntrevista ? COLORS.neonAmber : COLORS.textMuted, textTransform: "uppercase" }}>
-                      <input type="checkbox" checked={!!c.enviadoEntrevista} onChange={() => toggleEnviadoEntrevista(c.id)} style={{ accentColor: COLORS.neonAmber, width: 15, height: 15, cursor: "pointer" }} />
-                      Envió datos entrevista
-                    </label>
+                    {c.enviadoEntrevista ? (
+                      <Badge color={COLORS.neonAmber}>✓ Enviado al líder</Badge>
+                    ) : (
+                      <NeonButton small active onClick={() => toggleEnviadoEntrevista(c.id)}>Enviar al líder →</NeonButton>
+                    )}
                   </div>
                 </Card>
               ))}
@@ -2538,7 +2567,7 @@ export default function LaCupula() {
       <div style={{ flex: 1, padding: isMobile ? "16px" : "28px 32px", overflowY: "auto", minWidth: 0, boxSizing: "border-box" }}>
         {active === "dashboard" && session.rol === "lider" && <DashboardLider candidatos={candidatos} tareas={tareas} usuarios={users} />}
         {active === "dashboard" && session.rol === "agente" && <DashboardAgente user={session} tareas={tareas} candidatos={candidatos} />}
-        {active === "trafico" && <TraficoView user={session} candidatos={candidatos} onUpdate={updateCandidatos} esLider={session.rol === "lider"} />}
+        {active === "trafico" && <TraficoView user={session} candidatos={candidatos} onUpdate={updateCandidatos} esLider={session.rol === "lider"} usuarios={users} />}
         {active === "importar" && session.rol === "lider" && (
           <ImportarContactosView
             candidatos={candidatos} onUpdateCandidatos={updateCandidatos} puntero={puntero} onUpdatePuntero={updatePuntero}
