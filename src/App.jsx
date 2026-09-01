@@ -987,7 +987,6 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
   const lotesAnteriores = lotesOrdenados.slice(1);
   const totalAnteriores = lotesAnteriores.reduce((s, k) => s + gruposPorLote[k].length, 0);
 
-  const [textoExportado, setTextoExportado] = useState(null);
   const [copiado, setCopiado] = useState(false);
 
   const estadoParaExportar = (c) => {
@@ -997,17 +996,38 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
     return "";
   };
 
+  // Copia todo de un solo clic. Esto NUNCA modifica ni borra nada de Tráfico —
+  // solo LEE los datos para armar el texto, la lista de candidatos se queda exactamente igual.
   const exportarAGoogleSheets = () => {
     const filas = filtrados.map((c) => [c.nombre, c.telefono, c.experiencia || "", estadoParaExportar(c)].join("\t"));
     const texto = filas.join("\n");
-    setTextoExportado(texto);
-    setCopiado(false);
+
+    const marcarCopiado = () => { setCopiado(true); setTimeout(() => setCopiado(false), 2500); };
+
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(texto).then(() => {
-        setCopiado(true);
-        setTimeout(() => setCopiado(false), 3000);
-      }).catch(() => {});
+      navigator.clipboard.writeText(texto).then(marcarCopiado).catch(() => copiarConRespaldo(texto, marcarCopiado));
+    } else {
+      copiarConRespaldo(texto, marcarCopiado);
     }
+  };
+
+  // Respaldo invisible (no se ve nada en la pantalla, no toca Tráfico para nada) —
+  // solo si el copiado automático normal no funciona en ese navegador.
+  const copiarConRespaldo = (texto, marcarCopiado) => {
+    const areaTemporal = document.createElement("textarea");
+    areaTemporal.value = texto;
+    areaTemporal.style.position = "fixed";
+    areaTemporal.style.left = "-9999px";
+    document.body.appendChild(areaTemporal);
+    areaTemporal.focus();
+    areaTemporal.select();
+    try {
+      document.execCommand("copy");
+      marcarCopiado();
+    } catch (e) {
+      window.prompt("No se pudo copiar solo — copia este texto manualmente (ya está seleccionado, solo Ctrl+C):", texto);
+    }
+    document.body.removeChild(areaTemporal);
   };
 
   return (
@@ -1034,24 +1054,13 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
         <CornerFrame color={COLORS.neonSuccess} size={12} thickness={2} />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
           <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted }}>
-            Exporta lo del día seleccionado ({filtrados.length} contacto{filtrados.length === 1 ? "" : "s"}) listo para pegar en Google Sheets.
+            Copia lo del día seleccionado ({filtrados.length} contacto{filtrados.length === 1 ? "" : "s"}) — Tráfico no cambia, solo se copia.
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {copiado && <Badge color={COLORS.neonSuccess}>Copiado ✓</Badge>}
+            {copiado && <Badge color={COLORS.neonSuccess}>Copiado ✓ — pégalo en Sheets</Badge>}
             <NeonButton small active onClick={exportarAGoogleSheets}>📋 Copiar para Google Sheets</NeonButton>
           </div>
         </div>
-        {textoExportado !== null && (
-          <div style={{ marginTop: 10 }}>
-            <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, marginBottom: 4 }}>
-              Si no se copió solo, selecciona todo el texto de aquí abajo (clic dentro → Ctrl+A → Ctrl+C) y pégalo en Sheets:
-            </div>
-            <textarea
-              readOnly value={textoExportado} rows={4} onFocus={(e) => e.target.select()}
-              style={{ width: "100%", background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "8px 10px", color: COLORS.white, fontFamily: FONT_MONO, fontSize: 11, outline: "none", boxSizing: "border-box", resize: "vertical" }}
-            />
-          </div>
-        )}
       </Card>
 
       {user.rol === "agente" && (
