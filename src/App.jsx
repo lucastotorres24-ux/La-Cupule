@@ -948,7 +948,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
       agenteId: user.id, fecha: todayStr(), loteId: Date.now(), loteHora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
       aprobadoLider: null, idiomas: "", experiencia: "", llamado: false, contestado: false,
       eliminado: false, desechado: false, archivos: [], enviadoEntrevista: false, entrevistaAprobada: false, documentosAprobados: false,
-      poligrafoAprobado: false, enviadoAAgente: false, fechaInicio: null,
+      poligrafoAprobado: false, enviadoAAgente: false, fechaInicio: null, comentarios: [], documentos: [],
     };
     onUpdate([nuevo, ...candidatos]);
     setNombre(""); setTelefono(""); setPais("");
@@ -987,6 +987,29 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
   const lotesAnteriores = lotesOrdenados.slice(1);
   const totalAnteriores = lotesAnteriores.reduce((s, k) => s + gruposPorLote[k].length, 0);
 
+  const [textoExportado, setTextoExportado] = useState(null);
+  const [copiado, setCopiado] = useState(false);
+
+  const estadoParaExportar = (c) => {
+    if (c.enviadoEntrevista) return "Se envió a entrevista";
+    if (c.contestado) return "Contestó";
+    if (c.llamado) return "No contestó";
+    return "";
+  };
+
+  const exportarAGoogleSheets = () => {
+    const filas = filtrados.map((c) => [c.nombre, c.telefono, c.experiencia || "", estadoParaExportar(c)].join("\t"));
+    const texto = filas.join("\n");
+    setTextoExportado(texto);
+    setCopiado(false);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(texto).then(() => {
+        setCopiado(true);
+        setTimeout(() => setCopiado(false), 3000);
+      }).catch(() => {});
+    }
+  };
+
   return (
     <div>
       <SectionTitle>Tráfico de contactos</SectionTitle>
@@ -1005,6 +1028,30 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
             <NeonButton small active onClick={() => { setFechaSeleccionada(todayStr()); setMostrarAnteriores(false); }}>Hoy</NeonButton>
           )}
         </div>
+      </Card>
+
+      <Card style={{ marginBottom: 14 }}>
+        <CornerFrame color={COLORS.neonSuccess} size={12} thickness={2} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted }}>
+            Exporta lo del día seleccionado ({filtrados.length} contacto{filtrados.length === 1 ? "" : "s"}) listo para pegar en Google Sheets.
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {copiado && <Badge color={COLORS.neonSuccess}>Copiado ✓</Badge>}
+            <NeonButton small active onClick={exportarAGoogleSheets}>📋 Copiar para Google Sheets</NeonButton>
+          </div>
+        </div>
+        {textoExportado !== null && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, marginBottom: 4 }}>
+              Si no se copió solo, selecciona todo el texto de aquí abajo (clic dentro → Ctrl+A → Ctrl+C) y pégalo en Sheets:
+            </div>
+            <textarea
+              readOnly value={textoExportado} rows={4} onFocus={(e) => e.target.select()}
+              style={{ width: "100%", background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "8px 10px", color: COLORS.white, fontFamily: FONT_MONO, fontSize: 11, outline: "none", boxSizing: "border-box", resize: "vertical" }}
+            />
+          </div>
+        )}
       </Card>
 
       {user.rol === "agente" && (
@@ -1259,6 +1306,8 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
       poligrafoAprobado: false,
       enviadoAAgente: false,
       fechaInicio: null,
+      comentarios: [],
+      documentos: [],
     }));
     onUpdateCandidatos([...nuevos, ...candidatos]);
     onUpdatePuntero((puntero + borradores.length) % presentes.length);
@@ -1454,6 +1503,89 @@ function etapaDe(c) {
   return "entrevista";
 }
 
+function ComentariosYDocumentos({ user, candidato, onActualizar }) {
+  const [texto, setTexto] = useState("");
+  const [errorArchivo, setErrorArchivo] = useState("");
+  const [abierto, setAbierto] = useState(false);
+
+  const comentarios = candidato.comentarios || [];
+  const documentos = candidato.documentos || [];
+
+  const enviarComentario = () => {
+    if (!texto.trim()) return;
+    const nuevo = { id: "cm" + Date.now(), autorId: user.id, autorNombre: user.nombre, texto: texto.trim(), ts: Date.now() };
+    onActualizar(candidato.id, "comentarios", [...comentarios, nuevo]);
+    setTexto("");
+  };
+
+  const onArchivoSeleccionado = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const leido = await leerArchivoComoDataUrl(file);
+      const nuevo = { id: "doc" + Date.now(), ...leido, subidoPor: user.nombre, ts: Date.now() };
+      onActualizar(candidato.id, "documentos", [...documentos, nuevo]);
+      setErrorArchivo("");
+    } catch (err) {
+      setErrorArchivo(err.message);
+    }
+    e.target.value = "";
+  };
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${COLORS.border}55` }}>
+      <button onClick={() => setAbierto(!abierto)} style={{
+        background: "none", border: "none", color: COLORS.neonBlue, fontFamily: FONT_MONO, fontSize: 11,
+        cursor: "pointer", letterSpacing: 0.5, padding: 0,
+      }}>
+        {abierto ? "▾" : "▸"} Comentarios ({comentarios.length}) y documentos ({documentos.length})
+      </button>
+
+      {abierto && (
+        <div style={{ marginTop: 10 }}>
+          {documentos.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+              {documentos.map((d) => (
+                <div key={d.id}>
+                  <AdjuntoChip archivo={d} />
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: COLORS.textMuted, marginTop: 2 }}>{d.subidoPor}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          <label style={{
+            display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", border: `1px solid ${COLORS.steel}`,
+            borderRadius: 4, color: COLORS.textMuted, cursor: "pointer", fontFamily: FONT_MONO, fontSize: 11, marginBottom: 12,
+          }}>
+            📎 Adjuntar documento
+            <input type="file" onChange={onArchivoSeleccionado} style={{ display: "none" }} />
+          </label>
+          {errorArchivo && <div style={{ color: COLORS.neonRed, fontSize: 11, marginBottom: 8, fontFamily: FONT_MONO }}>{errorArchivo}</div>}
+
+          {comentarios.map((cm) => (
+            <div key={cm.id} style={{ marginBottom: 8 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                <span style={{ fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: cm.autorId === "corleone1" ? COLORS.neonRed : COLORS.neonBlue, textTransform: "uppercase" }}>{cm.autorNombre}</span>
+                <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: COLORS.textMuted }}>{new Date(cm.ts).toLocaleString("es-CO", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+              </div>
+              <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.white }}>{cm.texto}</div>
+            </div>
+          ))}
+
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <input
+              value={texto} onChange={(e) => setTexto(e.target.value)} onKeyDown={(e) => e.key === "Enter" && enviarComentario()}
+              placeholder="Escribe un comentario..."
+              style={{ flex: 1, background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "8px 10px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 13, outline: "none" }}
+            />
+            <NeonButton small active onClick={enviarComentario}>Enviar</NeonButton>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CandidatosView({ user, candidatos, onUpdate, usuarios }) {
   const [filtroEtapa, setFiltroEtapa] = useState("todos");
   const [filtroAgente, setFiltroAgente] = useState("todos");
@@ -1581,6 +1713,7 @@ function CandidatosView({ user, candidatos, onUpdate, usuarios }) {
                 )}
               </div>
             )}
+            <ComentariosYDocumentos user={user} candidato={c} onActualizar={actualizar} />
           </Card>
         );
       })}
