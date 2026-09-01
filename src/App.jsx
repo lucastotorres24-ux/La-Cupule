@@ -790,7 +790,7 @@ function SectionTitle({ children }) {
 
 function progresoDiario(candidatos, agenteId) {
   const hoy = todayStr();
-  return candidatos.filter((c) => c.agenteId === agenteId && c.fecha === hoy && c.resultado === "apto").length;
+  return candidatos.filter((c) => c.agenteId === agenteId && c.fecha === hoy && c.enviadoEntrevista).length;
 }
 
 function DashboardLider({ candidatos, tareas, usuarios }) {
@@ -949,19 +949,16 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios }) {
 
   const agregarCandidato = () => {
     if (!nombre.trim() || !telefono.trim()) return;
-    // Se suma a la tanda de HOY que ya exista (si hay una), para no crear una tanda nueva
-    // que esconda a los que ya estaban visibles como "Recién enviados".
-    const candidatosHoy = candidatos.filter((c) => c.fecha === todayStr() && c.agenteId === user.id);
-    const loteExistente = candidatosHoy.length > 0
-      ? candidatosHoy.reduce((mas, c) => (Number(c.loteId) > Number(mas.loteId) ? c : mas), candidatosHoy[0])
-      : null;
-    const loteId = loteExistente ? loteExistente.loteId : Date.now();
-    const loteHora = loteExistente ? loteExistente.loteHora : new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" });
+    // Los agregados a mano van DIRECTO a "Candidatos" (ya vienen calientes, no pasan por el
+    // proceso de Tráfico) y cuentan de una vez para la cuota de los 3 diarios. Se marcan como
+    // "agregadoManual" para que nunca se mezclen ni tapen las tandas que manda el líder.
     const nuevo = {
       id: "c" + Date.now(), nombre: nombre.trim(), telefono: telefono.trim(), pais: pais.trim(), estadoLlamada: null, resultado: null,
-      agenteId: user.id, fecha: todayStr(), loteId, loteHora,
-      aprobadoLider: null, idiomas: "", experiencia: "", llamado: false, contestado: false,
-      eliminado: false, desechado: false, archivos: [], enviadoEntrevista: false, entrevistaAprobada: false, documentosAprobados: false,
+      agenteId: user.id, fecha: todayStr(), loteId: Date.now(), loteHora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
+      agregadoManual: true,
+      aprobadoLider: null, idiomas: "", experiencia: "", llamado: true, contestado: true,
+      eliminado: false, desechado: false, archivos: [], enviadoEntrevista: true, fechaEnvioEntrevista: Date.now(), ultimaEtapaVista: "entrevista",
+      entrevistaAprobada: false, documentosAprobados: false,
       poligrafoAprobado: false, enviadoAAgente: false, fechaInicio: null, comentarios: [], documentos: [],
     };
     onUpdate([nuevo, ...candidatos]);
@@ -993,10 +990,15 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios }) {
     return true;
   });
 
+  // Los agregados a mano NUNCA entran al sistema de tandas del líder — van en su propia
+  // sección fija, para que sea imposible que tapen o se mezclen con lo que manda el líder.
+  const agregadosManualHoy = filtrados.filter((c) => c.agregadoManual);
+  const filtradosImportados = filtrados.filter((c) => !c.agregadoManual);
+
   // Agrupa por "lote" (tanda de envío/actualización) — así se ve organizado por tandas,
-  // no todo el contenido junto en una sola página.
+  // no todo el contenido junto en una sola página. Solo aplica a lo que manda el líder.
   const gruposPorLote = {};
-  filtrados.forEach((c) => {
+  filtradosImportados.forEach((c) => {
     const key = String(c.loteId || "sin-lote");
     if (!gruposPorLote[key]) gruposPorLote[key] = [];
     gruposPorLote[key].push(c);
@@ -1139,6 +1141,28 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios }) {
 
       {filtrados.length === 0 && (
         <Card><div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, textAlign: "center", padding: "10px 0" }}>No hay contactos que coincidan.</div></Card>
+      )}
+
+      {agregadosManualHoy.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonSuccess, marginBottom: 10, letterSpacing: 1 }}>
+            ✋ AGREGADOS POR TI HOY — ya están en Candidatos ({agregadosManualHoy.length})
+          </div>
+          {agregadosManualHoy.map((c) => (
+            <Card key={c.id} style={{ marginBottom: 12 }}>
+              <CornerFrame color={COLORS.neonSuccess} size={14} thickness={2} />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
+                  <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
+                    {c.telefono}{c.pais ? ` · ${c.pais}` : ""}
+                  </div>
+                </div>
+                <Badge color={COLORS.neonSuccess}>✓ En Candidatos</Badge>
+              </div>
+            </Card>
+          ))}
+        </div>
       )}
 
       {loteMasReciente && (
