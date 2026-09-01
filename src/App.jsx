@@ -1680,6 +1680,15 @@ function CandidatosView({ user, candidatos, onUpdate, usuarios }) {
   const marcarPoligrafo = (c, val) => actualizar(c.id, "poligrafoAprobado", val);
   const enviarAAgente = (c) => actualizar(c.id, "enviadoAAgente", true);
   const setFechaInicio = (c, val) => actualizar(c.id, "fechaInicio", val);
+  // Saca al candidato del pipeline de Candidatos (ej. no pasó documentos, no siguió, etc.)
+  // No lo borra de la app — solo lo regresa a Tráfico, reseteando su avance en el proceso.
+  const sacarDeCandidatos = (c) => {
+    if (!window.confirm(`¿Sacar a ${c.nombre} de Candidatos? Vuelve a Tráfico, no se borra del todo.`)) return;
+    onUpdate(candidatos.map((x) => (x.id === c.id ? {
+      ...x, enviadoEntrevista: false, entrevistaAprobada: false, documentosAprobados: false,
+      poligrafoAprobado: false, enviadoAAgente: false, fechaInicio: null,
+    } : x)));
+  };
 
   return (
     <div>
@@ -1728,7 +1737,12 @@ function CandidatosView({ user, candidatos, onUpdate, usuarios }) {
                   {c.telefono} · Agente: {nombreDe(c.agenteId)}
                 </div>
               </div>
-              <Badge color={ETAPAS_PIPELINE.find((e) => e.id === etapa)?.color}>{ETAPAS_PIPELINE.find((e) => e.id === etapa)?.label}</Badge>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <Badge color={ETAPAS_PIPELINE.find((e) => e.id === etapa)?.color}>{ETAPAS_PIPELINE.find((e) => e.id === etapa)?.label}</Badge>
+                {user.rol === "lider" && (
+                  <button onClick={() => sacarDeCandidatos(c)} title="Sacar de Candidatos (no pasó, no siguió, etc.)" style={{ background: "none", border: "none", color: COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>🗑</button>
+                )}
+              </div>
             </div>
 
             {user.rol === "lider" ? (
