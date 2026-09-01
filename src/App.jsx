@@ -2234,20 +2234,18 @@ const ENLACES_IA_WEB = [
 ];
 
 async function preguntarCupulaAI(historial) {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  // Le pregunta al servidor de Vercel (api/chat.js), que es quien tiene la llave escondida
+  // y le habla a Gemini de verdad — la página nunca ve ni maneja la llave directamente.
+  const response = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1000,
-      system: "Eres Cúpula AI, la asistente virtual interna de La Cúpula (NYC 420 Style), una plataforma de gestión para un equipo de ventas de un líder y cinco agentes. Ayudas con dudas de reclutamiento, ventas, redacción de mensajes, organización de tareas y preguntas generales. Sé breve, directa y con un tono profesional pero cercano, en español.",
       messages: historial.map((m) => ({ role: m.autor === "usuario" ? "user" : "assistant", content: m.texto })),
     }),
   });
   const data = await response.json();
-  if (data.error) throw new Error(data.error.message || "Error de la API");
-  const textBlock = data.content.find((b) => b.type === "text");
-  return textBlock ? textBlock.text : "(sin respuesta)";
+  if (data.error) throw new Error(data.error);
+  return data.text || "(sin respuesta)";
 }
 
 function CupulaAIView({ user }) {
