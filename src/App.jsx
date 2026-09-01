@@ -915,7 +915,7 @@ function DashboardAgente({ user, tareas, candidatos }) {
   );
 }
 
-function TraficoView({ user, candidatos, onUpdate, esLider, usuarios }) {
+function TraficoView({ user, candidatos, onUpdate, esLider, usuarios, onUpdateUsuarios }) {
   const [nombre, setNombre] = useState("");
   const [telefono, setTelefono] = useState("");
   const [pais, setPais] = useState("");
@@ -939,12 +939,27 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios }) {
   const toggleLlamado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, llamado: !c.llamado } : c)));
   const toggleContestado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, contestado: !c.contestado } : c)));
   const toggleDesechado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, desechado: !c.desechado } : c)));
+
+  // Puntos automáticos por enviar a entrevista: +15 siempre, y +20 extra la vez que se
+  // completa la cuota de 3 al día (solo una vez ese día, no se repite).
+  const otorgarPuntosPorEnvio = (agenteId, listaCandidatosActual) => {
+    if (!onUpdateUsuarios || !usuarios) return;
+    const enviadosHoyAntes = progresoDiario(listaCandidatosActual, agenteId);
+    let extra = 15;
+    if (enviadosHoyAntes + 1 === 3) extra += 20; // bono por completar la cuota justo con este envío
+    onUpdateUsuarios(usuarios.map((u) => (u.id === agenteId ? { ...u, puntos: u.puntos + extra } : u)));
+  };
+
   // Al enviar al líder: el candidato NUNCA se quita ni se modifica en Tráfico — se queda exactamente
   // igual ahí, solo se marca para que también aparezca en "Candidatos" (líder y agente lo ven ahí).
-  const toggleEnviadoEntrevista = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? {
-    ...c, enviadoEntrevista: !c.enviadoEntrevista, fechaEnvioEntrevista: !c.enviadoEntrevista ? Date.now() : null,
-    ultimaEtapaVista: !c.enviadoEntrevista ? "entrevista" : c.ultimaEtapaVista,
-  } : c)));
+  const toggleEnviadoEntrevista = (candId) => {
+    const c = candidatos.find((x) => x.id === candId);
+    if (c && !c.enviadoEntrevista) otorgarPuntosPorEnvio(c.agenteId, candidatos);
+    onUpdate(candidatos.map((x) => (x.id === candId ? {
+      ...x, enviadoEntrevista: !x.enviadoEntrevista, fechaEnvioEntrevista: !x.enviadoEntrevista ? Date.now() : null,
+      ultimaEtapaVista: !x.enviadoEntrevista ? "entrevista" : x.ultimaEtapaVista,
+    } : x)));
+  };
   const eliminarCandidato = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, eliminado: true } : c)));
 
   const agregarCandidato = () => {
@@ -961,6 +976,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios }) {
       entrevistaAprobada: false, documentosAprobados: false,
       poligrafoAprobado: false, enviadoAAgente: false, fechaInicio: null, comentarios: [], documentos: [],
     };
+    otorgarPuntosPorEnvio(user.id, candidatos);
     onUpdate([nuevo, ...candidatos]);
     setNombre(""); setTelefono(""); setPais("");
   };
@@ -1050,6 +1066,64 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios }) {
     }
     document.body.removeChild(areaTemporal);
   };
+
+  const renderTarjetaCandidato = (c) => (
+    <Card key={c.id} style={{ marginBottom: 12 }}>
+      <CornerFrame color={COLORS.steel} size={14} thickness={2} />
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
+          <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
+            {c.telefono}{c.pais ? ` · ${c.pais}` : ""}{c.agenteId ? ` · asignado a ${USUARIOS_REALES.find((u) => u.id === c.agenteId)?.nombre || c.agenteId}` : ""}
+          </div>
+          {(c.idiomas || c.experiencia) && (
+            <div style={{ fontSize: 11, color: COLORS.neonBlue, fontFamily: FONT_MONO, marginTop: 4 }}>
+              {c.idiomas ? `Idiomas: ${c.idiomas}` : ""}{c.idiomas && c.experiencia ? " · " : ""}{c.experiencia ? `Experiencia: ${c.experiencia}` : ""}
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+          {c.resultado && <Badge color={RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.color}>{RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.label}</Badge>}
+          {c.desechado && <Badge color={COLORS.textMuted}>Desechado</Badge>}
+          <button onClick={() => toggleDesechado(c.id)} title={c.desechado ? "Restaurar a la bandeja" : "Desechar (no se borra, solo se esconde)"} style={{ background: "none", border: "none", color: c.desechado ? COLORS.neonSuccess : COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>{c.desechado ? "↩" : "🗂"}</button>
+          {esLider && (
+            <button onClick={() => eliminarCandidato(c.id)} title="Enviar a la papelera" style={{ background: "none", border: "none", color: COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>🗑</button>
+          )}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 14, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${COLORS.border}`, flexWrap: "wrap" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.llamado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
+          <input type="checkbox" checked={!!c.llamado} onChange={() => toggleLlamado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
+          Llamado
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.contestado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
+          <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
+          Contestó
+        </label>
+        {c.enviadoEntrevista ? (
+          <Badge color={COLORS.neonAmber}>✓ Enviado al líder</Badge>
+        ) : (
+          <NeonButton small active onClick={() => toggleEnviadoEntrevista(c.id)}>Enviar al líder →</NeonButton>
+        )}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+        {ESTADOS_LLAMADA.map((e) => (
+          <NeonButton key={e.id} small active={c.estadoLlamada === e.id} onClick={() => marcarLlamada(c.id, e.id)}>{e.label}</NeonButton>
+        ))}
+      </div>
+      {(c.estadoLlamada === "interesado" || c.estadoLlamada === "requisitos") && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, paddingTop: 8, borderTop: `1px solid ${COLORS.border}` }}>
+          {RESULTADOS_FINALES.map((r) => (
+            <button key={r.id} onClick={() => marcarResultado(c.id, r.id)} style={{
+              fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 4, cursor: "pointer",
+              background: c.resultado === r.id ? r.color + "22" : "transparent", border: `1px solid ${c.resultado === r.id ? r.color : COLORS.steel}`,
+              color: c.resultado === r.id ? r.color : COLORS.textMuted, fontFamily: FONT_BODY, textTransform: "uppercase", letterSpacing: 0.3,
+            }}>{r.label}</button>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
 
   return (
     <div>
@@ -1170,63 +1244,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios }) {
           <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonAmber, marginBottom: 10, letterSpacing: 1 }}>
             🆕 RECIÉN ENVIADOS{gruposPorLote[loteMasReciente][0]?.loteHora ? ` — Actualización ${gruposPorLote[loteMasReciente][0].loteHora}` : ""} ({gruposPorLote[loteMasReciente].length})
           </div>
-          {gruposPorLote[loteMasReciente].map((c) => (
-            <Card key={c.id} style={{ marginBottom: 12 }}>
-              <CornerFrame color={COLORS.steel} size={14} thickness={2} />
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                <div>
-                  <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
-                  <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
-                    {c.telefono}{c.pais ? ` · ${c.pais}` : ""}{c.agenteId ? ` · asignado a ${USUARIOS_REALES.find((u) => u.id === c.agenteId)?.nombre || c.agenteId}` : ""}
-                  </div>
-                  {(c.idiomas || c.experiencia) && (
-                    <div style={{ fontSize: 11, color: COLORS.neonBlue, fontFamily: FONT_MONO, marginTop: 4 }}>
-                      {c.idiomas ? `Idiomas: ${c.idiomas}` : ""}{c.idiomas && c.experiencia ? " · " : ""}{c.experiencia ? `Experiencia: ${c.experiencia}` : ""}
-                    </div>
-                  )}
-                </div>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                  {c.resultado && <Badge color={RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.color}>{RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.label}</Badge>}
-                  {c.desechado && <Badge color={COLORS.textMuted}>Desechado</Badge>}
-                  <button onClick={() => toggleDesechado(c.id)} title={c.desechado ? "Restaurar a la bandeja" : "Desechar (no se borra, solo se esconde)"} style={{ background: "none", border: "none", color: c.desechado ? COLORS.neonSuccess : COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>{c.desechado ? "↩" : "🗂"}</button>
-                  {esLider && (
-                    <button onClick={() => eliminarCandidato(c.id)} title="Enviar a la papelera" style={{ background: "none", border: "none", color: COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>🗑</button>
-                  )}
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 14, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${COLORS.border}`, flexWrap: "wrap" }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.llamado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
-                  <input type="checkbox" checked={!!c.llamado} onChange={() => toggleLlamado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
-                  Llamado
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.contestado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
-                  <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
-                  Contestó
-                </label>
-                {c.enviadoEntrevista ? (
-                  <Badge color={COLORS.neonAmber}>✓ Enviado al líder</Badge>
-                ) : (
-                  <NeonButton small active onClick={() => toggleEnviadoEntrevista(c.id)}>Enviar al líder →</NeonButton>
-                )}
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-                {ESTADOS_LLAMADA.map((e) => (
-                  <NeonButton key={e.id} small active={c.estadoLlamada === e.id} onClick={() => marcarLlamada(c.id, e.id)}>{e.label}</NeonButton>
-                ))}
-              </div>
-              {(c.estadoLlamada === "interesado" || c.estadoLlamada === "requisitos") && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, paddingTop: 8, borderTop: `1px solid ${COLORS.border}` }}>
-                  {RESULTADOS_FINALES.map((r) => (
-                    <button key={r.id} onClick={() => marcarResultado(c.id, r.id)} style={{
-                      fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 4, cursor: "pointer",
-                      background: c.resultado === r.id ? r.color + "22" : "transparent", border: `1px solid ${c.resultado === r.id ? r.color : COLORS.steel}`,
-                      color: c.resultado === r.id ? r.color : COLORS.textMuted, fontFamily: FONT_BODY, textTransform: "uppercase", letterSpacing: 0.3,
-                    }}>{r.label}</button>
-                  ))}
-                </div>
-              )}
-            </Card>
-          ))}
+          {gruposPorLote[loteMasReciente].map(renderTarjetaCandidato)}
         </div>
       )}
 
@@ -1240,38 +1258,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios }) {
               <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginBottom: 10, letterSpacing: 1 }}>
                 Actualización {gruposPorLote[loteKey][0]?.loteHora || ""} ({gruposPorLote[loteKey].length})
               </div>
-              {gruposPorLote[loteKey].map((c) => (
-                <Card key={c.id} style={{ marginBottom: 12 }}>
-                  <CornerFrame color={COLORS.steel} size={14} thickness={2} />
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                    <div>
-                      <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
-                      <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
-                        {c.telefono}{c.pais ? ` · ${c.pais}` : ""}{c.agenteId ? ` · asignado a ${USUARIOS_REALES.find((u) => u.id === c.agenteId)?.nombre || c.agenteId}` : ""}
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                      {c.resultado && <Badge color={RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.color}>{RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.label}</Badge>}
-                      <button onClick={() => toggleDesechado(c.id)} title={c.desechado ? "Restaurar" : "Desechar"} style={{ background: "none", border: "none", color: c.desechado ? COLORS.neonSuccess : COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>{c.desechado ? "↩" : "🗂"}</button>
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-                    <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.llamado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
-                      <input type="checkbox" checked={!!c.llamado} onChange={() => toggleLlamado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
-                      Llamado
-                    </label>
-                    <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.contestado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
-                      <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
-                      Contestó
-                    </label>
-                    {c.enviadoEntrevista ? (
-                      <Badge color={COLORS.neonAmber}>✓ Enviado al líder</Badge>
-                    ) : (
-                      <NeonButton small active onClick={() => toggleEnviadoEntrevista(c.id)}>Enviar al líder →</NeonButton>
-                    )}
-                  </div>
-                </Card>
-              ))}
+              {gruposPorLote[loteKey].map(renderTarjetaCandidato)}
             </div>
           ))}
         </div>
@@ -1470,7 +1457,7 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
   );
 }
 
-function AsistenciaView({ usuarios, asistencia, onUpdateAsistencia }) {
+function AsistenciaView({ usuarios, asistencia, onUpdateAsistencia, onUpdateUsuarios }) {
   const hoy = todayStr();
   const registroHoy = asistencia[hoy];
   const [seleccion, setSeleccion] = useState(() => {
@@ -1480,7 +1467,15 @@ function AsistenciaView({ usuarios, asistencia, onUpdateAsistencia }) {
   });
 
   const toggle = (id) => setSeleccion((prev) => ({ ...prev, [id]: !prev[id] }));
-  const guardar = () => onUpdateAsistencia({ ...asistencia, [hoy]: seleccion });
+  const guardar = () => {
+    onUpdateAsistencia({ ...asistencia, [hoy]: seleccion });
+    // Puntos automáticos por asistir — solo a quien queda marcado presente HOY por primera vez
+    // (si ya se había guardado antes y solo se corrige algo, no se vuelve a dar de más).
+    const nuevosPresentes = usuarios.filter((u) => seleccion[u.id] && !(registroHoy && registroHoy[u.id]));
+    if (nuevosPresentes.length > 0) {
+      onUpdateUsuarios(usuarios.map((u) => (nuevosPresentes.some((p) => p.id === u.id) ? { ...u, puntos: u.puntos + 10 } : u)));
+    }
+  };
   const presentesCount = Object.values(seleccion).filter(Boolean).length;
 
   return (
@@ -1648,7 +1643,7 @@ function ComentariosYDocumentos({ user, candidato, onActualizar }) {
   );
 }
 
-function CandidatosView({ user, candidatos, onUpdate, usuarios }) {
+function CandidatosView({ user, candidatos, onUpdate, usuarios, onUpdateUsuarios }) {
   const [filtroEtapa, setFiltroEtapa] = useState("todos");
   const [filtroAgente, setFiltroAgente] = useState("todos");
   const [busqueda, setBusqueda] = useState("");
@@ -1670,8 +1665,13 @@ function CandidatosView({ user, candidatos, onUpdate, usuarios }) {
   });
 
   const marcarEntrevista = (c, val) => {
-    if (val) actualizar(c.id, "entrevistaAprobada", true);
-    else onUpdate(candidatos.map((x) => (x.id === c.id ? { ...x, entrevistaAprobada: false, documentosAprobados: false, poligrafoAprobado: false } : x)));
+    if (val) {
+      actualizar(c.id, "entrevistaAprobada", true);
+      // Bono de efectividad: el líder confirma que la entrevista de verdad sirvió, no solo que se envió.
+      if (!c.entrevistaAprobada && onUpdateUsuarios && usuarios) {
+        onUpdateUsuarios(usuarios.map((u) => (u.id === c.agenteId ? { ...u, puntos: u.puntos + 10 } : u)));
+      }
+    } else onUpdate(candidatos.map((x) => (x.id === c.id ? { ...x, entrevistaAprobada: false, documentosAprobados: false, poligrafoAprobado: false } : x)));
   };
   const marcarDocumentos = (c, val) => {
     if (val) actualizar(c.id, "documentosAprobados", true);
@@ -1920,8 +1920,13 @@ function TareasView({ user, tareas, onUpdate, usuarios, onUpdateUsuarios }) {
       const orden = ["pendiente", "en_progreso", "completada"];
       const idx = orden.indexOf(t.estado);
       const nuevoEstado = orden[Math.min(idx + 1, 2)];
-      if (nuevoEstado === "completada" && t.tipo === "mision" && t.puntosRecompensa) {
-        onUpdateUsuarios(usuarios.map((u) => (u.id === t.asignadoA ? { ...u, puntos: u.puntos + t.puntosRecompensa } : u)));
+      if (nuevoEstado === "completada" && t.estado !== "completada") {
+        if (t.tipo === "mision" && t.puntosRecompensa) {
+          onUpdateUsuarios(usuarios.map((u) => (u.id === t.asignadoA ? { ...u, puntos: u.puntos + t.puntosRecompensa } : u)));
+        } else if (t.tipo === "tarea") {
+          // Puntos automáticos por completar una tarea normal (parte del sistema de ranking por efectividad).
+          onUpdateUsuarios(usuarios.map((u) => (u.id === t.asignadoA ? { ...u, puntos: u.puntos + 15 } : u)));
+        }
       }
       return { ...t, estado: nuevoEstado };
     }));
@@ -2605,7 +2610,7 @@ export default function LaCupula() {
       <div style={{ flex: 1, padding: isMobile ? "16px" : "28px 32px", overflowY: "auto", minWidth: 0, boxSizing: "border-box" }}>
         {active === "dashboard" && session.rol === "lider" && <DashboardLider candidatos={candidatos} tareas={tareas} usuarios={users} />}
         {active === "dashboard" && session.rol === "agente" && <DashboardAgente user={session} tareas={tareas} candidatos={candidatos} />}
-        {active === "trafico" && <TraficoView user={session} candidatos={candidatos} onUpdate={updateCandidatos} esLider={session.rol === "lider"} usuarios={users} />}
+        {active === "trafico" && <TraficoView user={session} candidatos={candidatos} onUpdate={updateCandidatos} esLider={session.rol === "lider"} usuarios={users} onUpdateUsuarios={updateUsers} />}
         {active === "importar" && session.rol === "lider" && (
           <ImportarContactosView
             candidatos={candidatos} onUpdateCandidatos={updateCandidatos} puntero={puntero} onUpdatePuntero={updatePuntero}
@@ -2619,8 +2624,8 @@ export default function LaCupula() {
             }}
           />
         )}
-        {active === "asistencia" && session.rol === "lider" && <AsistenciaView usuarios={users} asistencia={asistencia} onUpdateAsistencia={updateAsistencia} />}
-        {active === "candidatos" && <CandidatosView user={session} candidatos={candidatos} onUpdate={updateCandidatos} usuarios={users} />}
+        {active === "asistencia" && session.rol === "lider" && <AsistenciaView usuarios={users} asistencia={asistencia} onUpdateAsistencia={updateAsistencia} onUpdateUsuarios={updateUsers} />}
+        {active === "candidatos" && <CandidatosView user={session} candidatos={candidatos} onUpdate={updateCandidatos} usuarios={users} onUpdateUsuarios={updateUsers} />}
         {active === "tareas" && <TareasView user={session} tareas={tareas} onUpdate={updateTareas} usuarios={users} onUpdateUsuarios={updateUsers} />}
         {active === "ranking" && <RankingView usuarios={users} esLider={session.rol === "lider"} onAjustarPuntos={ajustarPuntos} />}
         {active === "chat" && <ChatView user={session} mensajes={mensajes} mensajesArchivo={mensajesArchivo} chatConfig={chatConfig} onEnviar={enviarMensaje} onCambiarModo={cambiarModoChat} onGuardarArchivo={guardarEnArchivo} onEliminarArchivo={eliminarDelArchivo} />}
