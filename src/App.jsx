@@ -1296,6 +1296,12 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
   const nombreDe = (id) => usuarios.find((u) => u.id === id)?.nombre || id;
   const presentes = ORDEN_ASIGNACION.filter((id) => asistenciaHoy && asistenciaHoy[id]);
 
+  // Último contacto importado (para saber en Telegram desde dónde seguir copiando).
+  const candidatosImportados = candidatos.filter((c) => c.loteId && !c.agregadoManual);
+  const maxLote = candidatosImportados.length > 0 ? Math.max(...candidatosImportados.map((c) => Number(c.loteId))) : null;
+  const grupoUltimoLote = maxLote ? candidatosImportados.filter((c) => Number(c.loteId) === maxLote) : [];
+  const ultimoContacto = grupoUltimoLote.length > 0 ? grupoUltimoLote[grupoUltimoLote.length - 1] : null;
+
   if (!asistenciaHoy) {
     return (
       <div>
@@ -1389,6 +1395,22 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
   return (
     <div>
       <SectionTitle>Importar contactos de Telegram</SectionTitle>
+
+      {ultimoContacto && (
+        <Card style={{ marginBottom: 16, borderColor: COLORS.neonBlue }}>
+          <CornerFrame color={COLORS.neonBlue} size={12} thickness={2} />
+          <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonBlue, marginBottom: 4, letterSpacing: 1 }}>
+            📍 ÚLTIMO CONTACTO IMPORTADO — busca este nombre en Telegram para saber desde dónde seguir
+          </div>
+          <div style={{ fontFamily: FONT_BODY, fontSize: 15, color: COLORS.white, fontWeight: 700 }}>
+            {ultimoContacto.nombre} <span style={{ color: COLORS.textMuted, fontWeight: 400, fontSize: 12 }}>· {ultimoContacto.telefono}</span>
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>
+            Tanda de las {ultimoContacto.loteHora || "?"}, {ultimoContacto.fecha}
+          </div>
+        </Card>
+      )}
+
       {ultimaImportacion && ultimaImportacion.ids.length > 0 && (
         <Card style={{ marginBottom: 16, borderColor: COLORS.neonRed }}>
           <CornerFrame color={COLORS.neonRed} size={12} thickness={2} />
