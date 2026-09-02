@@ -110,6 +110,28 @@ const CUOTA_DIARIA_ENTREVISTA = 3;
 // Orden de asignación por "likes" — así se reparten los contactos que llegan por Telegram
 const ORDEN_ASIGNACION = ["corleone1", "paris2", "marcus3", "kevinhr", "lucas5", "cristian4"];
 
+// Reparte "cantidad" contactos siguiendo el orden FIJO del equipo completo (nunca cambia),
+// saltándose a quien no esté presente hoy sin perder su lugar en la fila. Así, el reparto
+// siempre continúa igual sin importar qué combinación de gente falte un día u otro —
+// el número "puntero" siempre significa lo mismo (una posición en ORDEN_ASIGNACION),
+// nunca una posición dentro de una lista de "presentes" que cambia de tamaño.
+function calcularSiguientesAsignaciones(cantidad, punteroInicial, asistenciaHoy) {
+  const asignaciones = [];
+  let p = Number(punteroInicial) || 0;
+  let vueltas = 0;
+  const maxVueltas = ORDEN_ASIGNACION.length * (cantidad + 2) + 20; // límite de seguridad
+  while (asignaciones.length < cantidad && vueltas < maxVueltas) {
+    const idx = p % ORDEN_ASIGNACION.length;
+    const candidatoId = ORDEN_ASIGNACION[idx];
+    if (asistenciaHoy && asistenciaHoy[candidatoId]) {
+      asignaciones.push(candidatoId);
+    }
+    p += 1;
+    vueltas += 1;
+  }
+  return { asignaciones, nuevoPuntero: p % ORDEN_ASIGNACION.length };
+}
+
 const IDIOMAS_CONOCIDOS = [
   { match: /espan|español/i, label: "Español" },
   { match: /ingl[eé]s/i, label: "Inglés" },
@@ -1311,10 +1333,8 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
       setBorradores([]);
       return;
     }
-    const conAsignacion = parseados.map((p, i) => {
-      const idx = (puntero + i) % presentes.length;
-      return { ...p, pais: p.pais || "", agenteId: presentes[idx], key: "b" + i + "_" + Date.now() };
-    });
+    const { asignaciones } = calcularSiguientesAsignaciones(parseados.length, puntero, asistenciaHoy);
+    const conAsignacion = parseados.map((p, i) => ({ ...p, pais: p.pais || "", agenteId: asignaciones[i], key: "b" + i + "_" + Date.now() }));
     setBorradores(conAsignacion);
   };
 
@@ -1359,7 +1379,8 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
       documentos: [],
     }));
     onUpdateCandidatos([...nuevos, ...candidatos]);
-    onUpdatePuntero((puntero + borradores.length) % presentes.length);
+    const { nuevoPuntero } = calcularSiguientesAsignaciones(borradores.length, puntero, asistenciaHoy);
+    onUpdatePuntero(nuevoPuntero);
     onImportado(nuevos.map((n) => n.id));
     setBorradores(null);
     setTexto("");
@@ -1381,11 +1402,18 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
       )}
       <Card style={{ marginBottom: 16 }}>
         <CornerFrame color={COLORS.neonSuccess} size={14} thickness={2} />
-        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonSuccess, marginBottom: 4, letterSpacing: 1 }}>
-          PRESENTES HOY ({presentes.length}/{ORDEN_ASIGNACION.length})
-        </div>
-        <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.white }}>
-          {presentes.map((id) => nombreDe(id)).join(", ")}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <div>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonSuccess, marginBottom: 4, letterSpacing: 1 }}>
+              PRESENTES HOY ({presentes.length}/{ORDEN_ASIGNACION.length})
+            </div>
+            <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.white }}>
+              {presentes.map((id) => nombreDe(id)).join(", ")}
+            </div>
+          </div>
+          <NeonButton small onClick={() => { if (window.confirm("¿Reiniciar el orden de reparto? El siguiente turno vuelve a empezar en Corleone. Esto NO borra candidatos ni nada más.")) onUpdatePuntero(0); }}>
+            Reiniciar orden de reparto
+          </NeonButton>
         </div>
       </Card>
       <Card style={{ marginBottom: 16 }}>
@@ -1406,7 +1434,7 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <NeonButton active onClick={analizar} disabled={!texto.trim()}>Analizar mensajes</NeonButton>
           <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted }}>
-            Siguiente en el orden de asignación: <span style={{ color: COLORS.neonRed }}>{nombreDe(presentes[puntero % presentes.length])}</span>
+            Siguiente en el orden de asignación: <span style={{ color: COLORS.neonRed }}>{nombreDe(calcularSiguientesAsignaciones(1, puntero, asistenciaHoy).asignaciones[0])}</span>
           </div>
         </div>
       </Card>
@@ -2601,7 +2629,7 @@ export default function LaCupula() {
           <div style={{ width: 34 }} />
         </div>
       )}
-      <Sidebar
+      <Sidebara
         user={session} active={active} setActive={setActive} onLogout={handleLogout}
         isMobile={isMobile} abierto={isMobile ? sidebarAbierto : true} onCerrar={() => setSidebarAbierto(false)}
       />
