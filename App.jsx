@@ -110,6 +110,28 @@ const CUOTA_DIARIA_ENTREVISTA = 3;
 // Orden de asignación por "likes" — así se reparten los contactos que llegan por Telegram
 const ORDEN_ASIGNACION = ["corleone1", "paris2", "marcus3", "kevinhr", "lucas5", "cristian4"];
 
+// Reparte "cantidad" contactos siguiendo el orden FIJO del equipo completo (nunca cambia),
+// saltándose a quien no esté presente hoy sin perder su lugar en la fila. Así, el reparto
+// siempre continúa igual sin importar qué combinación de gente falte un día u otro —
+// el número "puntero" siempre significa lo mismo (una posición en ORDEN_ASIGNACION),
+// nunca una posición dentro de una lista de "presentes" que cambia de tamaño.
+function calcularSiguientesAsignaciones(cantidad, punteroInicial, asistenciaHoy) {
+  const asignaciones = [];
+  let p = Number(punteroInicial) || 0;
+  let vueltas = 0;
+  const maxVueltas = ORDEN_ASIGNACION.length * (cantidad + 2) + 20; // límite de seguridad
+  while (asignaciones.length < cantidad && vueltas < maxVueltas) {
+    const idx = p % ORDEN_ASIGNACION.length;
+    const candidatoId = ORDEN_ASIGNACION[idx];
+    if (asistenciaHoy && asistenciaHoy[candidatoId]) {
+      asignaciones.push(candidatoId);
+    }
+    p += 1;
+    vueltas += 1;
+  }
+  return { asignaciones, nuevoPuntero: p % ORDEN_ASIGNACION.length };
+}
+
 const IDIOMAS_CONOCIDOS = [
   { match: /espan|español/i, label: "Español" },
   { match: /ingl[eé]s/i, label: "Inglés" },
@@ -158,57 +180,69 @@ function parseMensajeIndividual(bloqueOriginal) {
 
   const lineas = bloque.split("\n").map((l) => l.trim()).filter(Boolean);
 
-  // Teléfono: prioriza el campo con indicativo completo (Móvil / Мобільний / Celular),
-  // porque el de WhatsApp/Telegram suele venir sin indicativo de país.
-  let telefono = "";
-  const telLabelMatch = bloque.match(/(?:м[оo]б[іi]льний|m[oó]vil|celular)\s*:?\s*(\+?\d[\d\s().-]{6,}\d)/i);
-  if (telLabelMatch) {
-    telefono = telLabelMatch[1].trim();
-  } else {
-    const telGenericoMatch = bloque.match(/(\+?\d[\d\s().-]{6,}\d)/);
-    telefono = telGenericoMatch ? telGenericoMatch[0].trim() : "";
+  let nombre = "";
+  let telefonoMovil = "";
+  let telefonoOtro = "";
+  let idiomas = "";
+  let experienciaValor = "";
+  let experienciaEncontrada = false;
+
+  // Recorre línea por línea — mucho más confiable que una expresión sobre todo el bloque.
+  // Regla principal (la que pediste): la línea que contenga "ім" (así se ve "Ім'я" en minúscula,
+  // sin importar el tipo de apóstrofe) → todo lo que sigue después de los dos puntos es el nombre.
+  lineas.forEach((linea) => {
+    const lower = linea.toLowerCase();
+    const idxColon = linea.indexOf(":");
+    const valor = idxColon !== -1 ? linea.slice(idxColon + 1).trim() : "";
+
+    if (!nombre && (lower.includes("ім") || /^nombre[s]?\s*:/i.test(linea) || /^name\s*:/i.test(linea))) {
+      nombre = valor;
+    } else if (lower.includes("мобільн") || lower.includes("móvil") || lower.includes("movil") || lower.includes("celular")) {
+      const m = linea.match(/(\+?\d[\d\s().-]{6,}\d)/);
+      if (m) telefonoMovil = m[0].trim();
+    } else if (lower.includes("вотс") || lower.includes("телеграм") || lower.includes("whatsapp") || lower.includes("telegram")) {
+      const m = linea.match(/(\+?\d[\d\s().-]{6,}\d)/);
+      if (m) telefonoOtro = m[0].trim();
+    } else if (!idiomas && (lower.includes("мов") || lower.includes("idioma"))) {
+      idiomas = valor;
+    } else if (!experienciaEncontrada && (lower.includes("досвід") || lower.includes("experiencia"))) {
+      experienciaValor = valor;
+      experienciaEncontrada = true;
+    }
+  });
+
+  // Teléfono: prioriza el que trae indicativo completo (Móvil/Мобільний), y si no hay,
+  // usa el de WhatsApp/Telegram o cualquier número largo que aparezca en el mensaje.
+  let telefono = (telefonoMovil || telefonoOtro || "").replace(/\s{2,}/g, " ").trim();
+  if (!telefono) {
+    const m = bloque.match(/(\+?\d[\d\s().-]{6,}\d)/);
+    telefono = m ? m[0].trim() : "";
   }
-  telefono = telefono.replace(/\s{2,}/g, " ").trim();
-  if (!telefono) return null;
+  if (!telefono) return null; // sin teléfono, no es un mensaje de candidato válido
 
   // País: se detecta automáticamente por el indicativo telefónico, no por texto.
   const pais = detectarPaisPorTelefono(telefono);
 
-  // Idiomas: busca coincidencias de idiomas conocidos en todo el bloque.
-  const idiomasEncontrados = IDIOMAS_CONOCIDOS.filter((idi) => idi.match.test(bloque)).map((idi) => idi.label);
-  const idiomas = idiomasEncontrados.length ? idiomasEncontrados.join(", ") : "";
+  // Idiomas: si no vino de una etiqueta explícita, busca nombres de idiomas conocidos en todo el bloque.
+  if (!idiomas) {
+    const idiomasEncontrados = IDIOMAS_CONOCIDOS.filter((idi) => idi.match.test(bloque)).map((idi) => idi.label);
+    idiomas = idiomasEncontrados.join(", ");
+  }
 
-  // Experiencia: reconoce "experiencia" (español) o "досвід" (ucraniano), normalizado a Sí / No / No especifica.
+  // Experiencia normalizada a Sí / No / No especifica.
   let experiencia = "No especifica";
-  const expMatch = bloque.match(/(?:experiencia|досв[іi]д)[^\n:]*:?\s*([^\n]*)/i);
-  if (expMatch) {
-    const valor = (expMatch[1] || "").toLowerCase();
-    const etiquetaCompleta = expMatch[0].toLowerCase();
-    if (/\bno\s+teng|\bno\s+cuent|^\s*no\b|sin\s+experiencia/.test(valor) || /\bsin\b/.test(etiquetaCompleta)) {
-      experiencia = "No";
-    } else if (/\bs[ií]\b|\btengo\b|\ba[ñn]os\b|\bmeses\b|\d+\s*(a[ñn]o|mes)/.test(valor)) {
-      experiencia = "Sí";
-    } else if (valor.trim()) {
-      experiencia = "Sí";
-    }
+  if (experienciaEncontrada) {
+    const val = experienciaValor.toLowerCase();
+    if (/\bno\s+teng|\bno\s+cuent|^\s*no\b|sin\s+experiencia/.test(val)) experiencia = "No";
+    else if (val.trim()) experiencia = "Sí";
   }
 
-  // Nombre: reconoce "Nombre:" (español) o "Ім'я" (ucraniano, con apóstrofe recto o tipográfico).
-  let nombre = "";
-  const nombreLabelMatch = bloque.match(/(?:nombre[s]?|ім['’`]?я)\s*:?\s*([^\n]+)/i);
-  if (nombreLabelMatch) {
-    nombre = nombreLabelMatch[1].trim();
-  } else {
-    const candidataLinea = lineas.find((l) => {
-      const lower = l.toLowerCase();
-      if (l.replace(/[^\d]/g, "").length >= 7) return false; // es el teléfono
-      if (/idioma|experiencia|tel[eé]fono|n[uú]mero|celular|whatsapp|м[оo]б[іi]льний|мов|досв[іi]д|вік/i.test(lower)) return false;
-      return true;
-    });
-    nombre = candidataLinea || "Sin nombre";
+  // Si después de todo esto no se encontró nombre, se usa la primera línea como último recurso.
+  if (!nombre.trim() && lineas[0]) {
+    nombre = lineas[0].replace(/[\u{1F1E6}-\u{1F1FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, "").trim();
   }
-  // Limpia prefijos comunes que puedan quedar pegados
   nombre = nombre.replace(/^[-•*]\s*/, "").trim();
+  if (!nombre) nombre = "Sin nombre";
 
   return { nombre, telefono, pais, idiomas, experiencia };
 }
@@ -216,8 +250,48 @@ function parseMensajeIndividual(bloqueOriginal) {
 // Divide el texto pegado (varios mensajes de Telegram) en bloques individuales y los parsea.
 function parseMensajesTelegram(textoCompleto) {
   if (!textoCompleto || !textoCompleto.trim()) return [];
-  // Los mensajes suelen venir separados por una o más líneas en blanco.
-  const bloquesCrudos = textoCompleto.split(/\n\s*\n+/);
+
+  const lineas = textoCompleto.split("\n");
+
+  // La única señal 100% confiable de "aquí empieza un candidato nuevo" es la línea del nombre
+  // ("Nombre:" o "Ім'я") — no las líneas en blanco (a veces separan candidatos, a veces separan
+  // campos de UN MISMO candidato) ni las banderitas (no todos los formatos las traen).
+  const esLineaNombre = (linea) => {
+    const t = linea.trim();
+    if (!t) return false;
+    const lower = t.toLowerCase();
+    return lower.includes("ім") || /^nombre[s]?\s*:/i.test(t) || /^name\s*:/i.test(t);
+  };
+
+  const indicesNombre = [];
+  lineas.forEach((l, i) => { if (esLineaNombre(l)) indicesNombre.push(i); });
+
+  let bloquesCrudos = [];
+  if (indicesNombre.length > 0) {
+    // Cada bloque empieza en su línea de "Nombre" — pero se extiende hacia atrás para
+    // incluir líneas de encabezado justo antes (como la banderita), sin invadir el
+    // bloque del candidato anterior (nos detenemos si topamos con una línea que ya
+    // tiene ":" — esa seguramente es el último campo del candidato de arriba).
+    const limiteInicio = indicesNombre.map((idx, k) => {
+      const limiteAnterior = k === 0 ? 0 : indicesNombre[k - 1] + 1;
+      let inicio = idx;
+      while (inicio - 1 >= limiteAnterior) {
+        const anterior = lineas[inicio - 1].trim();
+        if (!anterior || anterior.includes(":")) break;
+        inicio -= 1;
+      }
+      return inicio;
+    });
+    for (let k = 0; k < indicesNombre.length; k++) {
+      const inicio = limiteInicio[k];
+      const fin = k + 1 < indicesNombre.length ? limiteInicio[k + 1] : lineas.length;
+      bloquesCrudos.push(lineas.slice(inicio, fin).join("\n"));
+    }
+  } else {
+    // Respaldo: si no se reconoce ninguna línea de nombre, usa el separador clásico de líneas en blanco.
+    bloquesCrudos = textoCompleto.split(/\n\s*\n+/);
+  }
+
   const resultados = [];
   bloquesCrudos.forEach((bloque) => {
     const parsed = parseMensajeIndividual(bloque);
@@ -277,6 +351,8 @@ function GlobalStyle() {
   return (
     <style>{`
       ${FONT_IMPORT}
+      html, body, #root { margin: 0; padding: 0; width: 100%; overflow-x: hidden; }
+      * { box-sizing: border-box; }
       @keyframes scanUpDown {
         0% { top: 0%; opacity: 1; } 23% { top: 100%; } 27% { opacity: 0.3; } 30% { opacity: 1; }
         50% { top: 0%; } 73% { top: 100%; } 77% { opacity: 0.3; } 80% { opacity: 1; } 100% { top: 0%; }
@@ -353,7 +429,7 @@ function GlobeBackdrop() {
   return (
     <div style={{
       position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)",
-      width: "min(96vh, 980px)", height: "min(96vh, 980px)", zIndex: -1, pointerEvents: "none",
+      width: "min(96vh, 90vw, 980px)", height: "min(96vh, 90vw, 980px)", zIndex: -1, pointerEvents: "none",
       animation: "globeSpin 40s linear infinite", opacity: 0.5,
     }}>
       <svg viewBox="0 0 400 400" width="100%" height="100%">
@@ -387,6 +463,7 @@ function GlobeBackdrop() {
 }
 
 function CodeSnippets() {
+  const isMobile = useIsMobile();
   const leftLines = [
     "struct buffer result;",
     "allocate_buffer(size_t size)", "{", "  result = malloc(sizeof(struct buffer));",
@@ -401,6 +478,7 @@ function CodeSnippets() {
     "> verify.identity()", "socket.connect(9091)", "cipher: AES-256-GCM",
     "node_sync: 98.2%", "trace: /var/log/auth", "ping mesh.local -c4",
   ];
+  if (isMobile) return null;
   const colStyle = { position: "absolute", top: 40, width: 210, fontFamily: FONT_MONO, fontSize: 10.5, lineHeight: 1.7, color: COLORS.neonBlue, opacity: 0.28, whiteSpace: "pre", pointerEvents: "none", zIndex: 0 };
   return (
     <>
@@ -417,7 +495,7 @@ function SkullBackground() {
   return (
     <div style={{
       position: "absolute", left: "50%", top: "46%", transform: "translate(-50%, -50%)",
-      width: "min(92vh, 900px)", height: "min(96vh, 945px)", zIndex: 0, animation: "boneGlow 6s ease-in-out infinite", pointerEvents: "none",
+      width: "min(92vh, 92vw, 900px)", height: "min(96vh, 92vw, 945px)", zIndex: 0, animation: "boneGlow 6s ease-in-out infinite", pointerEvents: "none",
       filter: "drop-shadow(0 0 30px rgba(240,242,245,0.3))",
     }}>
       <svg viewBox="0 0 400 420" width="100%" height="100%">
@@ -533,6 +611,7 @@ function LoginScreen({ users, onLogin }) {
   const [error, setError] = useState("");
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState("");
+  const isMobile = useIsMobile();
   const titulo = "LA CÚPULA".split("");
 
   const submit = () => {
@@ -563,8 +642,8 @@ function LoginScreen({ users, onLogin }) {
         <div style={{ display: "flex", justifyContent: "center", gap: 2 }}>
           {titulo.map((ch, i) => (
             <span key={i} style={{
-              display: "inline-block", fontFamily: FONT_TITLE, fontSize: 54, fontWeight: 400, color: "#D8D9DC",
-              letterSpacing: 1, "--flash-color": "#B0102A",
+              display: "inline-block", fontFamily: FONT_TITLE, fontSize: isMobile ? 34 : 54, fontWeight: 400, color: "#D8D9DC",
+              letterSpacing: isMobile ? 0 : 1, "--flash-color": "#B0102A",
               textShadow: `2px 2px 0 #B0102A, -1px -1px 0 #000, 3px 3px 6px rgba(0,0,0,0.85), 0 0 18px #B0102A44`,
               WebkitTextStroke: "1px #000",
               animation: `letterFall 0.9s cubic-bezier(.2,.8,.3,1) ${i * 0.06}s both, impactFlash 0.7s ease-out ${i * 0.06 + 0.55}s both`,
@@ -577,11 +656,11 @@ function LoginScreen({ users, onLogin }) {
         </div>
       </div>
       <div style={{
-        width: 380, background: `linear-gradient(180deg, ${COLORS.bgPanel}f2, #050506f2)`,
+        width: "min(380px, 90vw)", background: `linear-gradient(180deg, ${COLORS.bgPanel}f2, #050506f2)`,
         backdropFilter: "blur(2px)",
-        border: `2px solid ${COLORS.steel}`, borderRadius: 6, padding: "38px 34px",
+        border: `2px solid ${COLORS.steel}`, borderRadius: 6, padding: "38px 28px",
         boxShadow: `0 0 0 1px ${COLORS.neonRed}22, 0 0 50px ${COLORS.neonRed}22, inset 0 1px 0 ${COLORS.white}0a`,
-        position: "relative", overflow: "hidden", zIndex: 2,
+        position: "relative", overflow: "hidden", zIndex: 2, boxSizing: "border-box",
       }}>
         <CornerFrame color={COLORS.neonRed} thickness={3} size={22} />
         {scanning && (
@@ -615,44 +694,74 @@ function LoginScreen({ users, onLogin }) {
   );
 }
 
-function Sidebar({ user, active, setActive, onLogout }) {
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(typeof window !== "undefined" ? window.innerWidth <= 820 : false);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= 820);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return isMobile;
+}
+
+function Sidebar({ user, active, setActive, onLogout, isMobile, abierto, onCerrar }) {
   const itemsLider = [
     { id: "dashboard", label: "Dashboard" }, { id: "trafico", label: "Tráfico" },
     { id: "importar", label: "Importar" },
     { id: "asistencia", label: "Asistencia" },
-    { id: "postulaciones", label: "Postulaciones" }, { id: "tareas", label: "Tareas" },
+    { id: "candidatos", label: "Candidatos" }, { id: "tareas", label: "Tareas" },
     { id: "ranking", label: "Ranking" }, { id: "equipo", label: "Equipo" }, { id: "chat", label: "Chat" },
     { id: "cupulaai", label: "Cúpula AI" },
     { id: "papelera", label: "Papelera" },
   ];
   const itemsAgente = [
     { id: "dashboard", label: "Dashboard" }, { id: "trafico", label: "Tráfico" },
+    { id: "candidatos", label: "Candidatos" },
     { id: "tareas", label: "Mis tareas" }, { id: "ranking", label: "Ranking" },
     { id: "equipo", label: "Equipo" }, { id: "chat", label: "Chat" },
     { id: "cupulaai", label: "Cúpula AI" },
   ];
   const items = user.rol === "lider" ? itemsLider : itemsAgente;
+
+  const seleccionar = (id) => {
+    setActive(id);
+    if (isMobile) onCerrar();
+  };
+
   return (
-    <div style={{ width: 210, background: COLORS.bgPanel, borderRight: `1px solid ${COLORS.border}`, display: "flex", flexDirection: "column", padding: "22px 14px", boxSizing: "border-box" }}>
-      <div style={{ fontFamily: FONT_DISPLAY, fontSize: 22, letterSpacing: 3, color: COLORS.white, marginBottom: 4, paddingLeft: 6, textShadow: `0 0 12px ${COLORS.neonRed}66` }}>LA CÚPULA</div>
-      <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: COLORS.neonBlue, letterSpacing: 2, paddingLeft: 6, marginBottom: 26 }}>NYC 420 STYLE</div>
-      {items.map((it) => (
-        <button key={it.id} onClick={() => setActive(it.id)} style={{
-          textAlign: "left", padding: "10px 12px", marginBottom: 4, borderRadius: 4,
-          background: active === it.id ? COLORS.neonRedSoft : "transparent",
-          border: active === it.id ? `1px solid ${COLORS.neonRed}88` : "1px solid transparent",
-          borderLeft: active === it.id ? `3px solid ${COLORS.neonRed}` : "3px solid transparent",
-          color: active === it.id ? COLORS.white : COLORS.textMuted,
-          fontFamily: FONT_BODY, fontSize: 14, fontWeight: 700, cursor: "pointer", letterSpacing: 0.5, textTransform: "uppercase",
-        }}>{it.label}</button>
-      ))}
-      <div style={{ flex: 1 }} />
-      <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 14, marginTop: 14 }}>
-        <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.white, fontWeight: 700, textTransform: "uppercase" }}>{user.nombre}</div>
-        <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.neonBlue, marginBottom: 10 }}>{user.rol === "lider" ? "LÍDER" : "AGENTE"} · NVL {user.nivel}</div>
-        <button onClick={onLogout} style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline", letterSpacing: 1 }}>CERRAR SESIÓN</button>
+    <>
+      {isMobile && abierto && (
+        <div onClick={onCerrar} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 199 }} />
+      )}
+      <div style={{
+        width: 210, background: COLORS.bgPanel, borderRight: `1px solid ${COLORS.border}`,
+        display: "flex", flexDirection: "column", padding: "22px 14px", boxSizing: "border-box",
+        ...(isMobile ? {
+          position: "fixed", top: 0, bottom: 0, left: 0, zIndex: 200, height: "100%",
+          transform: abierto ? "translateX(0)" : "translateX(-100%)",
+          transition: "transform 0.25s ease",
+        } : {}),
+      }}>
+        <div style={{ fontFamily: FONT_DISPLAY, fontSize: 22, letterSpacing: 3, color: COLORS.white, marginBottom: 4, paddingLeft: 6, textShadow: `0 0 12px ${COLORS.neonRed}66` }}>LA CÚPULA</div>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: COLORS.neonBlue, letterSpacing: 2, paddingLeft: 6, marginBottom: 26 }}>NYC 420 STYLE</div>
+        {items.map((it) => (
+          <button key={it.id} onClick={() => seleccionar(it.id)} style={{
+            textAlign: "left", padding: "12px 12px", marginBottom: 4, borderRadius: 4,
+            background: active === it.id ? COLORS.neonRedSoft : "transparent",
+            border: active === it.id ? `1px solid ${COLORS.neonRed}88` : "1px solid transparent",
+            borderLeft: active === it.id ? `3px solid ${COLORS.neonRed}` : "3px solid transparent",
+            color: active === it.id ? COLORS.white : COLORS.textMuted,
+            fontFamily: FONT_BODY, fontSize: 14, fontWeight: 700, cursor: "pointer", letterSpacing: 0.5, textTransform: "uppercase",
+          }}>{it.label}</button>
+        ))}
+        <div style={{ flex: 1 }} />
+        <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 14, marginTop: 14 }}>
+          <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.white, fontWeight: 700, textTransform: "uppercase" }}>{user.nombre}</div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.neonBlue, marginBottom: 10 }}>{user.rol === "lider" ? "LÍDER" : "AGENTE"} · NVL {user.nivel}</div>
+          <button onClick={onLogout} style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline", letterSpacing: 1 }}>CERRAR SESIÓN</button>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -703,7 +812,7 @@ function SectionTitle({ children }) {
 
 function progresoDiario(candidatos, agenteId) {
   const hoy = todayStr();
-  return candidatos.filter((c) => c.agenteId === agenteId && c.fecha === hoy && c.resultado === "apto").length;
+  return candidatos.filter((c) => c.agenteId === agenteId && c.fecha === hoy && c.enviadoEntrevista).length;
 }
 
 function DashboardLider({ candidatos, tareas, usuarios }) {
@@ -828,26 +937,68 @@ function DashboardAgente({ user, tareas, candidatos }) {
   );
 }
 
-function TraficoView({ user, candidatos, onUpdate, esLider }) {
+function TraficoView({ user, candidatos, onUpdate, esLider, usuarios, onUpdateUsuarios }) {
   const [nombre, setNombre] = useState("");
   const [telefono, setTelefono] = useState("");
   const [pais, setPais] = useState("");
   const [verTodos, setVerTodos] = useState(user.rol === "lider");
+  const [filtroAgenteTrafico, setFiltroAgenteTrafico] = useState("todos");
   const [busqueda, setBusqueda] = useState("");
   const [filtro, setFiltro] = useState("todos");
   const [filtroPais, setFiltroPais] = useState("todos");
-  const [pagina, setPagina] = useState(1);
-  const POR_PAGINA = 30;
+  const [fechaSeleccionada, setFechaSeleccionada] = useState(todayStr());
+  const [mostrarAnteriores, setMostrarAnteriores] = useState(false);
+
+  const cambiarDia = (delta) => {
+    const d = new Date(fechaSeleccionada + "T12:00:00");
+    d.setDate(d.getDate() + delta);
+    setFechaSeleccionada(d.toISOString().slice(0, 10));
+    setMostrarAnteriores(false);
+  };
 
   const marcarLlamada = (candId, estadoLlamada) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, estadoLlamada } : c)));
   const marcarResultado = (candId, resultado) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, resultado } : c)));
   const toggleLlamado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, llamado: !c.llamado } : c)));
   const toggleContestado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, contestado: !c.contestado } : c)));
+  const toggleDesechado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, desechado: !c.desechado } : c)));
+
+  // Puntos automáticos por enviar a entrevista: +15 siempre, y +20 extra la vez que se
+  // completa la cuota de 3 al día (solo una vez ese día, no se repite).
+  const otorgarPuntosPorEnvio = (agenteId, listaCandidatosActual) => {
+    if (!onUpdateUsuarios || !usuarios) return;
+    const enviadosHoyAntes = progresoDiario(listaCandidatosActual, agenteId);
+    let extra = 15;
+    if (enviadosHoyAntes + 1 === 3) extra += 20; // bono por completar la cuota justo con este envío
+    onUpdateUsuarios(usuarios.map((u) => (u.id === agenteId ? { ...u, puntos: u.puntos + extra } : u)));
+  };
+
+  // Al enviar al líder: el candidato NUNCA se quita ni se modifica en Tráfico — se queda exactamente
+  // igual ahí, solo se marca para que también aparezca en "Candidatos" (líder y agente lo ven ahí).
+  const toggleEnviadoEntrevista = (candId) => {
+    const c = candidatos.find((x) => x.id === candId);
+    if (c && !c.enviadoEntrevista) otorgarPuntosPorEnvio(c.agenteId, candidatos);
+    onUpdate(candidatos.map((x) => (x.id === candId ? {
+      ...x, enviadoEntrevista: !x.enviadoEntrevista, fechaEnvioEntrevista: !x.enviadoEntrevista ? Date.now() : null,
+      ultimaEtapaVista: !x.enviadoEntrevista ? "entrevista" : x.ultimaEtapaVista,
+    } : x)));
+  };
   const eliminarCandidato = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, eliminado: true } : c)));
 
   const agregarCandidato = () => {
     if (!nombre.trim() || !telefono.trim()) return;
-    const nuevo = { id: "c" + Date.now(), nombre: nombre.trim(), telefono: telefono.trim(), pais: pais.trim(), estadoLlamada: null, resultado: null, agenteId: user.id, fecha: todayStr(), aprobadoLider: null, idiomas: "", experiencia: "", llamado: false, contestado: false, eliminado: false, archivos: [] };
+    // Los agregados a mano van DIRECTO a "Candidatos" (ya vienen calientes, no pasan por el
+    // proceso de Tráfico) y cuentan de una vez para la cuota de los 3 diarios. Se marcan como
+    // "agregadoManual" para que nunca se mezclen ni tapen las tandas que manda el líder.
+    const nuevo = {
+      id: "c" + Date.now(), nombre: nombre.trim(), telefono: telefono.trim(), pais: pais.trim(), estadoLlamada: null, resultado: null,
+      agenteId: user.id, fecha: todayStr(), loteId: Date.now(), loteHora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
+      agregadoManual: true,
+      aprobadoLider: null, idiomas: "", experiencia: "", llamado: true, contestado: true,
+      eliminado: false, desechado: false, archivos: [], enviadoEntrevista: true, fechaEnvioEntrevista: Date.now(), ultimaEtapaVista: "entrevista",
+      entrevistaAprobada: false, documentosAprobados: false,
+      poligrafoAprobado: false, enviadoAAgente: false, fechaInicio: null, comentarios: [], documentos: [],
+    };
+    otorgarPuntosPorEnvio(user.id, candidatos);
     onUpdate([nuevo, ...candidatos]);
     setNombre(""); setTelefono(""); setPais("");
   };
@@ -857,31 +1008,178 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
   const asignadosOTodos = (user.rol === "agente" && !verTodos) ? activos.filter((c) => c.agenteId === user.id) : activos;
 
   const paisesDisponibles = Array.from(new Set(activos.map((c) => c.pais).filter(Boolean))).sort();
+  const agentesDisponibles = usuarios ? usuarios.filter((u) => u.rol === "agente") : [];
 
   const filtrados = asignadosOTodos.filter((c) => {
+    if (c.fecha !== fechaSeleccionada) return false; // páginas por día
+    if (filtro !== "desechados" && c.desechado) return false; // ocultos por defecto, no borrados
+    if (esLider) {
+      if (filtroAgenteTrafico === "mios" && c.agenteId !== user.id) return false;
+      if (filtroAgenteTrafico !== "todos" && filtroAgenteTrafico !== "mios" && c.agenteId !== filtroAgenteTrafico) return false;
+    }
     if (busqueda.trim()) {
       const q = busqueda.trim().toLowerCase();
       if (!c.nombre.toLowerCase().includes(q) && !c.telefono.toLowerCase().includes(q)) return false;
     }
     if (filtro === "pendientes" && c.llamado) return false;
     if (filtro === "no_contesto" && !(c.llamado && !c.contestado)) return false;
+    if (filtro === "desechados" && !c.desechado) return false;
     if (filtroPais !== "todos" && c.pais !== filtroPais) return false;
     return true;
   });
 
-  const totalPaginas = Math.max(1, Math.ceil(filtrados.length / POR_PAGINA));
-  const paginaSegura = Math.min(pagina, totalPaginas);
-  const visibles = filtrados.slice((paginaSegura - 1) * POR_PAGINA, paginaSegura * POR_PAGINA);
+  // Los agregados a mano NUNCA entran al sistema de tandas del líder — van en su propia
+  // sección fija, para que sea imposible que tapen o se mezclen con lo que manda el líder.
+  const agregadosManualHoy = filtrados.filter((c) => c.agregadoManual);
+  const filtradosImportados = filtrados.filter((c) => !c.agregadoManual);
 
-  const borrarPaginaAntigua = () => {
-    // Elimina (soft-delete) los contactos de la página 1 actual — la más antigua en la lista.
-    const idsPagina1 = filtrados.slice(0, POR_PAGINA).map((c) => c.id);
-    onUpdate(candidatos.map((c) => (idsPagina1.includes(c.id) ? { ...c, eliminado: true } : c)));
+  // Agrupa por "lote" (tanda de envío/actualización) — así se ve organizado por tandas,
+  // no todo el contenido junto en una sola página. Solo aplica a lo que manda el líder.
+  const gruposPorLote = {};
+  filtradosImportados.forEach((c) => {
+    const key = String(c.loteId || "sin-lote");
+    if (!gruposPorLote[key]) gruposPorLote[key] = [];
+    gruposPorLote[key].push(c);
+  });
+  const lotesOrdenados = Object.keys(gruposPorLote).sort((a, b) => Number(b) - Number(a));
+  const loteMasReciente = lotesOrdenados[0];
+  const lotesAnteriores = lotesOrdenados.slice(1);
+  const totalAnteriores = lotesAnteriores.reduce((s, k) => s + gruposPorLote[k].length, 0);
+
+  const [copiado, setCopiado] = useState(false);
+
+  const estadoParaExportar = (c) => {
+    if (c.enviadoEntrevista) return "Se envió a entrevista";
+    if (c.contestado) return "Contestó";
+    if (c.llamado) return "No contestó";
+    return "";
   };
+
+  // Copia todo de un solo clic. Esto NUNCA modifica ni borra nada de Tráfico —
+  // solo LEE los datos para armar el texto, la lista de candidatos se queda exactamente igual.
+  const exportarAGoogleSheets = () => {
+    const filas = filtrados.map((c) => [c.nombre, c.telefono, c.experiencia || "", estadoParaExportar(c)].join("\t"));
+    const texto = filas.join("\n");
+
+    const marcarCopiado = () => { setCopiado(true); setTimeout(() => setCopiado(false), 2500); };
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(texto).then(marcarCopiado).catch(() => copiarConRespaldo(texto, marcarCopiado));
+    } else {
+      copiarConRespaldo(texto, marcarCopiado);
+    }
+  };
+
+  // Respaldo invisible (no se ve nada en la pantalla, no toca Tráfico para nada) —
+  // solo si el copiado automático normal no funciona en ese navegador.
+  const copiarConRespaldo = (texto, marcarCopiado) => {
+    const areaTemporal = document.createElement("textarea");
+    areaTemporal.value = texto;
+    areaTemporal.style.position = "fixed";
+    areaTemporal.style.left = "-9999px";
+    document.body.appendChild(areaTemporal);
+    areaTemporal.focus();
+    areaTemporal.select();
+    try {
+      document.execCommand("copy");
+      marcarCopiado();
+    } catch (e) {
+      window.prompt("No se pudo copiar solo — copia este texto manualmente (ya está seleccionado, solo Ctrl+C):", texto);
+    }
+    document.body.removeChild(areaTemporal);
+  };
+
+  const renderTarjetaCandidato = (c) => (
+    <Card key={c.id} style={{ marginBottom: 12 }}>
+      <CornerFrame color={COLORS.steel} size={14} thickness={2} />
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
+          <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
+            {c.telefono}{c.pais ? ` · ${c.pais}` : ""}{c.agenteId ? ` · asignado a ${USUARIOS_REALES.find((u) => u.id === c.agenteId)?.nombre || c.agenteId}` : ""}
+          </div>
+          {(c.idiomas || c.experiencia) && (
+            <div style={{ fontSize: 11, color: COLORS.neonBlue, fontFamily: FONT_MONO, marginTop: 4 }}>
+              {c.idiomas ? `Idiomas: ${c.idiomas}` : ""}{c.idiomas && c.experiencia ? " · " : ""}{c.experiencia ? `Experiencia: ${c.experiencia}` : ""}
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+          {c.resultado && <Badge color={RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.color}>{RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.label}</Badge>}
+          {c.desechado && <Badge color={COLORS.textMuted}>Desechado</Badge>}
+          <button onClick={() => toggleDesechado(c.id)} title={c.desechado ? "Restaurar a la bandeja" : "Desechar (no se borra, solo se esconde)"} style={{ background: "none", border: "none", color: c.desechado ? COLORS.neonSuccess : COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>{c.desechado ? "↩" : "🗂"}</button>
+          {esLider && (
+            <button onClick={() => eliminarCandidato(c.id)} title="Enviar a la papelera" style={{ background: "none", border: "none", color: COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>🗑</button>
+          )}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 14, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${COLORS.border}`, flexWrap: "wrap" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.llamado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
+          <input type="checkbox" checked={!!c.llamado} onChange={() => toggleLlamado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
+          Llamado
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.contestado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
+          <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
+          Contestó
+        </label>
+        {c.enviadoEntrevista ? (
+          <Badge color={COLORS.neonAmber}>✓ Enviado al líder</Badge>
+        ) : (
+          <NeonButton small active onClick={() => toggleEnviadoEntrevista(c.id)}>Enviar al líder →</NeonButton>
+        )}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+        {ESTADOS_LLAMADA.map((e) => (
+          <NeonButton key={e.id} small active={c.estadoLlamada === e.id} onClick={() => marcarLlamada(c.id, e.id)}>{e.label}</NeonButton>
+        ))}
+      </div>
+      {(c.estadoLlamada === "interesado" || c.estadoLlamada === "requisitos") && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, paddingTop: 8, borderTop: `1px solid ${COLORS.border}` }}>
+          {RESULTADOS_FINALES.map((r) => (
+            <button key={r.id} onClick={() => marcarResultado(c.id, r.id)} style={{
+              fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 4, cursor: "pointer",
+              background: c.resultado === r.id ? r.color + "22" : "transparent", border: `1px solid ${c.resultado === r.id ? r.color : COLORS.steel}`,
+              color: c.resultado === r.id ? r.color : COLORS.textMuted, fontFamily: FONT_BODY, textTransform: "uppercase", letterSpacing: 0.3,
+            }}>{r.label}</button>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
 
   return (
     <div>
       <SectionTitle>Tráfico de contactos</SectionTitle>
+
+      <Card style={{ marginBottom: 14 }}>
+        <CornerFrame color={COLORS.neonBlue} size={12} thickness={2} />
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap" }}>
+          <NeonButton small onClick={() => cambiarDia(-1)}>← Día anterior</NeonButton>
+          <input
+            type="date" value={fechaSeleccionada}
+            onChange={(e) => { setFechaSeleccionada(e.target.value); setMostrarAnteriores(false); }}
+            style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "8px 10px", color: COLORS.white, fontFamily: FONT_MONO, fontSize: 13, outline: "none" }}
+          />
+          <NeonButton small onClick={() => cambiarDia(1)}>Día siguiente →</NeonButton>
+          {fechaSeleccionada !== todayStr() && (
+            <NeonButton small active onClick={() => { setFechaSeleccionada(todayStr()); setMostrarAnteriores(false); }}>Hoy</NeonButton>
+          )}
+        </div>
+      </Card>
+
+      <Card style={{ marginBottom: 14 }}>
+        <CornerFrame color={COLORS.neonSuccess} size={12} thickness={2} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted }}>
+            Copia lo del día seleccionado ({filtrados.length} contacto{filtrados.length === 1 ? "" : "s"}) — Tráfico no cambia, solo se copia.
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {copiado && <Badge color={COLORS.neonSuccess}>Copiado ✓ — pégalo en Sheets</Badge>}
+            <NeonButton small active onClick={exportarAGoogleSheets}>📋 Copiar para Google Sheets</NeonButton>
+          </div>
+        </div>
+      </Card>
+
       {user.rol === "agente" && (
         <Card style={{ marginBottom: 16 }}>
           <CornerFrame color={prog >= CUOTA_DIARIA_ENTREVISTA ? COLORS.neonSuccess : COLORS.neonRed} size={14} thickness={2} />
@@ -905,100 +1203,93 @@ function TraficoView({ user, candidatos, onUpdate, esLider }) {
       <Card style={{ marginBottom: 14 }}>
         <CornerFrame color={COLORS.steel} size={12} thickness={2} />
         <input
-          value={busqueda} onChange={(e) => { setBusqueda(e.target.value); setPagina(1); }}
+          value={busqueda} onChange={(e) => { setBusqueda(e.target.value); setMostrarAnteriores(false); }}
           placeholder="Buscar por nombre o teléfono..."
           style={{ width: "100%", background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "9px 12px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 13, outline: "none", boxSizing: "border-box", marginBottom: 10 }}
         />
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <NeonButton small active={filtro === "todos"} onClick={() => { setFiltro("todos"); setPagina(1); }}>Todos</NeonButton>
-          <NeonButton small active={filtro === "pendientes"} onClick={() => { setFiltro("pendientes"); setPagina(1); }}>Pendientes por llamar</NeonButton>
-          <NeonButton small active={filtro === "no_contesto"} onClick={() => { setFiltro("no_contesto"); setPagina(1); }}>No contestó</NeonButton>
-          <select value={filtroPais} onChange={(e) => { setFiltroPais(e.target.value); setPagina(1); }}
+          <NeonButton small active={filtro === "todos"} onClick={() => { setFiltro("todos"); setMostrarAnteriores(false); }}>Todos</NeonButton>
+          <NeonButton small active={filtro === "pendientes"} onClick={() => { setFiltro("pendientes"); setMostrarAnteriores(false); }}>Pendientes por llamar</NeonButton>
+          <NeonButton small active={filtro === "no_contesto"} onClick={() => { setFiltro("no_contesto"); setMostrarAnteriores(false); }}>No contestó</NeonButton>
+          <NeonButton small active={filtro === "desechados"} onClick={() => { setFiltro("desechados"); setMostrarAnteriores(false); }}>Desechados</NeonButton>
+          <select value={filtroPais} onChange={(e) => { setFiltroPais(e.target.value); setMostrarAnteriores(false); }}
             style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "7px 10px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 12, outline: "none" }}>
             <option value="todos">Todos los países</option>
             {paisesDisponibles.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
+          {esLider && (
+            <select value={filtroAgenteTrafico} onChange={(e) => { setFiltroAgenteTrafico(e.target.value); setMostrarAnteriores(false); }}
+              style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.neonRed}`, borderRadius: 4, padding: "7px 10px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 12, outline: "none" }}>
+              <option value="todos">Todos los agentes</option>
+              <option value="mios">Solo los míos</option>
+              {agentesDisponibles.map((a) => <option key={a.id} value={a.id}>{a.nombre}</option>)}
+            </select>
+          )}
         </div>
       </Card>
 
       {user.rol === "agente" && (
         <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-          <NeonButton small active={!verTodos} onClick={() => { setVerTodos(false); setPagina(1); }}>Mis asignados</NeonButton>
-          <NeonButton small active={verTodos} onClick={() => { setVerTodos(true); setPagina(1); }}>Ver todos</NeonButton>
+          <NeonButton small active={!verTodos} onClick={() => { setVerTodos(false); setMostrarAnteriores(false); }}>Mis asignados</NeonButton>
+          <NeonButton small active={verTodos} onClick={() => { setVerTodos(true); setMostrarAnteriores(false); }}>Ver todos</NeonButton>
         </div>
       )}
 
-      {visibles.length === 0 && (
+      {filtrados.length === 0 && (
         <Card><div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, textAlign: "center", padding: "10px 0" }}>No hay contactos que coincidan.</div></Card>
       )}
-      {visibles.map((c) => (
-        <Card key={c.id} style={{ marginBottom: 12 }}>
-          <CornerFrame color={COLORS.steel} size={14} thickness={2} />
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-            <div>
-              <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
-              <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
-                {c.telefono}{c.pais ? ` · ${c.pais}` : ""}{c.agenteId ? ` · asignado a ${USUARIOS_REALES.find((u) => u.id === c.agenteId)?.nombre || c.agenteId}` : ""}
-              </div>
-              {(c.idiomas || c.experiencia) && (
-                <div style={{ fontSize: 11, color: COLORS.neonBlue, fontFamily: FONT_MONO, marginTop: 4 }}>
-                  {c.idiomas ? `Idiomas: ${c.idiomas}` : ""}{c.idiomas && c.experiencia ? " · " : ""}{c.experiencia ? `Experiencia: ${c.experiencia}` : ""}
-                </div>
-              )}
-            </div>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-              {c.resultado && <Badge color={RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.color}>{RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.label}</Badge>}
-              {esLider && (
-                <button onClick={() => eliminarCandidato(c.id)} title="Enviar a la papelera" style={{ background: "none", border: "none", color: COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>🗑</button>
-              )}
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 14, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${COLORS.border}` }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.llamado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
-              <input type="checkbox" checked={!!c.llamado} onChange={() => toggleLlamado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
-              Llamado
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.contestado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
-              <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
-              Contestó
-            </label>
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-            {ESTADOS_LLAMADA.map((e) => (
-              <NeonButton key={e.id} small active={c.estadoLlamada === e.id} onClick={() => marcarLlamada(c.id, e.id)}>{e.label}</NeonButton>
-            ))}
-          </div>
-          {(c.estadoLlamada === "interesado" || c.estadoLlamada === "requisitos") && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, paddingTop: 8, borderTop: `1px solid ${COLORS.border}` }}>
-              {RESULTADOS_FINALES.map((r) => (
-                <button key={r.id} onClick={() => marcarResultado(c.id, r.id)} style={{
-                  fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 4, cursor: "pointer",
-                  background: c.resultado === r.id ? r.color + "22" : "transparent", border: `1px solid ${c.resultado === r.id ? r.color : COLORS.steel}`,
-                  color: c.resultado === r.id ? r.color : COLORS.textMuted, fontFamily: FONT_BODY, textTransform: "uppercase", letterSpacing: 0.3,
-                }}>{r.label}</button>
-              ))}
-            </div>
-          )}
-        </Card>
-      ))}
 
-      {filtrados.length > 0 && (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <NeonButton small onClick={() => setPagina((p) => Math.max(1, p - 1))} disabled={paginaSegura <= 1}>← Anterior</NeonButton>
-            <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>Página {paginaSegura} de {totalPaginas} ({filtrados.length} contactos)</span>
-            <NeonButton small onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))} disabled={paginaSegura >= totalPaginas}>Siguiente →</NeonButton>
+      {agregadosManualHoy.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonSuccess, marginBottom: 10, letterSpacing: 1 }}>
+            ✋ AGREGADOS POR TI HOY — ya están en Candidatos ({agregadosManualHoy.length})
           </div>
-          {esLider && totalPaginas >= 10 && (
-            <NeonButton small onClick={borrarPaginaAntigua}>Borrar página más antigua (papelera)</NeonButton>
-          )}
+          {agregadosManualHoy.map((c) => (
+            <Card key={c.id} style={{ marginBottom: 12 }}>
+              <CornerFrame color={COLORS.neonSuccess} size={14} thickness={2} />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
+                  <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
+                    {c.telefono}{c.pais ? ` · ${c.pais}` : ""}
+                  </div>
+                </div>
+                <Badge color={COLORS.neonSuccess}>✓ En Candidatos</Badge>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {loteMasReciente && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonAmber, marginBottom: 10, letterSpacing: 1 }}>
+            🆕 RECIÉN ENVIADOS{gruposPorLote[loteMasReciente][0]?.loteHora ? ` — Actualización ${gruposPorLote[loteMasReciente][0].loteHora}` : ""} ({gruposPorLote[loteMasReciente].length})
+          </div>
+          {gruposPorLote[loteMasReciente].map(renderTarjetaCandidato)}
+        </div>
+      )}
+
+      {lotesAnteriores.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <NeonButton small onClick={() => setMostrarAnteriores(!mostrarAnteriores)}>
+            {mostrarAnteriores ? "Ocultar enviados anteriormente" : `Ver enviados anteriormente (${totalAnteriores} más, este día)`}
+          </NeonButton>
+          {mostrarAnteriores && lotesAnteriores.map((loteKey) => (
+            <div key={loteKey} style={{ marginTop: 16 }}>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginBottom: 10, letterSpacing: 1 }}>
+                Actualización {gruposPorLote[loteKey][0]?.loteHora || ""} ({gruposPorLote[loteKey].length})
+              </div>
+              {gruposPorLote[loteKey].map(renderTarjetaCandidato)}
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpdatePuntero, usuarios, asistenciaHoy }) {
+function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpdatePuntero, usuarios, asistenciaHoy, ultimaImportacion, onImportado, onDeshacerImportacion }) {
   const [texto, setTexto] = useState("");
   const [borradores, setBorradores] = useState(null); // null = aún no analizado
 
@@ -1042,10 +1333,8 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
       setBorradores([]);
       return;
     }
-    const conAsignacion = parseados.map((p, i) => {
-      const idx = (puntero + i) % presentes.length;
-      return { ...p, pais: p.pais || "", agenteId: presentes[idx], key: "b" + i + "_" + Date.now() };
-    });
+    const { asignaciones } = calcularSiguientesAsignaciones(parseados.length, puntero, asistenciaHoy);
+    const conAsignacion = parseados.map((p, i) => ({ ...p, pais: p.pais || "", agenteId: asignaciones[i], key: "b" + i + "_" + Date.now() }));
     setBorradores(conAsignacion);
   };
 
@@ -1059,6 +1348,8 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
 
   const confirmarImportacion = () => {
     if (!borradores || borradores.length === 0) return;
+    const loteId = Date.now();
+    const loteHora = new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" });
     const nuevos = borradores.map((b, i) => ({
       id: "c" + Date.now() + "_" + i,
       nombre: b.nombre || "Sin nombre",
@@ -1068,16 +1359,29 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
       experiencia: b.experiencia || "",
       agenteId: b.agenteId,
       fecha: todayStr(),
+      loteId,
+      loteHora,
       estadoLlamada: null,
       resultado: null,
       aprobadoLider: null,
       llamado: false,
       contestado: false,
       eliminado: false,
+      desechado: false,
       archivos: [],
+      enviadoEntrevista: false,
+      entrevistaAprobada: false,
+      documentosAprobados: false,
+      poligrafoAprobado: false,
+      enviadoAAgente: false,
+      fechaInicio: null,
+      comentarios: [],
+      documentos: [],
     }));
     onUpdateCandidatos([...nuevos, ...candidatos]);
-    onUpdatePuntero((puntero + borradores.length) % presentes.length);
+    const { nuevoPuntero } = calcularSiguientesAsignaciones(borradores.length, puntero, asistenciaHoy);
+    onUpdatePuntero(nuevoPuntero);
+    onImportado(nuevos.map((n) => n.id));
     setBorradores(null);
     setTexto("");
   };
@@ -1085,13 +1389,31 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
   return (
     <div>
       <SectionTitle>Importar contactos de Telegram</SectionTitle>
+      {ultimaImportacion && ultimaImportacion.ids.length > 0 && (
+        <Card style={{ marginBottom: 16, borderColor: COLORS.neonRed }}>
+          <CornerFrame color={COLORS.neonRed} size={12} thickness={2} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>
+              Última importación: {ultimaImportacion.ids.length} contacto(s), hace un momento.
+            </div>
+            <NeonButton small onClick={onDeshacerImportacion}>Deshacer última importación</NeonButton>
+          </div>
+        </Card>
+      )}
       <Card style={{ marginBottom: 16 }}>
         <CornerFrame color={COLORS.neonSuccess} size={14} thickness={2} />
-        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonSuccess, marginBottom: 4, letterSpacing: 1 }}>
-          PRESENTES HOY ({presentes.length}/{ORDEN_ASIGNACION.length})
-        </div>
-        <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.white }}>
-          {presentes.map((id) => nombreDe(id)).join(", ")}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <div>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonSuccess, marginBottom: 4, letterSpacing: 1 }}>
+              PRESENTES HOY ({presentes.length}/{ORDEN_ASIGNACION.length})
+            </div>
+            <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.white }}>
+              {presentes.map((id) => nombreDe(id)).join(", ")}
+            </div>
+          </div>
+          <NeonButton small onClick={() => { if (window.confirm("¿Reiniciar el orden de reparto? El siguiente turno vuelve a empezar en Corleone. Esto NO borra candidatos ni nada más.")) onUpdatePuntero(0); }}>
+            Reiniciar orden de reparto
+          </NeonButton>
         </div>
       </Card>
       <Card style={{ marginBottom: 16 }}>
@@ -1112,7 +1434,7 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <NeonButton active onClick={analizar} disabled={!texto.trim()}>Analizar mensajes</NeonButton>
           <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted }}>
-            Siguiente en el orden de asignación: <span style={{ color: COLORS.neonRed }}>{nombreDe(presentes[puntero % presentes.length])}</span>
+            Siguiente en el orden de asignación: <span style={{ color: COLORS.neonRed }}>{nombreDe(calcularSiguientesAsignaciones(1, puntero, asistenciaHoy).asignaciones[0])}</span>
           </div>
         </div>
       </Card>
@@ -1163,7 +1485,7 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
   );
 }
 
-function AsistenciaView({ usuarios, asistencia, onUpdateAsistencia }) {
+function AsistenciaView({ usuarios, asistencia, onUpdateAsistencia, onUpdateUsuarios }) {
   const hoy = todayStr();
   const registroHoy = asistencia[hoy];
   const [seleccion, setSeleccion] = useState(() => {
@@ -1173,7 +1495,15 @@ function AsistenciaView({ usuarios, asistencia, onUpdateAsistencia }) {
   });
 
   const toggle = (id) => setSeleccion((prev) => ({ ...prev, [id]: !prev[id] }));
-  const guardar = () => onUpdateAsistencia({ ...asistencia, [hoy]: seleccion });
+  const guardar = () => {
+    onUpdateAsistencia({ ...asistencia, [hoy]: seleccion });
+    // Puntos automáticos por asistir — solo a quien queda marcado presente HOY por primera vez
+    // (si ya se había guardado antes y solo se corrige algo, no se vuelve a dar de más).
+    const nuevosPresentes = usuarios.filter((u) => seleccion[u.id] && !(registroHoy && registroHoy[u.id]));
+    if (nuevosPresentes.length > 0) {
+      onUpdateUsuarios(usuarios.map((u) => (nuevosPresentes.some((p) => p.id === u.id) ? { ...u, puntos: u.puntos + 10 } : u)));
+    }
+  };
   const presentesCount = Object.values(seleccion).filter(Boolean).length;
 
   return (
@@ -1242,34 +1572,255 @@ function PapeleraView({ candidatos, onUpdate }) {
   );
 }
 
-function PostulacionesView({ candidatos, onUpdate }) {
-  const decidir = (id, val) => onUpdate(candidatos.map((c) => (c.id === id ? { ...c, aprobadoLider: val } : c)));
+const ETAPAS_PIPELINE = [
+  { id: "entrevista", label: "Esperando entrevista", color: COLORS.neonBlue },
+  { id: "documentos", label: "En revisión de documentos", color: COLORS.neonBlue },
+  { id: "poligrafo", label: "En polígrafo", color: COLORS.neonBlue },
+  { id: "listo", label: "Listo para trabajar", color: COLORS.neonAmber },
+  { id: "enviado", label: "Enviado al agente", color: COLORS.neonSuccess },
+];
+
+function etapaDe(c) {
+  if (c.enviadoAAgente) return "enviado";
+  if (c.poligrafoAprobado) return "listo";
+  if (c.documentosAprobados) return "poligrafo";
+  if (c.entrevistaAprobada) return "documentos";
+  return "entrevista";
+}
+
+function ComentariosYDocumentos({ user, candidato, onActualizar }) {
+  const [texto, setTexto] = useState("");
+  const [errorArchivo, setErrorArchivo] = useState("");
+  const [abierto, setAbierto] = useState(false);
+
+  const comentarios = candidato.comentarios || [];
+  const documentos = candidato.documentos || [];
+
+  const enviarComentario = () => {
+    if (!texto.trim()) return;
+    const nuevo = { id: "cm" + Date.now(), autorId: user.id, autorNombre: user.nombre, texto: texto.trim(), ts: Date.now() };
+    onActualizar(candidato.id, "comentarios", [...comentarios, nuevo]);
+    setTexto("");
+  };
+
+  const onArchivoSeleccionado = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const leido = await leerArchivoComoDataUrl(file);
+      const nuevo = { id: "doc" + Date.now(), ...leido, subidoPor: user.nombre, ts: Date.now() };
+      onActualizar(candidato.id, "documentos", [...documentos, nuevo]);
+      setErrorArchivo("");
+    } catch (err) {
+      setErrorArchivo(err.message);
+    }
+    e.target.value = "";
+  };
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${COLORS.border}55` }}>
+      <button onClick={() => setAbierto(!abierto)} style={{
+        background: "none", border: "none", color: COLORS.neonBlue, fontFamily: FONT_MONO, fontSize: 11,
+        cursor: "pointer", letterSpacing: 0.5, padding: 0,
+      }}>
+        {abierto ? "▾" : "▸"} Comentarios ({comentarios.length}) y documentos ({documentos.length})
+      </button>
+
+      {abierto && (
+        <div style={{ marginTop: 10 }}>
+          {documentos.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+              {documentos.map((d) => (
+                <div key={d.id}>
+                  <AdjuntoChip archivo={d} />
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: COLORS.textMuted, marginTop: 2 }}>{d.subidoPor}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          <label style={{
+            display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", border: `1px solid ${COLORS.steel}`,
+            borderRadius: 4, color: COLORS.textMuted, cursor: "pointer", fontFamily: FONT_MONO, fontSize: 11, marginBottom: 12,
+          }}>
+            📎 Adjuntar documento
+            <input type="file" onChange={onArchivoSeleccionado} style={{ display: "none" }} />
+          </label>
+          {errorArchivo && <div style={{ color: COLORS.neonRed, fontSize: 11, marginBottom: 8, fontFamily: FONT_MONO }}>{errorArchivo}</div>}
+
+          {comentarios.map((cm) => (
+            <div key={cm.id} style={{ marginBottom: 8 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                <span style={{ fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: cm.autorId === "corleone1" ? COLORS.neonRed : COLORS.neonBlue, textTransform: "uppercase" }}>{cm.autorNombre}</span>
+                <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: COLORS.textMuted }}>{new Date(cm.ts).toLocaleString("es-CO", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+              </div>
+              <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.white }}>{cm.texto}</div>
+            </div>
+          ))}
+
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <input
+              value={texto} onChange={(e) => setTexto(e.target.value)} onKeyDown={(e) => e.key === "Enter" && enviarComentario()}
+              placeholder="Escribe un comentario..."
+              style={{ flex: 1, background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "8px 10px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 13, outline: "none" }}
+            />
+            <NeonButton small active onClick={enviarComentario}>Enviar</NeonButton>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CandidatosView({ user, candidatos, onUpdate, usuarios, onUpdateUsuarios }) {
+  const [filtroEtapa, setFiltroEtapa] = useState("todos");
+  const [filtroAgente, setFiltroAgente] = useState("todos");
+  const [busqueda, setBusqueda] = useState("");
+
+  const nombreDe = (id) => usuarios.find((u) => u.id === id)?.nombre || id;
+  const agentes = usuarios.filter((u) => u.rol === "agente");
+
+  const actualizar = (id, campo, valor) => onUpdate(candidatos.map((c) => (c.id === id ? { ...c, [campo]: valor } : c)));
+
+  const pipelineCompleto = candidatos.filter((c) => c.enviadoEntrevista && !c.eliminado);
+
+  const base = user.rol === "lider" ? pipelineCompleto : pipelineCompleto.filter((c) => c.agenteId === user.id);
+
+  const filtrados = base.filter((c) => {
+    if (filtroEtapa !== "todos" && etapaDe(c) !== filtroEtapa) return false;
+    if (user.rol === "lider" && filtroAgente !== "todos" && c.agenteId !== filtroAgente) return false;
+    if (busqueda.trim() && !c.nombre.toLowerCase().includes(busqueda.trim().toLowerCase())) return false;
+    return true;
+  });
+
+  const marcarEntrevista = (c, val) => {
+    if (val) {
+      actualizar(c.id, "entrevistaAprobada", true);
+      // Bono de efectividad: el líder confirma que la entrevista de verdad sirvió, no solo que se envió.
+      if (!c.entrevistaAprobada && onUpdateUsuarios && usuarios) {
+        onUpdateUsuarios(usuarios.map((u) => (u.id === c.agenteId ? { ...u, puntos: u.puntos + 10 } : u)));
+      }
+    } else onUpdate(candidatos.map((x) => (x.id === c.id ? { ...x, entrevistaAprobada: false, documentosAprobados: false, poligrafoAprobado: false } : x)));
+  };
+  const marcarDocumentos = (c, val) => {
+    if (val) actualizar(c.id, "documentosAprobados", true);
+    else onUpdate(candidatos.map((x) => (x.id === c.id ? { ...x, documentosAprobados: false, poligrafoAprobado: false } : x)));
+  };
+  const marcarPoligrafo = (c, val) => actualizar(c.id, "poligrafoAprobado", val);
+  const enviarAAgente = (c) => actualizar(c.id, "enviadoAAgente", true);
+  const setFechaInicio = (c, val) => actualizar(c.id, "fechaInicio", val);
+  // Saca al candidato del pipeline de Candidatos (ej. no pasó documentos, no siguió, etc.)
+  // No lo borra de la app — solo lo regresa a Tráfico, reseteando su avance en el proceso.
+  const sacarDeCandidatos = (c) => {
+    if (!window.confirm(`¿Sacar a ${c.nombre} de Candidatos? Vuelve a Tráfico, no se borra del todo.`)) return;
+    onUpdate(candidatos.map((x) => (x.id === c.id ? {
+      ...x, enviadoEntrevista: false, entrevistaAprobada: false, documentosAprobados: false,
+      poligrafoAprobado: false, enviadoAAgente: false, fechaInicio: null,
+    } : x)));
+  };
+
   return (
     <div>
-      <SectionTitle>Postulaciones — decisión final</SectionTitle>
-      {candidatos.filter((c) => c.resultado).map((c) => (
-        <Card key={c.id} style={{ marginBottom: 10 }}>
-          <CornerFrame color={COLORS.steel} size={14} thickness={2} />
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontSize: 14, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
-              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted }}>
-                {c.agenteId ? USUARIOS_REALES.find((u) => u.id === c.agenteId)?.nombre : "Sin agente"} · {RESULTADOS_FINALES.find((r) => r.id === c.resultado)?.label}
+      <SectionTitle>Candidatos</SectionTitle>
+
+      <Card style={{ marginBottom: 14 }}>
+        <CornerFrame color={COLORS.steel} size={12} thickness={2} />
+        <input
+          value={busqueda} onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="Buscar por nombre..."
+          style={{ width: "100%", background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "9px 12px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 13, outline: "none", boxSizing: "border-box", marginBottom: 10 }}
+        />
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <NeonButton small active={filtroEtapa === "todos"} onClick={() => setFiltroEtapa("todos")}>Todas las etapas</NeonButton>
+          {ETAPAS_PIPELINE.map((e) => (
+            <NeonButton key={e.id} small active={filtroEtapa === e.id} onClick={() => setFiltroEtapa(e.id)}>{e.label}</NeonButton>
+          ))}
+          {user.rol === "lider" && (
+            <select value={filtroAgente} onChange={(e) => setFiltroAgente(e.target.value)}
+              style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "7px 10px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 12, outline: "none" }}>
+              <option value="todos">Todos los agentes</option>
+              {agentes.map((a) => <option key={a.id} value={a.id}>{a.nombre}</option>)}
+            </select>
+          )}
+        </div>
+      </Card>
+
+      {filtrados.length === 0 && (
+        <Card><div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, textAlign: "center", padding: "10px 0" }}>No hay candidatos en esta etapa todavía.</div></Card>
+      )}
+
+      {filtrados.map((c) => {
+        const etapa = etapaDe(c);
+        const listo = c.poligrafoAprobado;
+        return (
+          <Card key={c.id} style={{
+            marginBottom: 12,
+            background: listo ? "#3a2408" : COLORS.bgPanel,
+            border: listo ? `1px solid ${COLORS.neonAmber}` : `1px solid ${COLORS.border}`,
+          }}>
+            <CornerFrame color={listo ? COLORS.neonAmber : COLORS.steel} size={14} thickness={2} />
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
+                <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
+                  {c.telefono} · Agente: {nombreDe(c.agenteId)}
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <Badge color={ETAPAS_PIPELINE.find((e) => e.id === etapa)?.color}>{ETAPAS_PIPELINE.find((e) => e.id === etapa)?.label}</Badge>
+                {user.rol === "lider" && (
+                  <button onClick={() => sacarDeCandidatos(c)} title="Sacar de Candidatos (no pasó, no siguió, etc.)" style={{ background: "none", border: "none", color: COLORS.textMuted, fontFamily: FONT_MONO, fontSize: 11, cursor: "pointer" }}>🗑</button>
+                )}
               </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {c.aprobadoLider === true && <Badge color={COLORS.neonSuccess}>Aprobado</Badge>}
-              {c.aprobadoLider === false && <Badge color={COLORS.neonRed}>Rechazado</Badge>}
-              {c.aprobadoLider == null && (
-                <>
-                  <NeonButton small active onClick={() => decidir(c.id, true)}>Aprobar</NeonButton>
-                  <NeonButton small onClick={() => decidir(c.id, false)}>Rechazar</NeonButton>
-                </>
-              )}
-            </div>
-          </div>
-        </Card>
-      ))}
+
+            {user.rol === "lider" ? (
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", paddingTop: 8, borderTop: `1px solid ${COLORS.border}55` }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.entrevistaAprobada ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
+                  <input type="checkbox" checked={!!c.entrevistaAprobada} onChange={(e) => marcarEntrevista(c, e.target.checked)} style={{ accentColor: COLORS.neonSuccess, width: 16, height: 16, cursor: "pointer" }} />
+                  Entrevista aprobada
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: c.entrevistaAprobada ? "pointer" : "not-allowed", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.documentosAprobados ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase", opacity: c.entrevistaAprobada ? 1 : 0.4 }}>
+                  <input type="checkbox" disabled={!c.entrevistaAprobada} checked={!!c.documentosAprobados} onChange={(e) => marcarDocumentos(c, e.target.checked)} style={{ accentColor: COLORS.neonSuccess, width: 16, height: 16, cursor: "pointer" }} />
+                  Documentos aprobados
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: c.documentosAprobados ? "pointer" : "not-allowed", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.poligrafoAprobado ? COLORS.neonAmber : COLORS.textMuted, textTransform: "uppercase", opacity: c.documentosAprobados ? 1 : 0.4 }}>
+                  <input type="checkbox" disabled={!c.documentosAprobados} checked={!!c.poligrafoAprobado} onChange={(e) => marcarPoligrafo(c, e.target.checked)} style={{ accentColor: COLORS.neonAmber, width: 16, height: 16, cursor: "pointer" }} />
+                  Polígrafo aprobado
+                </label>
+
+                {listo && !c.enviadoAAgente && (
+                  <NeonButton small active onClick={() => enviarAAgente(c)}>Enviar a {nombreDe(c.agenteId)}</NeonButton>
+                )}
+                {c.enviadoAAgente && <Badge color={COLORS.neonSuccess}>Enviado a {nombreDe(c.agenteId)}</Badge>}
+              </div>
+            ) : (
+              <div style={{ paddingTop: 8, borderTop: `1px solid ${COLORS.border}55` }}>
+                {c.enviadoAAgente ? (
+                  <div>
+                    <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonAmber, marginBottom: 8, letterSpacing: 0.5 }}>
+                      LISTO PARA EMPEZAR — define la fecha y hora de inicio
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <input
+                        type="datetime-local"
+                        value={c.fechaInicio || ""}
+                        onChange={(e) => setFechaInicio(c, e.target.value)}
+                        style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "8px 10px", color: COLORS.white, fontFamily: FONT_MONO, fontSize: 13, outline: "none" }}
+                      />
+                      {c.fechaInicio && <Badge color={COLORS.neonSuccess}>Programado</Badge>}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted }}>
+                    Esperando que el líder complete el proceso (entrevista → documentos → polígrafo).
+                  </div>
+                )}
+              </div>
+            )}
+            <ComentariosYDocumentos user={user} candidato={c} onActualizar={actualizar} />
+          </Card>
+        );
+      })}
     </div>
   );
 }
@@ -1397,8 +1948,13 @@ function TareasView({ user, tareas, onUpdate, usuarios, onUpdateUsuarios }) {
       const orden = ["pendiente", "en_progreso", "completada"];
       const idx = orden.indexOf(t.estado);
       const nuevoEstado = orden[Math.min(idx + 1, 2)];
-      if (nuevoEstado === "completada" && t.tipo === "mision" && t.puntosRecompensa) {
-        onUpdateUsuarios(usuarios.map((u) => (u.id === t.asignadoA ? { ...u, puntos: u.puntos + t.puntosRecompensa } : u)));
+      if (nuevoEstado === "completada" && t.estado !== "completada") {
+        if (t.tipo === "mision" && t.puntosRecompensa) {
+          onUpdateUsuarios(usuarios.map((u) => (u.id === t.asignadoA ? { ...u, puntos: u.puntos + t.puntosRecompensa } : u)));
+        } else if (t.tipo === "tarea") {
+          // Puntos automáticos por completar una tarea normal (parte del sistema de ranking por efectividad).
+          onUpdateUsuarios(usuarios.map((u) => (u.id === t.asignadoA ? { ...u, puntos: u.puntos + 15 } : u)));
+        }
       }
       return { ...t, estado: nuevoEstado };
     }));
@@ -1662,6 +2218,14 @@ function EquipoView({ usuarios }) {
 }
 
 const VEINTICUATRO_HORAS_MS = 24 * 60 * 60 * 1000;
+const SESION_STORAGE_KEY = "cupula_sesion";
+const SESION_DURACION_MS = 30 * VEINTICUATRO_HORAS_MS; // se mantiene mientras se siga usando (30 días desde el último uso)
+
+// 👉 REINICIAR TODO EL SISTEMA PARA TODOS: sube este número (t3, t4, t5...) y listo,
+// nadie va a tener datos guardados — arrancan de cero como recién instalado.
+// Cuando ya esté oficial y confirmado que todo funciona bien, deja de subirlo.
+const DATA_VERSION = "t2";
+function k(nombre) { return `${nombre}_${DATA_VERSION}`; }
 const TAMANO_MAX_ARCHIVO = 350 * 1024; // ~350KB, límite prudente para no saturar el almacenamiento
 
 function leerArchivoComoDataUrl(file) {
@@ -1698,20 +2262,18 @@ const ENLACES_IA_WEB = [
 ];
 
 async function preguntarCupulaAI(historial) {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  // Le pregunta al servidor de Vercel (api/chat.js), que es quien tiene la llave escondida
+  // y le habla a Gemini de verdad — la página nunca ve ni maneja la llave directamente.
+  const response = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1000,
-      system: "Eres Cúpula AI, la asistente virtual interna de La Cúpula (NYC 420 Style), una plataforma de gestión para un equipo de ventas de un líder y cinco agentes. Ayudas con dudas de reclutamiento, ventas, redacción de mensajes, organización de tareas y preguntas generales. Sé breve, directa y con un tono profesional pero cercano, en español.",
       messages: historial.map((m) => ({ role: m.autor === "usuario" ? "user" : "assistant", content: m.texto })),
     }),
   });
   const data = await response.json();
-  if (data.error) throw new Error(data.error.message || "Error de la API");
-  const textBlock = data.content.find((b) => b.type === "text");
-  return textBlock ? textBlock.text : "(sin respuesta)";
+  if (data.error) throw new Error(data.error);
+  return data.text || "(sin respuesta)";
 }
 
 function CupulaAIView({ user }) {
@@ -1917,82 +2479,123 @@ export default function LaCupula() {
   const [chatConfig, setChatConfig] = useState(null);
   const [puntero, setPuntero] = useState(0);
   const [asistencia, setAsistencia] = useState(null);
+  const [ultimaImportacion, setUltimaImportacion] = useState(null);
   const [session, setSession] = useState(null);
   const [active, setActive] = useState("dashboard");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
-      const u = await loadOrSeed("users_v2", seedUsers);
-      const c = await loadOrSeed("candidatos_v3", seedCandidatos);
-      const t = await loadOrSeed("tareas_v3", seedTareas);
-      let m = await loadOrSeed("chat_mensajes", seedChatMensajes);
+      const u = await loadOrSeed(k("users"), seedUsers);
+      const c = await loadOrSeed(k("candidatos"), seedCandidatos);
+      const t = await loadOrSeed(k("tareas"), seedTareas);
+      let m = await loadOrSeed(k("chat_mensajes"), seedChatMensajes);
       // Poda automática: los mensajes normales se borran cada 24 horas.
       const mPodado = m.filter((msg) => Date.now() - msg.ts < VEINTICUATRO_HORAS_MS);
-      if (mPodado.length !== m.length) { await saveData("chat_mensajes", mPodado); }
+      if (mPodado.length !== m.length) { await saveData(k("chat_mensajes"), mPodado); }
       m = mPodado;
-      const ma = await loadOrSeed("chat_archivo", () => []);
-      const cfg = await loadOrSeed("chat_config", seedChatConfig);
-      const p = await loadOrSeed("orden_asignacion_puntero", seedPuntero);
-      const asis = await loadOrSeed("asistencia", () => ({}));
+      const ma = await loadOrSeed(k("chat_archivo"), () => []);
+      const cfg = await loadOrSeed(k("chat_config"), seedChatConfig);
+      const p = await loadOrSeed(k("puntero"), seedPuntero);
+      const asis = await loadOrSeed(k("asistencia"), () => ({}));
       setUsers(u); setCandidatos(c); setTareas(t); setMensajes(m); setMensajesArchivo(ma); setChatConfig(cfg); setPuntero(p); setAsistencia(asis); setLoading(false);
+
+      // Restaura la sesión guardada (si no ha expirado) para no tener que loguearse
+      // otra vez cada vez que se recarga la página o se reabre la app.
+      try {
+        const raw = window.localStorage.getItem(SESION_STORAGE_KEY);
+        if (raw) {
+          const guardada = JSON.parse(raw);
+          if (guardada && Date.now() - guardada.ts < SESION_DURACION_MS) {
+            const usuarioGuardado = u.find((usr) => usr.id === guardada.userId);
+            if (usuarioGuardado) setSession(usuarioGuardado);
+          } else {
+            window.localStorage.removeItem(SESION_STORAGE_KEY);
+          }
+        }
+      } catch (e) {}
     })();
   }, []);
 
   useEffect(() => {
     if (!session) return;
+    // Renueva la fecha de la sesión guardada cada vez que la app está activa,
+    // así dura "mientras se siga usando" en vez de vencerse a fecha fija.
+    try { window.localStorage.setItem(SESION_STORAGE_KEY, JSON.stringify({ userId: session.id, ts: Date.now() })); } catch (e) {}
     const id = setInterval(async () => {
-      const m = await fetchData("chat_mensajes");
+      try { window.localStorage.setItem(SESION_STORAGE_KEY, JSON.stringify({ userId: session.id, ts: Date.now() })); } catch (e) {}
+      const m = await fetchData(k("chat_mensajes"));
       if (m) setMensajes(m.filter((msg) => Date.now() - msg.ts < VEINTICUATRO_HORAS_MS));
-      const ma = await fetchData("chat_archivo");
+      const ma = await fetchData(k("chat_archivo"));
       if (ma) setMensajesArchivo(ma);
-      const cfg = await fetchData("chat_config");
+      const cfg = await fetchData(k("chat_config"));
       if (cfg) setChatConfig(cfg);
-      const asis = await fetchData("asistencia");
+      const asis = await fetchData(k("asistencia"));
       if (asis) setAsistencia(asis);
+      // Estos son los que hacen que Tráfico/Candidatos/Tareas se vean en tiempo real
+      // entre el líder y los agentes, no solo en el celular donde se hizo el cambio.
+      const c = await fetchData(k("candidatos"));
+      if (c) setCandidatos(c);
+      const t = await fetchData(k("tareas"));
+      if (t) setTareas(t);
+      const u = await fetchData(k("users"));
+      if (u) setUsers(u);
+      const p = await fetchData(k("puntero"));
+      if (p !== null && p !== undefined) setPuntero(p);
     }, 4000);
     return () => clearInterval(id);
   }, [session]);
 
-  const handleLogin = (u) => setSession(u);
-  const handleLogout = () => { setSession(null); setActive("dashboard"); };
-  const updateCandidatos = useCallback((next) => { setCandidatos(next); saveData("candidatos_v3", next); }, []);
-  const updatePuntero = useCallback((next) => { setPuntero(next); saveData("orden_asignacion_puntero", next); }, []);
-  const updateTareas = useCallback((next) => { setTareas(next); saveData("tareas_v3", next); }, []);
+  const handleLogin = (u) => {
+    setSession(u);
+    try { window.localStorage.setItem(SESION_STORAGE_KEY, JSON.stringify({ userId: u.id, ts: Date.now() })); } catch (e) {}
+  };
+  const handleLogout = () => {
+    setSession(null); setActive("dashboard");
+    try { window.localStorage.removeItem(SESION_STORAGE_KEY); } catch (e) {}
+  };
+  const updateCandidatos = useCallback((next) => { setCandidatos(next); saveData(k("candidatos"), next); }, []);
+  const updatePuntero = useCallback((next) => { setPuntero(next); saveData(k("puntero"), next); }, []);
+  const updateTareas = useCallback((next) => { setTareas(next); saveData(k("tareas"), next); }, []);
   const updateUsers = useCallback((next) => {
-    setUsers(next); saveData("users_v2", next);
+    setUsers(next); saveData(k("users"), next);
     setSession((s) => (s ? next.find((u) => u.id === s.id) || s : s));
   }, []);
   const enviarMensaje = useCallback((msg) => {
     setMensajes((prev) => {
       const podado = prev.filter((m) => Date.now() - m.ts < VEINTICUATRO_HORAS_MS);
       const next = [...podado, msg];
-      saveData("chat_mensajes", next);
+      saveData(k("chat_mensajes"), next);
       return next;
     });
   }, []);
   const cambiarModoChat = useCallback((modo) => {
-    const next = { modo }; setChatConfig(next); saveData("chat_config", next);
+    const next = { modo }; setChatConfig(next); saveData(k("chat_config"), next);
   }, []);
   const guardarEnArchivo = useCallback((msg) => {
     setMensajesArchivo((prev) => {
       if (prev.some((m) => m.id === msg.id)) return prev; // ya archivado
       const next = [...prev, msg];
-      saveData("chat_archivo", next);
+      saveData(k("chat_archivo"), next);
       return next;
     });
   }, []);
   const eliminarDelArchivo = useCallback((id) => {
     setMensajesArchivo((prev) => {
       const next = prev.filter((m) => m.id !== id);
-      saveData("chat_archivo", next);
+      saveData(k("chat_archivo"), next);
       return next;
     });
   }, []);
   const ajustarPuntos = useCallback((userId, delta) => {
     updateUsers(users.map((u) => (u.id === userId ? { ...u, puntos: Math.max(0, u.puntos + delta) } : u)));
   }, [users, updateUsers]);
-  const updateAsistencia = useCallback((next) => { setAsistencia(next); saveData("asistencia", next); }, []);
+  const updateAsistencia = useCallback((next) => { setAsistencia(next); saveData(k("asistencia"), next); }, []);
+
+  // IMPORTANTE: estos hooks deben llamarse SIEMPRE, en todos los renders,
+  // por eso van antes de cualquier "return" condicional (loading, !session, etc.)
+  const isMobile = useIsMobile();
+  const [sidebarAbierto, setSidebarAbierto] = useState(false);
 
   if (loading) {
     return (
@@ -2009,17 +2612,46 @@ export default function LaCupula() {
   }
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: COLORS.bgBase, fontFamily: FONT_BODY, position: "relative" }}>
+    <div style={{ display: "flex", minHeight: "100vh", background: COLORS.bgBase, fontFamily: FONT_BODY, position: "relative", flexDirection: isMobile ? "column" : "row" }}>
       <GlobalStyle />
-      <CornerFrame color={COLORS.steel} size={30} thickness={2} />
-      <Sidebar user={session} active={active} setActive={setActive} onLogout={handleLogout} />
-      <div style={{ flex: 1, padding: "28px 32px", overflowY: "auto" }}>
+      {!isMobile && <CornerFrame color={COLORS.steel} size={30} thickness={2} />}
+      {isMobile && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}`, background: COLORS.bgPanel,
+          position: "sticky", top: 0, zIndex: 50,
+        }}>
+          <button onClick={() => setSidebarAbierto(true)} style={{
+            background: "none", border: `1px solid ${COLORS.steel}`, borderRadius: 4, color: COLORS.white,
+            fontSize: 18, padding: "6px 12px", cursor: "pointer",
+          }}>☰</button>
+          <div style={{ fontFamily: FONT_DISPLAY, fontSize: 18, letterSpacing: 2, color: COLORS.white }}>LA CÚPULA</div>
+          <div style={{ width: 34 }} />
+        </div>
+      )}
+      <Sidebara
+        user={session} active={active} setActive={setActive} onLogout={handleLogout}
+        isMobile={isMobile} abierto={isMobile ? sidebarAbierto : true} onCerrar={() => setSidebarAbierto(false)}
+      />
+      <div style={{ flex: 1, padding: isMobile ? "16px" : "28px 32px", overflowY: "auto", minWidth: 0, boxSizing: "border-box" }}>
         {active === "dashboard" && session.rol === "lider" && <DashboardLider candidatos={candidatos} tareas={tareas} usuarios={users} />}
         {active === "dashboard" && session.rol === "agente" && <DashboardAgente user={session} tareas={tareas} candidatos={candidatos} />}
-        {active === "trafico" && <TraficoView user={session} candidatos={candidatos} onUpdate={updateCandidatos} esLider={session.rol === "lider"} />}
-        {active === "importar" && session.rol === "lider" && <ImportarContactosView candidatos={candidatos} onUpdateCandidatos={updateCandidatos} puntero={puntero} onUpdatePuntero={updatePuntero} usuarios={users} asistenciaHoy={asistencia[todayStr()] || null} />}
-        {active === "asistencia" && session.rol === "lider" && <AsistenciaView usuarios={users} asistencia={asistencia} onUpdateAsistencia={updateAsistencia} />}
-        {active === "postulaciones" && session.rol === "lider" && <PostulacionesView candidatos={candidatos} onUpdate={updateCandidatos} />}
+        {active === "trafico" && <TraficoView user={session} candidatos={candidatos} onUpdate={updateCandidatos} esLider={session.rol === "lider"} usuarios={users} onUpdateUsuarios={updateUsers} />}
+        {active === "importar" && session.rol === "lider" && (
+          <ImportarContactosView
+            candidatos={candidatos} onUpdateCandidatos={updateCandidatos} puntero={puntero} onUpdatePuntero={updatePuntero}
+            usuarios={users} asistenciaHoy={asistencia[todayStr()] || null}
+            ultimaImportacion={ultimaImportacion}
+            onImportado={(ids) => setUltimaImportacion({ ids, ts: Date.now() })}
+            onDeshacerImportacion={() => {
+              if (!ultimaImportacion) return;
+              updateCandidatos(candidatos.filter((c) => !ultimaImportacion.ids.includes(c.id)));
+              setUltimaImportacion(null);
+            }}
+          />
+        )}
+        {active === "asistencia" && session.rol === "lider" && <AsistenciaView usuarios={users} asistencia={asistencia} onUpdateAsistencia={updateAsistencia} onUpdateUsuarios={updateUsers} />}
+        {active === "candidatos" && <CandidatosView user={session} candidatos={candidatos} onUpdate={updateCandidatos} usuarios={users} onUpdateUsuarios={updateUsers} />}
         {active === "tareas" && <TareasView user={session} tareas={tareas} onUpdate={updateTareas} usuarios={users} onUpdateUsuarios={updateUsers} />}
         {active === "ranking" && <RankingView usuarios={users} esLider={session.rol === "lider"} onAjustarPuntos={ajustarPuntos} />}
         {active === "chat" && <ChatView user={session} mensajes={mensajes} mensajesArchivo={mensajesArchivo} chatConfig={chatConfig} onEnviar={enviarMensaje} onCambiarModo={cambiarModoChat} onGuardarArchivo={guardarEnArchivo} onEliminarArchivo={eliminarDelArchivo} />}
