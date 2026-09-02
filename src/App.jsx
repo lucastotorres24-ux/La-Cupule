@@ -812,7 +812,16 @@ function SectionTitle({ children }) {
 
 function progresoDiario(candidatos, agenteId) {
   const hoy = todayStr();
-  return candidatos.filter((c) => c.agenteId === agenteId && c.fecha === hoy && c.enviadoEntrevista).length;
+  // El target diario cuenta a quien se ENVIÓ a entrevista hoy, para siempre — pasen o no la
+  // entrevista, se aprueben o no los documentos/polígrafo, o se desechen/saquen después del
+  // pipeline de Candidatos. Por eso se usa la fecha de envío (que nunca se borra) y NO el estado
+  // actual de "enviadoEntrevista" (que sí se resetea si el líder saca al candidato de Candidatos
+  // porque no pasó el proceso) — de lo contrario, sacar a alguien que no pasó le quitaría el
+  // cupo ya ganado al agente, y el target dejaría de reflejar cuántos se enviaron de verdad.
+  return candidatos.filter((c) => {
+    if (c.agenteId !== agenteId || !c.fechaEnvioEntrevista) return false;
+    return new Date(c.fechaEnvioEntrevista).toISOString().slice(0, 10) === hoy;
+  }).length;
 }
 
 function DashboardLider({ candidatos, tareas, usuarios }) {
