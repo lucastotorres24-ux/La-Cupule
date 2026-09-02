@@ -2629,7 +2629,7 @@ export default function LaCupula() {
           <div style={{ width: 34 }} />
         </div>
       )}
-      <Sidebara
+      <Sidebar
         user={session} active={active} setActive={setActive} onLogout={handleLogout}
         isMobile={isMobile} abierto={isMobile ? sidebarAbierto : true} onCerrar={() => setSidebarAbierto(false)}
       />
