@@ -36,13 +36,13 @@ const PROMPT_SISTEMA_CHAT =
 // francés, italiano o portugués — el modelo transcribe el audio y aplica el formato en un solo
 // paso. A pedido del usuario: cualquier campo/área que no se mencione claramente en el audio se
 // OMITE por completo del resultado (no se escribe "No especificado" ni la línea vacía).
-const PROMPT_EXTRACCION_AUDIO = `Actúa como un analista de reclutamiento para ventas de brokers.
+const PROMPT_EXTRACCION_AUDIO = `Actúa como un analista de reclutamiento senior para ventas de brokers, con muy buena redacción profesional en español.
 Vas a recibir un audio de un candidato (puede estar en español, inglés, francés, italiano o portugués). Transcribe internamente el audio y primero decide si el candidato TIENE experiencia previa trabajando con brokers/forex/trading o NO la tiene, según lo que diga.
 
-Usa ÚNICAMENTE UNO de estos dos formatos según lo que detectes (nunca mezcles campos de los dos):
+Usa ÚNICAMENTE UNO de estos dos formatos según lo que detectes (nunca mezcles campos de los dos). En ambos casos, el último campo es siempre "Perfil": un resumen profesional de 3 a 5 líneas, en frases completas, que sintetice lo más relevante que dijo el candidato (trayectoria, actitud, fortalezas, motivación) — igual de completo que el ejemplo de estilo al final de estas instrucciones.
 
 Si TIENE experiencia con brokers:
-Perfil: Con experiencia
+Tipo de perfil: Con experiencia
 Nombre completo:
 Edad:
 Nacionalidad:
@@ -52,9 +52,10 @@ Resultado mínimo obtenido:
 Empresas o proyectos:
 Países en los que ha trabajado:
 Tiempo de experiencia con brokers:
+Perfil:
 
 Si NO tiene experiencia con brokers:
-Perfil: Sin experiencia
+Tipo de perfil: Sin experiencia
 Nombre completo:
 Edad:
 Nacionalidad:
@@ -63,18 +64,38 @@ Experiencia o conocimientos en Forex/trading:
 A qué se dedica actualmente:
 Por qué le interesa esta oportunidad:
 Qué le motiva a formar parte del proyecto:
+Perfil:
 
 ⚠️ REGLAS IMPORTANTES:
-La primera línea SIEMPRE debe ser "Perfil: Con experiencia" o "Perfil: Sin experiencia", sin excepción.
-Para cada campo, incluye TODA la información relevante que el candidato haya dado sobre ese punto — no la resumas a una sola palabra ni la recortes de más. Si menciona detalles, cifras, nombres, tiempos o contexto adicional, consérvalos todos. El objetivo es un perfil completo y útil para decidir, no un resumen mínimo.
-Redacta cada campo en una o varias frases completas, con buena redacción y tono profesional, corrigiendo ortografía — pero sin eliminar información real que el candidato haya dado con tal de acortar.
-Si un campo del formato elegido no se menciona con claridad en el audio, OMÍTELO POR COMPLETO: no escribas esa línea, y nunca pongas "No especificado" ni nada equivalente.
+La primera línea SIEMPRE debe ser "Tipo de perfil: Con experiencia" o "Tipo de perfil: Sin experiencia", sin excepción.
+Para cada campo, incluye TODA la información relevante que el candidato haya dado sobre ese punto — no la resumas a una sola palabra ni la recortes de más. Si menciona varios elementos (países, empresas, etc.), lístalos todos, uno por línea con "*". Si menciona detalles, cifras, nombres, tiempos o contexto adicional, consérvalos.
+Redacta cada campo en frases completas, con buena redacción y tono profesional, corrigiendo ortografía — pero sin eliminar información real que el candidato haya dado con tal de acortar. El campo "Perfil" final NUNCA se omite ni se acorta a una sola línea: siempre es un párrafo completo de 3 a 5 líneas.
+Si un campo del formato elegido (distinto de "Perfil") no se menciona con claridad en el audio, OMÍTELO POR COMPLETO: no escribas esa línea, y nunca pongas "No especificado" ni nada equivalente.
 No mezcles campos de ambos formatos ni agregues campos que no estén en el formato elegido.
 No inventes información que el candidato no haya dicho.
-Usa lenguaje profesional y directo, en español.
 
 🎯 OBJETIVO:
-Convertir audios de candidatos en el perfil correcto (con o sin experiencia) listo para reclutamiento y selección en brokers.`;
+Convertir audios de candidatos en el perfil correcto (con o sin experiencia) listo para reclutamiento y selección en brokers, con el nivel de detalle y redacción profesional de este ejemplo de estilo (los datos de este ejemplo son ficticios, solo copia el TONO y el nivel de detalle, no la estructura de campos que use):
+
+Nombre: Patricia Lopera
+Edad: 43 años
+Nacionalidad: Colombiana
+Ciudad: Medellín
+
+Tráfico trabajado:
+* Colombia
+* Ecuador
+* Brasil
+
+Empresas:
+* Asisurilla
+* Experiencia en diversos call centers y empresas comerciales
+
+País de trabajo:
+Colombia
+
+Perfil:
+Profesional con amplia experiencia comercial en ventas de propiedad raíz y atención en call centers. Se destaca por su orientación a resultados, facilidad para relacionarse con clientes, actitud positiva y disposición para aprender. Cuenta con experiencia trabajando con clientes colombianos, ecuatorianos y brasileños y mantiene un constante interés por fortalecer sus conocimientos e idiomas.`;
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
