@@ -66,12 +66,12 @@ Qué le motiva a formar parte del proyecto:
 
 ⚠️ REGLAS IMPORTANTES:
 La primera línea SIEMPRE debe ser "Perfil: Con experiencia" o "Perfil: Sin experiencia", sin excepción.
+Para cada campo, incluye TODA la información relevante que el candidato haya dado sobre ese punto — no la resumas a una sola palabra ni la recortes de más. Si menciona detalles, cifras, nombres, tiempos o contexto adicional, consérvalos todos. El objetivo es un perfil completo y útil para decidir, no un resumen mínimo.
+Redacta cada campo en una o varias frases completas, con buena redacción y tono profesional, corrigiendo ortografía — pero sin eliminar información real que el candidato haya dado con tal de acortar.
 Si un campo del formato elegido no se menciona con claridad en el audio, OMÍTELO POR COMPLETO: no escribas esa línea, y nunca pongas "No especificado" ni nada equivalente.
 No mezcles campos de ambos formatos ni agregues campos que no estén en el formato elegido.
-No inventes información.
-Corrige redacción y ortografía.
+No inventes información que el candidato no haya dicho.
 Usa lenguaje profesional y directo, en español.
-No escribas párrafos largos, todo debe ser estructurado.
 
 🎯 OBJETIVO:
 Convertir audios de candidatos en el perfil correcto (con o sin experiencia) listo para reclutamiento y selección en brokers.`;
