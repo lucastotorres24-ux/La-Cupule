@@ -8,7 +8,7 @@
 // .js), así que Vercel nunca lo desplegaba como endpoint — por eso el chat no respondía y solo
 // funcionaban los enlaces estáticos a otras IA. Este archivo reemplaza a aquel.
 
-const MODELO = "gemini-3.6-flash";
+const MODELO = "gemini-3.5-flash-lite"; // más rápido que gemini-3.6-flash, sigue en nivel gratis
 
 // El usuario no recuerda con certeza qué nombre de variable configuró en Vercel, así que se
 // revisan varios nombres posibles en orden — el primero que exista se usa. Esto hace que el
@@ -98,7 +98,8 @@ export default async function handler(req, res) {
       return;
     }
 
-    const contents = messages.map((m) => ({
+    const historialReciente = messages.slice(-8); // menos historial = respuesta más rápida
+    const contents = historialReciente.map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.content }],
     }));
