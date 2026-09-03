@@ -723,14 +723,14 @@ function Sidebar({ user, active, setActive, onLogout, isMobile, abierto, onCerra
     { id: "dashboard", label: "Dashboard" }, { id: "trafico", label: "Tráfico" },
     { id: "importar", label: "Importar" },
     { id: "asistencia", label: "Asistencia" },
-    { id: "candidatos", label: "Candidatos" }, { id: "tareas", label: "Tareas" },
+    { id: "candidatos", label: "Candidatos" }, { id: "comisiones", label: "Comisiones" }, { id: "tareas", label: "Tareas" },
     { id: "ranking", label: "Ranking" }, { id: "equipo", label: "Equipo" }, { id: "chat", label: "Chat" },
     { id: "cupulaai", label: "Cúpula AI" },
     { id: "papelera", label: "Papelera" },
   ];
   const itemsAgente = [
     { id: "dashboard", label: "Dashboard" }, { id: "trafico", label: "Tráfico" },
-    { id: "candidatos", label: "Candidatos" },
+    { id: "candidatos", label: "Candidatos" }, { id: "comisiones", label: "Comisiones" },
     { id: "tareas", label: "Mis tareas" }, { id: "ranking", label: "Ranking" },
     { id: "equipo", label: "Equipo" }, { id: "chat", label: "Chat" },
     { id: "cupulaai", label: "Cúpula AI" },
@@ -2035,6 +2035,146 @@ function NuevaTareaForm({ usuarios, onCrear }) {
   );
 }
 
+// ===== Sistema de comisiones =====
+// Se comisiona por retención: cuánto tiempo dura trabajando un candidato ya contratado
+// (fechaInicio, la fecha que fija el agente una vez pasa polígrafo y el líder se lo reenvía).
+// Checkpoints fijos: día 2 = cumple el target, día 10 = mitad del bono, día 20 = bono completo.
+const COMISION_DIAS_META = 20;
+const COMISION_CHECKPOINTS = [
+  { dias: 2, mensaje: "🎯 Alcanzaste el primer checkpoint: cumpliste tu target." },
+  { dias: 10, mensaje: "💰 Perfecto, tienes la mitad de tu bono asegurado." },
+  { dias: 20, mensaje: "🏆 Tienes el bono completo ganado. ¡Felicitaciones!" },
+];
+
+// Días trabajados: desde fechaInicio hasta ahora, o hasta el momento en que se marcó que ya
+// no continúa (comisionFechaPausa) — así el conteo queda congelado y sirve para bonificar
+// aunque el candidato se haya salido antes de completar los 20 días.
+function diasTrabajadosComision(c) {
+  if (!c.fechaInicio) return 0;
+  const inicio = new Date(c.fechaInicio).getTime();
+  if (Number.isNaN(inicio)) return 0;
+  const fin = c.comisionPausada && c.comisionFechaPausa ? c.comisionFechaPausa : Date.now();
+  return Math.max(0, Math.floor((fin - inicio) / (24 * 60 * 60 * 1000)));
+}
+
+function checkpointComisionActual(dias) {
+  let actual = null;
+  for (const cp of COMISION_CHECKPOINTS) if (dias >= cp.dias) actual = cp;
+  return actual;
+}
+
+function BarraProgresoComision({ dias }) {
+  const pct = Math.min(100, (dias / COMISION_DIAS_META) * 100);
+  return (
+    <div style={{ position: "relative", height: 10, background: COLORS.bgBase, borderRadius: 6, border: `1px solid ${COLORS.steel}`, marginTop: 10, marginBottom: 6 }}>
+      <div style={{ position: "absolute", top: 0, left: 0, bottom: 0, width: `${pct}%`, background: `linear-gradient(90deg, ${COLORS.neonRed}, ${COLORS.neonAmber})`, borderRadius: 6, transition: "width 0.3s ease" }} />
+      {COMISION_CHECKPOINTS.map((cp) => (
+        <div key={cp.dias} title={`Día ${cp.dias}`} style={{
+          position: "absolute", top: -3, left: `calc(${(cp.dias / COMISION_DIAS_META) * 100}% - 1px)`,
+          width: 2, height: 16, background: dias >= cp.dias ? COLORS.white : COLORS.steel,
+        }} />
+      ))}
+    </div>
+  );
+}
+
+function TarjetaComision({ c, onPausar, onReanudar }) {
+  const dias = diasTrabajadosComision(c);
+  const checkpoint = checkpointComisionActual(dias);
+  const pausada = !!c.comisionPausada;
+  return (
+    <Card style={{ marginBottom: 12, opacity: pausada ? 0.75 : 1 }}>
+      <CornerFrame color={pausada ? COLORS.textMuted : COLORS.neonSuccess} size={14} thickness={2} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+        <div>
+          <div style={{ fontSize: 15, color: COLORS.white, fontWeight: 700, fontFamily: FONT_BODY }}>{c.nombre}</div>
+          <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: FONT_MONO }}>
+            Inicio: {c.fechaInicio ? new Date(c.fechaInicio).toLocaleString("es-CO", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
+          </div>
+        </div>
+        <Badge color={pausada ? COLORS.textMuted : COLORS.neonAmber}>{pausada ? "Proceso terminado" : `Día ${dias}`}</Badge>
+      </div>
+      <BarraProgresoComision dias={dias} />
+      <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+        <span>Día 2 · Target</span><span>Día 10 · Mitad bono</span><span>Día 20 · Bono completo</span>
+      </div>
+      <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: checkpoint ? COLORS.neonSuccess : COLORS.textMuted, fontWeight: 700, marginBottom: 10 }}>
+        {checkpoint ? checkpoint.mensaje : `Aún no alcanza el primer checkpoint (faltan ${Math.max(0, 2 - dias)} día${2 - dias === 1 ? "" : "s"}).`}
+      </div>
+      {pausada ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted }}>
+            Terminó su proceso en el día {dias} — quedó {checkpoint ? "con: " + checkpoint.mensaje.replace(/^[^\s]+\s/, "") : "sin alcanzar ningún checkpoint."}
+          </div>
+          <button onClick={() => onReanudar(c)} style={{ background: "none", border: `1px solid ${COLORS.steel}`, borderRadius: 4, color: COLORS.neonBlue, fontFamily: FONT_MONO, fontSize: 11, padding: "4px 10px", cursor: "pointer" }}>↩ Reanudar (fue un error)</button>
+        </div>
+      ) : (
+        <button onClick={() => onPausar(c)} style={{ background: "none", border: `1px solid ${COLORS.neonRed}88`, borderRadius: 4, color: COLORS.neonRed, fontFamily: FONT_MONO, fontSize: 11, padding: "5px 12px", cursor: "pointer" }}>
+          Marcar que ya no continúa
+        </button>
+      )}
+    </Card>
+  );
+}
+
+function ComisionesView({ user, candidatos, usuarios, onUpdate }) {
+  const esLider = user.rol === "lider";
+  // Solo entran a Comisiones los que ya están trabajando de verdad: pasaron todo el proceso
+  // (enviadoAAgente) y el agente ya les puso fecha de inicio.
+  const elegibles = candidatos.filter((c) => c.enviadoAAgente && c.fechaInicio && !c.eliminado);
+  const propios = esLider ? elegibles : elegibles.filter((c) => c.agenteId === user.id);
+
+  const pausar = (c) => {
+    if (!window.confirm(`¿Marcar que ${c.nombre} ya no continúa trabajando? El conteo de días queda congelado tal como está ahora mismo (se puede reanudar después si fue un error).`)) return;
+    onUpdate(candidatos.map((x) => (x.id === c.id ? { ...x, comisionPausada: true, comisionFechaPausa: Date.now() } : x)));
+  };
+  const reanudar = (c) => {
+    onUpdate(candidatos.map((x) => (x.id === c.id ? { ...x, comisionPausada: false, comisionFechaPausa: null } : x)));
+  };
+
+  if (propios.length === 0) {
+    return (
+      <div>
+        <SectionTitle>Comisiones</SectionTitle>
+        <Card><div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, textAlign: "center", padding: "10px 0" }}>Todavía no hay nadie con fecha de inicio registrada.</div></Card>
+      </div>
+    );
+  }
+
+  if (!esLider) {
+    return (
+      <div>
+        <SectionTitle>Comisiones</SectionTitle>
+        {propios.map((c) => <TarjetaComision key={c.id} c={c} onPausar={pausar} onReanudar={reanudar} />)}
+      </div>
+    );
+  }
+
+  // Líder: agrupado por agente para evitar confusiones — incluye también a agentes dados de
+  // baja si les quedó alguien histórico en Comisiones, etiquetado igual que en el resto de la app.
+  const idsAgentesActivos = usuarios.filter((u) => u.rol === "agente").map((a) => a.id);
+  const idsExtra = Array.from(new Set(propios.map((c) => c.agenteId))).filter((id) => !idsAgentesActivos.includes(id));
+  const gruposIds = [...idsAgentesActivos, ...idsExtra];
+
+  return (
+    <div>
+      <SectionTitle>Comisiones</SectionTitle>
+      {gruposIds.map((agenteId) => {
+        const deEsteAgente = propios.filter((c) => c.agenteId === agenteId);
+        if (deEsteAgente.length === 0) return null;
+        return (
+          <div key={agenteId} style={{ marginBottom: 24 }}>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.neonBlue, letterSpacing: 1, marginBottom: 10, textTransform: "uppercase" }}>
+              {nombreUsuarioPorId(agenteId, usuarios)} ({deEsteAgente.length})
+            </div>
+            {deEsteAgente.map((c) => <TarjetaComision key={c.id} c={c} onPausar={pausar} onReanudar={reanudar} />)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function TareasView({ user, tareas, onUpdate, usuarios, onUpdateUsuarios }) {
   const visibles = user.rol === "lider" ? tareas : tareas.filter((t) => t.asignadoA === user.id);
 
@@ -2844,6 +2984,7 @@ export default function LaCupula() {
         )}
         {active === "asistencia" && session.rol === "lider" && <AsistenciaView usuarios={users} asistencia={asistencia} onUpdateAsistencia={updateAsistencia} onUpdateUsuarios={updateUsers} />}
         {active === "candidatos" && <CandidatosView user={session} candidatos={candidatos} onUpdate={updateCandidatos} usuarios={users} onUpdateUsuarios={updateUsers} />}
+        {active === "comisiones" && <ComisionesView user={session} candidatos={candidatos} usuarios={users} onUpdate={updateCandidatos} />}
         {active === "tareas" && <TareasView user={session} tareas={tareas} onUpdate={updateTareas} usuarios={users} onUpdateUsuarios={updateUsers} />}
         {active === "ranking" && <RankingView usuarios={users} esLider={session.rol === "lider"} onAjustarPuntos={ajustarPuntos} />}
         {active === "chat" && <ChatView user={session} mensajes={mensajes} mensajesArchivo={mensajesArchivo} chatConfig={chatConfig} onEnviar={enviarMensaje} onCambiarModo={cambiarModoChat} onGuardarArchivo={guardarEnArchivo} onEliminarArchivo={eliminarDelArchivo} />}
