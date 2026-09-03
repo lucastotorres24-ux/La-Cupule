@@ -36,44 +36,45 @@ const PROMPT_SISTEMA_CHAT =
 // francés, italiano o portugués — el modelo transcribe el audio y aplica el formato en un solo
 // paso. A pedido del usuario: cualquier campo/área que no se mencione claramente en el audio se
 // OMITE por completo del resultado (no se escribe "No especificado" ni la línea vacía).
-const PROMPT_EXTRACCION_AUDIO = `Actúa como un analista de reclutamiento para ventas.
-Vas a recibir un audio de un candidato. El audio puede estar en español, inglés, francés, italiano o portugués. Primero transcribe internamente el audio y luego convierte esa transcripción en un perfil profesional claro, limpio y estructurado, redactado en español.
-Debes seguir SIEMPRE este formato exacto:
+const PROMPT_EXTRACCION_AUDIO = `Actúa como un analista de reclutamiento para ventas de brokers.
+Vas a recibir un audio de un candidato (puede estar en español, inglés, francés, italiano o portugués). Transcribe internamente el audio y primero decide si el candidato TIENE experiencia previa trabajando con brokers/forex/trading o NO la tiene, según lo que diga.
 
-Nombre:
+Usa ÚNICAMENTE UNO de estos dos formatos según lo que detectes (nunca mezcles campos de los dos):
+
+Si TIENE experiencia con brokers:
+Perfil: Con experiencia
+Nombre completo:
 Edad:
 Nacionalidad:
-Ciudad: (si aplica)
 Tráfico trabajado:
-(lista de países)
-Áreas: (si aplica)
-Opening / FTD
-Retención
-Recovery
-Marketing
-Resultados:
-Máximo:
-Mínimo:
-Empresas: (si menciona)
-(lista)
-Experiencia en brokers:
-(tiempo total)
-País de trabajo:
-Perfil:
-Un resumen corto (2-3 líneas) destacando experiencia, enfoque y habilidades comerciales.
+Resultado máximo obtenido:
+Resultado mínimo obtenido:
+Empresas o proyectos:
+Países en los que ha trabajado:
+Tiempo de experiencia con brokers:
+
+Si NO tiene experiencia con brokers:
+Perfil: Sin experiencia
+Nombre completo:
+Edad:
+Nacionalidad:
+Ciudad donde reside:
+Experiencia o conocimientos en Forex/trading:
+A qué se dedica actualmente:
+Por qué le interesa esta oportunidad:
+Qué le motiva a formar parte del proyecto:
 
 ⚠️ REGLAS IMPORTANTES:
-Si un dato o área no se menciona con claridad en el audio, OMÍTELO POR COMPLETO del resultado: no escribas esa línea, y nunca pongas "No especificado" ni nada equivalente. En el resultado solo deben aparecer los campos que sí se reconozcan en el audio.
+La primera línea SIEMPRE debe ser "Perfil: Con experiencia" o "Perfil: Sin experiencia", sin excepción.
+Si un campo del formato elegido no se menciona con claridad en el audio, OMÍTELO POR COMPLETO: no escribas esa línea, y nunca pongas "No especificado" ni nada equivalente.
+No mezcles campos de ambos formatos ni agregues campos que no estén en el formato elegido.
 No inventes información.
 Corrige redacción y ortografía.
-Resume sin perder datos clave.
-Usa lenguaje profesional y directo.
-Mantén todo ordenado y limpio.
-Si hay números confusos, interpreta de forma lógica.
+Usa lenguaje profesional y directo, en español.
 No escribas párrafos largos, todo debe ser estructurado.
 
 🎯 OBJETIVO:
-Convertir audios de candidatos en perfiles listos para reclutamiento y selección en brokers.`;
+Convertir audios de candidatos en el perfil correcto (con o sin experiencia) listo para reclutamiento y selección en brokers.`;
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
