@@ -718,7 +718,7 @@ function useIsMobile() {
   return isMobile;
 }
 
-function Sidebar({ user, active, setActive, onLogout, isMobile, abierto, onCerrar }) {
+function Sidebar({ user, active, setActive, onLogout, isMobile, abierto, onCerrar, mensajesNoLeidos = 0 }) {
   const itemsLider = [
     { id: "dashboard", label: "Dashboard" }, { id: "trafico", label: "Tráfico" },
     { id: "importar", label: "Importar" },
@@ -766,7 +766,17 @@ function Sidebar({ user, active, setActive, onLogout, isMobile, abierto, onCerra
             borderLeft: active === it.id ? `3px solid ${COLORS.neonRed}` : "3px solid transparent",
             color: active === it.id ? COLORS.white : COLORS.textMuted,
             fontFamily: FONT_BODY, fontSize: 14, fontWeight: 700, cursor: "pointer", letterSpacing: 0.5, textTransform: "uppercase",
-          }}>{it.label}</button>
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+          }}>
+            <span>{it.label}</span>
+            {it.id === "chat" && mensajesNoLeidos > 0 && (
+              <span style={{
+                background: COLORS.neonRed, color: COLORS.white, borderRadius: 10, minWidth: 18, height: 18,
+                fontSize: 11, fontFamily: FONT_MONO, fontWeight: 700, display: "flex", alignItems: "center",
+                justifyContent: "center", padding: "0 5px", boxShadow: `0 0 8px ${COLORS.neonRed}aa`,
+              }}>{mensajesNoLeidos > 99 ? "99+" : mensajesNoLeidos}</span>
+            )}
+          </button>
         ))}
         <div style={{ flex: 1 }} />
         <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 14, marginTop: 14 }}>
@@ -2758,6 +2768,26 @@ export default function LaCupula() {
   const isMobile = useIsMobile();
   const [sidebarAbierto, setSidebarAbierto] = useState(false);
 
+  // Notificaciones de Chat sin leer: se guarda en localStorage (por usuario, en este dispositivo)
+  // la última vez que ese usuario tuvo la pestaña de Chat abierta. Cualquier mensaje de OTRA
+  // persona con fecha posterior a esa marca, y dentro de las 24h (igual que el chat en vivo,
+  // que se autoborra pasado ese tiempo), cuenta como no leído.
+  const [ultimaLecturaChat, setUltimaLecturaChat] = useState(0);
+  useEffect(() => {
+    if (!session) return;
+    const guardado = localStorage.getItem(`cupula_chat_leido_${session.id}`);
+    setUltimaLecturaChat(guardado ? Number(guardado) : 0);
+  }, [session?.id]);
+  useEffect(() => {
+    if (!session || active !== "chat") return;
+    const ahora = Date.now();
+    localStorage.setItem(`cupula_chat_leido_${session.id}`, String(ahora));
+    setUltimaLecturaChat(ahora);
+  }, [active, session?.id, mensajes]);
+  const mensajesNoLeidos = session && mensajes
+    ? mensajes.filter((m) => m.autorId !== session.id && m.ts > ultimaLecturaChat && Date.now() - m.ts < VEINTICUATRO_HORAS_MS).length
+    : 0;
+
   if (loading) {
     return (
       <div style={{ minHeight: "100vh", background: COLORS.bgBase, display: "flex", alignItems: "center", justifyContent: "center", color: COLORS.neonRed, fontFamily: FONT_MONO, fontSize: 13, letterSpacing: 3 }}>
@@ -2793,6 +2823,7 @@ export default function LaCupula() {
       <Sidebar
         user={session} active={active} setActive={setActive} onLogout={handleLogout}
         isMobile={isMobile} abierto={isMobile ? sidebarAbierto : true} onCerrar={() => setSidebarAbierto(false)}
+        mensajesNoLeidos={mensajesNoLeidos}
       />
       <div style={{ flex: 1, padding: isMobile ? "16px" : "28px 32px", overflowY: "auto", minWidth: 0, boxSizing: "border-box" }}>
         {active === "dashboard" && session.rol === "lider" && <DashboardLider candidatos={candidatos} tareas={tareas} usuarios={users} />}
