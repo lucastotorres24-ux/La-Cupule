@@ -1122,7 +1122,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios, onUpdateUs
   // Copia todo de un solo clic. Esto NUNCA modifica ni borra nada de Tráfico —
   // solo LEE los datos para armar el texto, la lista de candidatos se queda exactamente igual.
   const exportarAGoogleSheets = () => {
-    const filas = filtrados.map((c) => [c.nombre, c.telefono, c.experiencia || "", estadoParaExportar(c)].join("\t"));
+    const filas = filtrados.map((c) => [c.nombre, c.telefono, c.pais || "", c.experiencia || "", estadoParaExportar(c)].join("\t"));
     const texto = filas.join("\n");
 
     const marcarCopiado = () => { setCopiado(true); setTimeout(() => setCopiado(false), 2500); };
