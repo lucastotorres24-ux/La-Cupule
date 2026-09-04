@@ -2519,8 +2519,8 @@ async function preguntarCupulaAI(historial) {
 
 // Tamaño máximo de audio: se queda por debajo del límite de 4.5MB por solicitud de Vercel
 // (Hobby) una vez convertido a base64 (~33% más pesado), dejando margen para el resto del
-// mensaje. Los audios de candidatos duran menos de 1:10, así que van sobrados en este límite.
-const TAMANO_MAX_AUDIO = 3 * 1024 * 1024; // 3MB del archivo original
+// mensaje. Los audios de candidatos duran hasta 1:30, así que van sobrados en este límite.
+const TAMANO_MAX_AUDIO = 3.3 * 1024 * 1024; // 3.3MB del archivo original
 
 // Le manda el audio (en base64) junto con el historial al backend, que lo envía a Gemini usando
 // su capacidad nativa de audio: en una sola llamada transcribe y aplica el formato de extracción.
