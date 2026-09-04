@@ -994,7 +994,18 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios, onUpdateUs
 
   const marcarLlamada = (candId, estadoLlamada) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, estadoLlamada } : c)));
   const marcarResultado = (candId, resultado) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, resultado } : c)));
-  const toggleLlamado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, llamado: !c.llamado } : c)));
+  // Intentos de llamada (1°, 2°, 3°) — independientes entre sí: si contestó al primer intento
+  // no hace falta marcar los otros. Si contestó en un intento posterior, los anteriores pueden
+  // quedar en blanco (se entiende que no funcionaron / no contestaron esa vez). "llamado" queda
+  // en true apenas se marca cualquier intento, así el resto de filtros que ya usan "llamado"
+  // (pendientes por llamar, etc.) siguen funcionando igual.
+  const toggleIntento = (candId, n) => onUpdate(candidatos.map((c) => {
+    if (c.id !== candId) return c;
+    const campo = `intento${n}`;
+    const actualizado = { ...c, [campo]: !c[campo] };
+    actualizado.llamado = !!(actualizado.intento1 || actualizado.intento2 || actualizado.intento3);
+    return actualizado;
+  }));
   const toggleContestado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, contestado: !c.contestado } : c)));
   const toggleNoInteresado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, noInteresado: !c.noInteresado } : c)));
   const toggleDesechado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, desechado: !c.desechado } : c)));
@@ -1059,6 +1070,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios, onUpdateUs
       agenteId: user.id, fecha: todayStr(), loteId: Date.now(), loteHora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
       agregadoManual: true,
       aprobadoLider: null, idiomas: "", experiencia: "", llamado: true, contestado: true, noInteresado: false,
+      intento1: true, intento2: false, intento3: false,
       eliminado: false, desechado: false, archivos: [], enviadoEntrevista: true, fechaEnvioEntrevista: Date.now(), ultimaEtapaVista: "entrevista",
       entrevistaAprobada: false, documentosAprobados: false,
       poligrafoAprobado: false, enviadoAAgente: false, fechaInicio: null, comentarios: [], documentos: [],
@@ -1181,10 +1193,15 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios, onUpdateUs
         </div>
       </div>
       <div style={{ display: "flex", gap: 14, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${COLORS.border}`, flexWrap: "wrap" }}>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.llamado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
-          <input type="checkbox" checked={!!c.llamado} onChange={() => toggleLlamado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
-          Llamado
-        </label>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.llamado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
+          Llamado:
+          {[1, 2, 3].map((n) => (
+            <label key={n} title={`Se llamó en el intento ${n}`} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", color: c[`intento${n}`] ? COLORS.neonSuccess : COLORS.textMuted }}>
+              <input type="checkbox" checked={!!c[`intento${n}`]} onChange={() => toggleIntento(c.id, n)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
+              {n}°
+            </label>
+          ))}
+        </div>
         <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.contestado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
           <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
           Contestó
@@ -1455,6 +1472,9 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
       llamado: false,
       contestado: false,
       noInteresado: false,
+      intento1: false,
+      intento2: false,
+      intento3: false,
       eliminado: false,
       desechado: false,
       archivos: [],
