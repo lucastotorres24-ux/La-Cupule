@@ -996,6 +996,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios, onUpdateUs
   const marcarResultado = (candId, resultado) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, resultado } : c)));
   const toggleLlamado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, llamado: !c.llamado } : c)));
   const toggleContestado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, contestado: !c.contestado } : c)));
+  const toggleNoInteresado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, noInteresado: !c.noInteresado } : c)));
   const toggleDesechado = (candId) => onUpdate(candidatos.map((c) => (c.id === candId ? { ...c, desechado: !c.desechado } : c)));
 
   // Puntos automáticos por enviar a entrevista: +15 siempre, y +20 extra la vez que se
@@ -1057,7 +1058,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios, onUpdateUs
       id: "c" + Date.now(), nombre: nombre.trim(), telefono: telefono.trim(), pais: pais.trim(), estadoLlamada: null, resultado: null,
       agenteId: user.id, fecha: todayStr(), loteId: Date.now(), loteHora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
       agregadoManual: true,
-      aprobadoLider: null, idiomas: "", experiencia: "", llamado: true, contestado: true,
+      aprobadoLider: null, idiomas: "", experiencia: "", llamado: true, contestado: true, noInteresado: false,
       eliminado: false, desechado: false, archivos: [], enviadoEntrevista: true, fechaEnvioEntrevista: Date.now(), ultimaEtapaVista: "entrevista",
       entrevistaAprobada: false, documentosAprobados: false,
       poligrafoAprobado: false, enviadoAAgente: false, fechaInicio: null, comentarios: [], documentos: [],
@@ -1087,6 +1088,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios, onUpdateUs
     }
     if (filtro === "pendientes" && c.llamado) return false;
     if (filtro === "no_contesto" && !(c.llamado && !c.contestado)) return false;
+    if (filtro === "no_interesado" && !c.noInteresado) return false;
     if (filtro === "desechados" && !c.desechado) return false;
     if (filtroPais !== "todos" && c.pais !== filtroPais) return false;
     return true;
@@ -1114,6 +1116,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios, onUpdateUs
 
   const estadoParaExportar = (c) => {
     if (c.enviadoEntrevista) return "Se envió a entrevista";
+    if (c.noInteresado) return "No interesado";
     if (c.contestado) return "Contestó";
     if (c.llamado) return "No contestó";
     return "";
@@ -1185,6 +1188,10 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios, onUpdateUs
         <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.contestado ? COLORS.neonSuccess : COLORS.textMuted, textTransform: "uppercase" }}>
           <input type="checkbox" checked={!!c.contestado} onChange={() => toggleContestado(c.id)} style={{ accentColor: COLORS.neonSuccess, width: 15, height: 15, cursor: "pointer" }} />
           Contestó
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700, color: c.noInteresado ? COLORS.neonRed : COLORS.textMuted, textTransform: "uppercase" }}>
+          <input type="checkbox" checked={!!c.noInteresado} onChange={() => toggleNoInteresado(c.id)} style={{ accentColor: COLORS.neonRed, width: 15, height: 15, cursor: "pointer" }} />
+          No interesado
         </label>
         {c.enviadoEntrevista ? (
           <>
@@ -1280,6 +1287,7 @@ function TraficoView({ user, candidatos, onUpdate, esLider, usuarios, onUpdateUs
           <NeonButton small active={filtro === "todos"} onClick={() => { setFiltro("todos"); setMostrarAnteriores(false); }}>Todos</NeonButton>
           <NeonButton small active={filtro === "pendientes"} onClick={() => { setFiltro("pendientes"); setMostrarAnteriores(false); }}>Pendientes por llamar</NeonButton>
           <NeonButton small active={filtro === "no_contesto"} onClick={() => { setFiltro("no_contesto"); setMostrarAnteriores(false); }}>No contestó</NeonButton>
+          <NeonButton small active={filtro === "no_interesado"} onClick={() => { setFiltro("no_interesado"); setMostrarAnteriores(false); }}>No interesado</NeonButton>
           <NeonButton small active={filtro === "desechados"} onClick={() => { setFiltro("desechados"); setMostrarAnteriores(false); }}>Desechados</NeonButton>
           <select value={filtroPais} onChange={(e) => { setFiltroPais(e.target.value); setMostrarAnteriores(false); }}
             style={{ background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "7px 10px", color: COLORS.white, fontFamily: FONT_BODY, fontSize: 12, outline: "none" }}>
@@ -1446,6 +1454,7 @@ function ImportarContactosView({ candidatos, onUpdateCandidatos, puntero, onUpda
       aprobadoLider: null,
       llamado: false,
       contestado: false,
+      noInteresado: false,
       eliminado: false,
       desechado: false,
       archivos: [],
