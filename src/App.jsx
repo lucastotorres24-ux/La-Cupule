@@ -725,7 +725,7 @@ function Sidebar({ user, active, setActive, onLogout, isMobile, abierto, onCerra
     { id: "asistencia", label: "Asistencia" },
     { id: "candidatos", label: "Candidatos" }, { id: "comisiones", label: "Comisiones" }, { id: "tareas", label: "Tareas" },
     { id: "ranking", label: "Ranking" }, { id: "equipo", label: "Equipo" }, { id: "chat", label: "Chat" },
-    { id: "cupulaai", label: "Cúpula AI" },
+    { id: "cupulaai", label: "Cúpula AI" }, { id: "juego", label: "Cúpula Games" },
     { id: "papelera", label: "Papelera" },
   ];
   const itemsAgente = [
@@ -733,7 +733,7 @@ function Sidebar({ user, active, setActive, onLogout, isMobile, abierto, onCerra
     { id: "candidatos", label: "Candidatos" }, { id: "comisiones", label: "Comisiones" },
     { id: "tareas", label: "Mis tareas" }, { id: "ranking", label: "Ranking" },
     { id: "equipo", label: "Equipo" }, { id: "chat", label: "Chat" },
-    { id: "cupulaai", label: "Cúpula AI" },
+    { id: "cupulaai", label: "Cúpula AI" }, { id: "juego", label: "Cúpula Games" },
   ];
   const items = user.rol === "lider" ? itemsLider : itemsAgente;
 
@@ -2296,6 +2296,817 @@ function RankingView({ usuarios, esLider, onAjustarPuntos }) {
 }
 
 
+// ===== Cúpula Games: Happy Weed (Flappy Bird), Batallas de Aura (Brick Breaker) y
+// Feria de Tiro (galería de disparos) — mismo universo visual neón/Tron del resto de la app. =====
+
+const ESTILO_BOTON_VOLVER = {
+  background: "none", border: `1px solid ${COLORS.steel}`, borderRadius: 4, color: COLORS.textMuted,
+  fontFamily: FONT_MONO, fontSize: 12, padding: "6px 12px", cursor: "pointer", marginBottom: 14,
+};
+
+// ---- 1) Happy Weed ----
+// El jugador es la foto de perfil de cada usuario (AVATARS[user.id]), convertida en un pajarito
+// (con pico y ala propios). Espacio o clic = impulso hacia arriba; gravedad constante lo hace
+// caer. Los obstáculos son "portales" oscuros con bordes y líneas fosforescentes rojas (estilo
+// Tron: Legacy, pero en rojo en vez de cian/naranja), con un skyline de fondo en parallax.
+const HW_ANCHO = 420;
+const HW_ALTO = 620;
+const HW_GRAVEDAD = 0.45;
+const HW_IMPULSO = -8;
+const HW_TAMANO_JUGADOR = 44;
+const HW_ANCHO_TUBO = 62;
+const HW_HUECO_TUBO = 156;
+const HW_DISTANCIA_TUBOS = 230;
+const HW_VELOCIDAD_INICIAL = 3;
+const HW_VELOCIDAD_MAX = 7.5;
+const HW_SUELO_ALTO = 90;
+// Posiciones fijas (no aleatorias en cada frame) para el skyline de fondo.
+const HW_SKYLINE = Array.from({ length: 14 }, (_, i) => ({
+  x: i * 60, alto: 60 + ((i * 47) % 160), ancho: 34 + ((i * 19) % 20),
+}));
+
+function dibujarPortalHappyWeed(ctx, x, y, w, h) {
+  if (h <= 0) return;
+  ctx.save();
+  ctx.fillStyle = "#140309";
+  ctx.fillRect(x, y, w, h);
+  ctx.shadowColor = COLORS.neonRed;
+  ctx.shadowBlur = 14;
+  ctx.strokeStyle = COLORS.neonRed;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+  ctx.shadowBlur = 6;
+  ctx.strokeStyle = COLORS.neonRed + "88";
+  ctx.lineWidth = 1;
+  for (let ly = y + 14; ly < y + h; ly += 22) {
+    ctx.beginPath();
+    ctx.moveTo(x + 4, ly);
+    ctx.lineTo(x + w - 4, ly);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function dibujarAvatarPajaro(ctx, avatarImg, x, y, tamano, vel) {
+  const anguloAla = Math.max(-0.6, Math.min(0.6, -vel / 8));
+  ctx.save();
+  ctx.translate(x - tamano * 0.15, y + tamano * 0.05);
+  ctx.rotate(anguloAla);
+  ctx.fillStyle = COLORS.neonAmber + "cc";
+  ctx.shadowColor = COLORS.neonAmber;
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, tamano * 0.38, tamano * 0.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  ctx.shadowColor = COLORS.neonRed;
+  ctx.shadowBlur = 18;
+  ctx.beginPath();
+  ctx.arc(x, y, tamano / 2, 0, Math.PI * 2);
+  ctx.strokeStyle = COLORS.neonRed;
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+  ctx.clip();
+  if (avatarImg && avatarImg.complete && avatarImg.naturalWidth > 0) {
+    ctx.drawImage(avatarImg, x - tamano / 2, y - tamano / 2, tamano, tamano);
+  } else {
+    ctx.fillStyle = COLORS.neonRed;
+    ctx.fillRect(x - tamano / 2, y - tamano / 2, tamano, tamano);
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.fillStyle = COLORS.neonAmber;
+  ctx.shadowColor = COLORS.neonAmber;
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.moveTo(x + tamano / 2 - 2, y - 3);
+  ctx.lineTo(x + tamano / 2 + 12, y + 2);
+  ctx.lineTo(x + tamano / 2 - 2, y + 7);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function dibujarHappyWeed(ctx, st, avatarImg, jugadorX) {
+  ctx.clearRect(0, 0, HW_ANCHO, HW_ALTO);
+
+  const cielo = ctx.createLinearGradient(0, 0, 0, HW_ALTO);
+  cielo.addColorStop(0, "#1a0509");
+  cielo.addColorStop(0.55, "#0a0308");
+  cielo.addColorStop(1, "#020103");
+  ctx.fillStyle = cielo;
+  ctx.fillRect(0, 0, HW_ANCHO, HW_ALTO);
+
+  // Skyline con parallax (más lento que los portales, para sensación de profundidad).
+  const offset = st.distanciaRecorrida * 0.3;
+  const anchoTotalSkyline = HW_SKYLINE.length * 60;
+  ctx.save();
+  ctx.strokeStyle = COLORS.neonBlue + "55";
+  ctx.shadowColor = COLORS.neonBlue;
+  ctx.shadowBlur = 6;
+  ctx.lineWidth = 1.5;
+  HW_SKYLINE.forEach((b) => {
+    let bx = b.x - (offset % anchoTotalSkyline);
+    if (bx < -80) bx += anchoTotalSkyline;
+    ctx.strokeRect(bx, HW_ALTO - HW_SUELO_ALTO - b.alto, b.ancho, b.alto);
+  });
+  ctx.restore();
+
+  // Línea del "suelo" digital.
+  ctx.strokeStyle = COLORS.neonRed + "1c";
+  ctx.lineWidth = 1;
+  for (let gx = -(st.distanciaRecorrida % 30); gx < HW_ANCHO; gx += 30) {
+    ctx.beginPath(); ctx.moveTo(gx, HW_ALTO - HW_SUELO_ALTO); ctx.lineTo(gx, HW_ALTO); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.moveTo(0, HW_ALTO - HW_SUELO_ALTO); ctx.lineTo(HW_ANCHO, HW_ALTO - HW_SUELO_ALTO); ctx.stroke();
+
+  st.tubos.forEach((t) => {
+    dibujarPortalHappyWeed(ctx, t.x, 0, HW_ANCHO_TUBO, t.huecoY);
+    dibujarPortalHappyWeed(ctx, t.x, t.huecoY + HW_HUECO_TUBO, HW_ANCHO_TUBO, (HW_ALTO - HW_SUELO_ALTO) - (t.huecoY + HW_HUECO_TUBO));
+  });
+
+  dibujarAvatarPajaro(ctx, avatarImg, jugadorX, st.y, HW_TAMANO_JUGADOR, st.vel);
+}
+
+function HappyWeedView({ user, onVolver }) {
+  const canvasRef = useRef(null);
+  const estadoRef = useRef(null);
+  const rafRef = useRef(null);
+  const avatarImgRef = useRef(null);
+  const [score, setScore] = useState(0);
+  const [mejorPuntaje, setMejorPuntaje] = useState(0);
+  const [jugando, setJugando] = useState(false);
+  const [terminado, setTerminado] = useState(false);
+
+  useEffect(() => {
+    const guardado = localStorage.getItem(`cupula_happyweed_mejor_${user.id}`);
+    setMejorPuntaje(guardado ? Number(guardado) : 0);
+  }, [user.id]);
+
+  useEffect(() => {
+    const img = new Image();
+    img.src = AVATARS[user.id] || AVATARS.corleone1;
+    avatarImgRef.current = img;
+  }, [user.id]);
+
+  const iniciar = useCallback(() => {
+    estadoRef.current = { y: HW_ALTO / 2, vel: 0, tubos: [], distanciaProxTubo: 0, distanciaRecorrida: 0, velocidad: HW_VELOCIDAD_INICIAL, puntaje: 0, vivo: true };
+    setScore(0);
+    setTerminado(false);
+    setJugando(true);
+  }, []);
+
+  const saltar = useCallback(() => {
+    if (!estadoRef.current || !estadoRef.current.vivo) { iniciar(); return; }
+    estadoRef.current.vel = HW_IMPULSO;
+  }, [iniciar]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.code === "Space") { e.preventDefault(); saltar(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [saltar]);
+
+  useEffect(() => {
+    if (!jugando) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    const jugadorX = 80;
+    const sueloY = HW_ALTO - HW_SUELO_ALTO;
+
+    const loop = () => {
+      const st = estadoRef.current;
+      if (!st || !st.vivo) return;
+
+      st.vel += HW_GRAVEDAD;
+      st.y += st.vel;
+      st.distanciaRecorrida += st.velocidad;
+
+      st.distanciaProxTubo -= st.velocidad;
+      if (st.distanciaProxTubo <= 0) {
+        const huecoY = 50 + Math.random() * (sueloY - 100 - HW_HUECO_TUBO);
+        st.tubos.push({ x: HW_ANCHO, huecoY, pasado: false });
+        st.distanciaProxTubo = HW_DISTANCIA_TUBOS;
+      }
+      st.tubos.forEach((t) => { t.x -= st.velocidad; });
+      st.tubos = st.tubos.filter((t) => t.x > -HW_ANCHO_TUBO);
+
+      for (const t of st.tubos) {
+        if (!t.pasado && t.x + HW_ANCHO_TUBO < jugadorX) {
+          t.pasado = true;
+          st.puntaje += 1;
+          st.velocidad = Math.min(st.velocidad + 0.15, HW_VELOCIDAD_MAX);
+          setScore(st.puntaje);
+        }
+        const dentroX = jugadorX + HW_TAMANO_JUGADOR / 2 > t.x && jugadorX - HW_TAMANO_JUGADOR / 2 < t.x + HW_ANCHO_TUBO;
+        if (dentroX) {
+          const golpeaArriba = st.y - HW_TAMANO_JUGADOR / 2 < t.huecoY;
+          const golpeaAbajo = st.y + HW_TAMANO_JUGADOR / 2 > t.huecoY + HW_HUECO_TUBO;
+          if (golpeaArriba || golpeaAbajo) st.vivo = false;
+        }
+      }
+      if (st.y - HW_TAMANO_JUGADOR / 2 < 0 || st.y + HW_TAMANO_JUGADOR / 2 > sueloY) st.vivo = false;
+
+      dibujarHappyWeed(ctx, st, avatarImgRef.current, jugadorX);
+
+      if (!st.vivo) {
+        setJugando(false);
+        setTerminado(true);
+        setMejorPuntaje((prev) => {
+          if (st.puntaje > prev) {
+            localStorage.setItem(`cupula_happyweed_mejor_${user.id}`, String(st.puntaje));
+            return st.puntaje;
+          }
+          return prev;
+        });
+        return;
+      }
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [jugando, user.id]);
+
+  return (
+    <div>
+      <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver a Cúpula Games</button>
+      <SectionTitle>Happy Weed</SectionTitle>
+      <Card style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 10 }}>
+          Puntaje: <span style={{ color: COLORS.neonRed, fontWeight: 700 }}>{score}</span> · Mejor: <span style={{ color: COLORS.neonAmber, fontWeight: 700 }}>{mejorPuntaje}</span>
+        </div>
+        <div style={{ position: "relative", width: HW_ANCHO, maxWidth: "100%" }}>
+          <canvas
+            ref={canvasRef} width={HW_ANCHO} height={HW_ALTO} onClick={saltar}
+            style={{ width: "100%", height: "auto", display: "block", background: "#05070d", border: `2px solid ${COLORS.neonRed}`, borderRadius: 8, boxShadow: `0 0 26px ${COLORS.neonRed}55, inset 0 0 40px #00000088`, cursor: "pointer" }}
+          />
+          {!jugando && (
+            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, background: "rgba(5,7,13,0.8)", borderRadius: 8 }}>
+              <div style={{ fontFamily: FONT_DISPLAY, fontSize: 24, color: COLORS.white, letterSpacing: 2, textShadow: `0 0 12px ${COLORS.neonRed}` }}>
+                {terminado ? "GAME OVER" : "HAPPY WEED"}
+              </div>
+              {terminado && <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: COLORS.neonAmber }}>Puntaje: {score}</div>}
+              <NeonButton active onClick={saltar}>{terminado ? "Reintentar" : "Jugar"}</NeonButton>
+            </div>
+          )}
+        </div>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginTop: 10, textAlign: "center" }}>
+          Presiona Espacio o haz clic sobre el juego para impulsarte.
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ---- 2) Batallas de Aura (estilo Brick Breaker) ----
+// Plataforma abajo (se mueve con el mouse o ← →), una esfera de aura rebota y rompe bloques de
+// energía de colores; al abrir hueco en una fila, la bola puede colarse a romper las de arriba.
+const AURA_ANCHO = 400;
+const AURA_ALTO = 560;
+const AURA_PALETA_ANCHO = 90;
+const AURA_PALETA_ALTO = 14;
+const AURA_PALETA_Y = AURA_ALTO - 36;
+const AURA_BOLA_RADIO = 7;
+const AURA_BOLA_VEL_INICIAL = 4.2;
+const AURA_FILAS = 5;
+const AURA_COLUMNAS = 8;
+const AURA_LADRILLO_ANCHO = 42;
+const AURA_LADRILLO_ALTO = 18;
+const AURA_LADRILLO_GAP = 6;
+const AURA_MARGEN_X = (AURA_ANCHO - (AURA_COLUMNAS * (AURA_LADRILLO_ANCHO + AURA_LADRILLO_GAP) - AURA_LADRILLO_GAP)) / 2;
+const AURA_MARGEN_Y = 50;
+const AURA_COLORES_FILA = [COLORS.neonRed, COLORS.neonAmber, COLORS.neonBlue, COLORS.neonSuccess, COLORS.neonRed];
+const AURA_VIDAS_INICIALES = 3;
+
+function crearLadrillosAura() {
+  const ladrillos = [];
+  for (let f = 0; f < AURA_FILAS; f++) {
+    for (let c = 0; c < AURA_COLUMNAS; c++) {
+      ladrillos.push({
+        x: AURA_MARGEN_X + c * (AURA_LADRILLO_ANCHO + AURA_LADRILLO_GAP),
+        y: AURA_MARGEN_Y + f * (AURA_LADRILLO_ALTO + AURA_LADRILLO_GAP),
+        vivo: true,
+        color: AURA_COLORES_FILA[f % AURA_COLORES_FILA.length],
+        puntos: (AURA_FILAS - f) * 10,
+      });
+    }
+  }
+  return ladrillos;
+}
+
+function dibujarAura(ctx, st) {
+  ctx.clearRect(0, 0, AURA_ANCHO, AURA_ALTO);
+  const fondo = ctx.createLinearGradient(0, 0, 0, AURA_ALTO);
+  fondo.addColorStop(0, "#0a0512");
+  fondo.addColorStop(1, "#020103");
+  ctx.fillStyle = fondo;
+  ctx.fillRect(0, 0, AURA_ANCHO, AURA_ALTO);
+
+  st.ladrillos.forEach((l) => {
+    if (!l.vivo) return;
+    ctx.save();
+    ctx.shadowColor = l.color;
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = l.color + "cc";
+    ctx.fillRect(l.x, l.y, AURA_LADRILLO_ANCHO, AURA_LADRILLO_ALTO);
+    ctx.strokeStyle = l.color;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(l.x, l.y, AURA_LADRILLO_ANCHO, AURA_LADRILLO_ALTO);
+    ctx.restore();
+  });
+
+  ctx.save();
+  ctx.shadowColor = COLORS.neonBlue;
+  ctx.shadowBlur = 14;
+  ctx.fillStyle = COLORS.neonBlue;
+  ctx.fillRect(st.paletaX, AURA_PALETA_Y, AURA_PALETA_ANCHO, AURA_PALETA_ALTO);
+  ctx.restore();
+
+  ctx.save();
+  ctx.shadowColor = COLORS.white;
+  ctx.shadowBlur = 16;
+  ctx.fillStyle = COLORS.white;
+  ctx.beginPath();
+  ctx.arc(st.bola.x, st.bola.y, AURA_BOLA_RADIO, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function AuraBattleView({ user, onVolver }) {
+  const canvasRef = useRef(null);
+  const estadoRef = useRef(null);
+  const rafRef = useRef(null);
+  const [score, setScore] = useState(0);
+  const [vidas, setVidas] = useState(AURA_VIDAS_INICIALES);
+  const [mejorPuntaje, setMejorPuntaje] = useState(0);
+  const [jugando, setJugando] = useState(false);
+  const [mensajeFinal, setMensajeFinal] = useState(null);
+
+  useEffect(() => {
+    const guardado = localStorage.getItem(`cupula_aura_mejor_${user.id}`);
+    setMejorPuntaje(guardado ? Number(guardado) : 0);
+  }, [user.id]);
+
+  const bolaEnPaleta = (paletaX) => ({
+    x: paletaX + AURA_PALETA_ANCHO / 2, y: AURA_PALETA_Y - AURA_BOLA_RADIO - 1, vx: 0, vy: 0, lanzada: false,
+  });
+
+  const iniciar = useCallback(() => {
+    const paletaX = (AURA_ANCHO - AURA_PALETA_ANCHO) / 2;
+    estadoRef.current = { paletaX, ladrillos: crearLadrillosAura(), bola: bolaEnPaleta(paletaX), puntaje: 0, teclas: {} };
+    setScore(0);
+    setVidas(AURA_VIDAS_INICIALES);
+    setMensajeFinal(null);
+    setJugando(true);
+  }, []);
+
+  const lanzarBola = useCallback(() => {
+    const st = estadoRef.current;
+    if (!st) { iniciar(); return; }
+    if (!st.bola.lanzada) {
+      st.bola.lanzada = true;
+      st.bola.vx = AURA_BOLA_VEL_INICIAL * (Math.random() > 0.5 ? 1 : -1) * 0.6;
+      st.bola.vy = -AURA_BOLA_VEL_INICIAL;
+    }
+  }, [iniciar]);
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.code === "Space") { e.preventDefault(); lanzarBola(); }
+      if (estadoRef.current) estadoRef.current.teclas[e.code] = true;
+    };
+    const onKeyUp = (e) => { if (estadoRef.current) estadoRef.current.teclas[e.code] = false; };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
+  }, [lanzarBola]);
+
+  const onMouseMove = (e) => {
+    const st = estadoRef.current;
+    if (!st) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const escala = AURA_ANCHO / rect.width;
+    const xRelativo = (e.clientX - rect.left) * escala;
+    st.paletaX = Math.max(0, Math.min(AURA_ANCHO - AURA_PALETA_ANCHO, xRelativo - AURA_PALETA_ANCHO / 2));
+  };
+
+  useEffect(() => {
+    if (!jugando) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+
+    const loop = () => {
+      const st = estadoRef.current;
+      if (!st) return;
+
+      if (st.teclas.ArrowLeft) st.paletaX = Math.max(0, st.paletaX - 6);
+      if (st.teclas.ArrowRight) st.paletaX = Math.min(AURA_ANCHO - AURA_PALETA_ANCHO, st.paletaX + 6);
+
+      if (!st.bola.lanzada) {
+        st.bola.x = st.paletaX + AURA_PALETA_ANCHO / 2;
+      } else {
+        st.bola.x += st.bola.vx;
+        st.bola.y += st.bola.vy;
+
+        if (st.bola.x - AURA_BOLA_RADIO < 0) { st.bola.x = AURA_BOLA_RADIO; st.bola.vx *= -1; }
+        if (st.bola.x + AURA_BOLA_RADIO > AURA_ANCHO) { st.bola.x = AURA_ANCHO - AURA_BOLA_RADIO; st.bola.vx *= -1; }
+        if (st.bola.y - AURA_BOLA_RADIO < 0) { st.bola.y = AURA_BOLA_RADIO; st.bola.vy *= -1; }
+
+        if (
+          st.bola.y + AURA_BOLA_RADIO > AURA_PALETA_Y &&
+          st.bola.y + AURA_BOLA_RADIO < AURA_PALETA_Y + AURA_PALETA_ALTO + 10 &&
+          st.bola.x > st.paletaX - AURA_BOLA_RADIO && st.bola.x < st.paletaX + AURA_PALETA_ANCHO + AURA_BOLA_RADIO &&
+          st.bola.vy > 0
+        ) {
+          const golpe = Math.max(-1, Math.min(1, (st.bola.x - (st.paletaX + AURA_PALETA_ANCHO / 2)) / (AURA_PALETA_ANCHO / 2)));
+          const anguloMax = Math.PI / 3;
+          const angulo = golpe * anguloMax;
+          const velocidadActual = Math.max(AURA_BOLA_VEL_INICIAL, Math.hypot(st.bola.vx, st.bola.vy));
+          st.bola.vx = velocidadActual * Math.sin(angulo);
+          st.bola.vy = -velocidadActual * Math.cos(angulo);
+          st.bola.y = AURA_PALETA_Y - AURA_BOLA_RADIO - 1;
+        }
+
+        for (const l of st.ladrillos) {
+          if (!l.vivo) continue;
+          const dentroX = st.bola.x + AURA_BOLA_RADIO > l.x && st.bola.x - AURA_BOLA_RADIO < l.x + AURA_LADRILLO_ANCHO;
+          const dentroY = st.bola.y + AURA_BOLA_RADIO > l.y && st.bola.y - AURA_BOLA_RADIO < l.y + AURA_LADRILLO_ALTO;
+          if (dentroX && dentroY) {
+            l.vivo = false;
+            st.puntaje += l.puntos;
+            st.bola.vy *= -1;
+            setScore(st.puntaje);
+            break;
+          }
+        }
+
+        if (st.bola.y - AURA_BOLA_RADIO > AURA_ALTO) {
+          const vidasRestantes = (st.vidasRestantes ?? AURA_VIDAS_INICIALES) - 1;
+          st.vidasRestantes = vidasRestantes;
+          setVidas(vidasRestantes);
+          if (vidasRestantes <= 0) {
+            setJugando(false);
+            setMensajeFinal("derrota");
+            setMejorPuntaje((prev) => {
+              if (st.puntaje > prev) { localStorage.setItem(`cupula_aura_mejor_${user.id}`, String(st.puntaje)); return st.puntaje; }
+              return prev;
+            });
+            return;
+          }
+          st.bola = bolaEnPaleta(st.paletaX);
+        }
+
+        if (st.ladrillos.every((l) => !l.vivo)) {
+          setJugando(false);
+          setMensajeFinal("victoria");
+          setMejorPuntaje((prev) => {
+            if (st.puntaje > prev) { localStorage.setItem(`cupula_aura_mejor_${user.id}`, String(st.puntaje)); return st.puntaje; }
+            return prev;
+          });
+          dibujarAura(ctx, st);
+          return;
+        }
+      }
+
+      dibujarAura(ctx, st);
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [jugando, user.id]);
+
+  const terminado = mensajeFinal !== null;
+
+  return (
+    <div>
+      <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver a Cúpula Games</button>
+      <SectionTitle>Batallas de Aura</SectionTitle>
+      <Card style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 10 }}>
+          Puntaje: <span style={{ color: COLORS.neonBlue, fontWeight: 700 }}>{score}</span> · Vidas: <span style={{ color: COLORS.neonRed, fontWeight: 700 }}>{"♥".repeat(Math.max(0, vidas))}</span> · Mejor: <span style={{ color: COLORS.neonAmber, fontWeight: 700 }}>{mejorPuntaje}</span>
+        </div>
+        <div style={{ position: "relative", width: AURA_ANCHO, maxWidth: "100%" }}>
+          <canvas
+            ref={canvasRef} width={AURA_ANCHO} height={AURA_ALTO} onMouseMove={onMouseMove} onClick={lanzarBola}
+            style={{ width: "100%", height: "auto", display: "block", background: "#05070d", border: `2px solid ${COLORS.neonBlue}`, borderRadius: 8, boxShadow: `0 0 26px ${COLORS.neonBlue}55, inset 0 0 40px #00000088`, cursor: "pointer" }}
+          />
+          {!jugando && (
+            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, background: "rgba(5,7,13,0.8)", borderRadius: 8 }}>
+              <div style={{ fontFamily: FONT_DISPLAY, fontSize: 24, color: COLORS.white, letterSpacing: 2, textShadow: `0 0 12px ${COLORS.neonBlue}` }}>
+                {mensajeFinal === "victoria" ? "¡VICTORIA!" : mensajeFinal === "derrota" ? "GAME OVER" : "BATALLAS DE AURA"}
+              </div>
+              {terminado && <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: COLORS.neonAmber }}>Puntaje: {score}</div>}
+              <NeonButton active onClick={iniciar}>{terminado ? "Reintentar" : "Jugar"}</NeonButton>
+            </div>
+          )}
+        </div>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginTop: 10, textAlign: "center" }}>
+          Mueve el mouse (o ← →) para mover la plataforma. Espacio o clic para lanzar la bola.
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ---- 3) Feria de Tiro (galería de disparos en primera persona) ----
+// Vista fija en primera persona (arma abajo, mira siguiendo el mouse), estilo puesto de feria:
+// dispara a patos, latas y botellas que cruzan la repisa antes de quedarte sin tiempo o balas.
+const FERIA_ANCHO = 460;
+const FERIA_ALTO = 520;
+const FERIA_DURACION_SEG = 45;
+const FERIA_MUNICION_INICIAL = 20;
+const FERIA_TIPOS = [
+  { tipo: "pato", puntos: 10, radio: 16, color: COLORS.neonAmber },
+  { tipo: "lata", puntos: 5, radio: 13, color: COLORS.textMuted },
+  { tipo: "botella", puntos: 15, radio: 11, color: COLORS.neonBlue },
+];
+const FERIA_MAX_OBJETIVOS = 5;
+const FERIA_INTERVALO_SPAWN_MS = 900;
+
+function crearObjetivoFeria() {
+  const def = FERIA_TIPOS[Math.floor(Math.random() * FERIA_TIPOS.length)];
+  const carril = 90 + Math.random() * (FERIA_ALTO - 260);
+  const deIzquierda = Math.random() > 0.5;
+  return {
+    id: "o" + Date.now() + Math.random(),
+    tipo: def.tipo, puntos: def.puntos, radio: def.radio, color: def.color,
+    x: deIzquierda ? -30 : FERIA_ANCHO + 30,
+    y: carril,
+    vx: (deIzquierda ? 1 : -1) * (1.2 + Math.random() * 1.6),
+    vivo: true,
+  };
+}
+
+function dibujarObjetivoFeria(ctx, o) {
+  ctx.save();
+  ctx.shadowColor = o.color;
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = o.color;
+  if (o.tipo === "pato") {
+    ctx.beginPath();
+    ctx.ellipse(o.x, o.y, o.radio, o.radio * 0.75, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(o.x + o.radio * (o.vx > 0 ? 1 : -1), o.y);
+    ctx.lineTo(o.x + o.radio * (o.vx > 0 ? 1.6 : -1.6), o.y - 3);
+    ctx.lineTo(o.x + o.radio * (o.vx > 0 ? 1.6 : -1.6), o.y + 3);
+    ctx.closePath();
+    ctx.fill();
+  } else if (o.tipo === "lata") {
+    ctx.fillRect(o.x - o.radio * 0.6, o.y - o.radio, o.radio * 1.2, o.radio * 2);
+    ctx.strokeStyle = "#00000055";
+    ctx.strokeRect(o.x - o.radio * 0.6, o.y - o.radio, o.radio * 1.2, o.radio * 2);
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(o.x, o.y - o.radio);
+    ctx.lineTo(o.x + o.radio * 0.7, o.y + o.radio);
+    ctx.lineTo(o.x - o.radio * 0.7, o.y + o.radio);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function dibujarFeria(ctx, st, mouseX, mouseY) {
+  ctx.clearRect(0, 0, FERIA_ANCHO, FERIA_ALTO);
+
+  const cielo = ctx.createLinearGradient(0, 0, 0, FERIA_ALTO);
+  cielo.addColorStop(0, "#150308");
+  cielo.addColorStop(1, "#05070d");
+  ctx.fillStyle = cielo;
+  ctx.fillRect(0, 0, FERIA_ANCHO, FERIA_ALTO);
+
+  const franjaAncho = 30;
+  for (let i = 0; i * franjaAncho < FERIA_ANCHO; i++) {
+    if (i % 2 === 0) {
+      ctx.fillStyle = COLORS.neonRed + "33";
+      ctx.fillRect(i * franjaAncho, 0, franjaAncho, 46);
+    }
+  }
+  ctx.strokeStyle = COLORS.neonRed + "88";
+  ctx.beginPath(); ctx.moveTo(0, 46); ctx.lineTo(FERIA_ANCHO, 46); ctx.stroke();
+
+  ctx.fillStyle = "#2a1710";
+  ctx.fillRect(0, FERIA_ALTO - 130, FERIA_ANCHO, 130);
+  ctx.strokeStyle = COLORS.neonAmber + "55";
+  ctx.lineWidth = 1;
+  for (let ly = FERIA_ALTO - 120; ly < FERIA_ALTO; ly += 16) {
+    ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(FERIA_ANCHO, ly); ctx.stroke();
+  }
+
+  st.objetivos.forEach((o) => o.vivo && dibujarObjetivoFeria(ctx, o));
+
+  st.chispas.forEach((c) => {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, c.vida / 18);
+    ctx.strokeStyle = COLORS.white;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, (18 - c.vida) * 1.5, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  });
+
+  const armaX = FERIA_ANCHO / 2 + (mouseX - FERIA_ANCHO / 2) * 0.12;
+  ctx.save();
+  ctx.fillStyle = "#1c1c1f";
+  ctx.strokeStyle = COLORS.neonRed;
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = COLORS.neonRed;
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.moveTo(armaX - 40, FERIA_ALTO);
+  ctx.lineTo(armaX - 12, FERIA_ALTO - 70);
+  ctx.lineTo(armaX + 18, FERIA_ALTO - 70);
+  ctx.lineTo(armaX + 46, FERIA_ALTO);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  ctx.strokeStyle = COLORS.neonSuccess;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = COLORS.neonSuccess;
+  ctx.shadowBlur = 8;
+  ctx.beginPath(); ctx.moveTo(mouseX - 12, mouseY); ctx.lineTo(mouseX - 4, mouseY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(mouseX + 4, mouseY); ctx.lineTo(mouseX + 12, mouseY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(mouseX, mouseY - 12); ctx.lineTo(mouseX, mouseY - 4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(mouseX, mouseY + 4); ctx.lineTo(mouseX, mouseY + 12); ctx.stroke();
+  ctx.beginPath(); ctx.arc(mouseX, mouseY, 12, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+}
+
+function FeriaTiroView({ user, onVolver }) {
+  const canvasRef = useRef(null);
+  const estadoRef = useRef(null);
+  const rafRef = useRef(null);
+  const mouseRef = useRef({ x: FERIA_ANCHO / 2, y: FERIA_ALTO / 2 });
+  const [score, setScore] = useState(0);
+  const [municion, setMunicion] = useState(FERIA_MUNICION_INICIAL);
+  const [tiempoRestante, setTiempoRestante] = useState(FERIA_DURACION_SEG);
+  const [mejorPuntaje, setMejorPuntaje] = useState(0);
+  const [jugando, setJugando] = useState(false);
+  const [terminado, setTerminado] = useState(false);
+
+  useEffect(() => {
+    const guardado = localStorage.getItem(`cupula_feria_mejor_${user.id}`);
+    setMejorPuntaje(guardado ? Number(guardado) : 0);
+  }, [user.id]);
+
+  const iniciar = useCallback(() => {
+    estadoRef.current = { objetivos: [], chispas: [], puntaje: 0, municion: FERIA_MUNICION_INICIAL, msParaSpawn: 0, msRestantes: FERIA_DURACION_SEG * 1000 };
+    setScore(0);
+    setMunicion(FERIA_MUNICION_INICIAL);
+    setTiempoRestante(FERIA_DURACION_SEG);
+    setTerminado(false);
+    setJugando(true);
+  }, []);
+
+  const onMouseMove = (e) => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    const escalaX = FERIA_ANCHO / rect.width;
+    const escalaY = FERIA_ALTO / rect.height;
+    mouseRef.current = { x: (e.clientX - rect.left) * escalaX, y: (e.clientY - rect.top) * escalaY };
+  };
+
+  const disparar = useCallback(() => {
+    const st = estadoRef.current;
+    if (!st) { iniciar(); return; }
+    if (st.municion <= 0) return;
+    st.municion -= 1;
+    setMunicion(st.municion);
+    const { x, y } = mouseRef.current;
+    let impacto = false;
+    for (const o of st.objetivos) {
+      if (!o.vivo) continue;
+      const dist = Math.hypot(o.x - x, o.y - y);
+      if (dist < o.radio + 6) {
+        o.vivo = false;
+        st.puntaje += o.puntos;
+        setScore(st.puntaje);
+        impacto = true;
+        break;
+      }
+    }
+    st.chispas.push({ x, y, vida: 18, acierto: impacto });
+  }, [iniciar]);
+
+  useEffect(() => {
+    if (!jugando) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    let ultimoFrame = performance.now();
+
+    const loop = (ahora) => {
+      const st = estadoRef.current;
+      if (!st) return;
+      const dt = ahora - ultimoFrame;
+      ultimoFrame = ahora;
+
+      st.msRestantes -= dt;
+      st.msParaSpawn -= dt;
+      if (st.msParaSpawn <= 0 && st.objetivos.filter((o) => o.vivo).length < FERIA_MAX_OBJETIVOS) {
+        st.objetivos.push(crearObjetivoFeria());
+        st.msParaSpawn = FERIA_INTERVALO_SPAWN_MS * (0.6 + Math.random() * 0.8);
+      }
+
+      st.objetivos.forEach((o) => { o.x += o.vx * (dt / 16.67); });
+      st.objetivos = st.objetivos.filter((o) => o.vivo && o.x > -60 && o.x < FERIA_ANCHO + 60);
+
+      st.chispas.forEach((c) => { c.vida -= 1; });
+      st.chispas = st.chispas.filter((c) => c.vida > 0);
+
+      setTiempoRestante(Math.max(0, Math.ceil(st.msRestantes / 1000)));
+
+      dibujarFeria(ctx, st, mouseRef.current.x, mouseRef.current.y);
+
+      if (st.msRestantes <= 0 || st.municion <= 0) {
+        setJugando(false);
+        setTerminado(true);
+        setMejorPuntaje((prev) => {
+          if (st.puntaje > prev) { localStorage.setItem(`cupula_feria_mejor_${user.id}`, String(st.puntaje)); return st.puntaje; }
+          return prev;
+        });
+        return;
+      }
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [jugando, user.id]);
+
+  return (
+    <div>
+      <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver a Cúpula Games</button>
+      <SectionTitle>Feria de Tiro</SectionTitle>
+      <Card style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 10 }}>
+          Puntaje: <span style={{ color: COLORS.neonAmber, fontWeight: 700 }}>{score}</span> · Balas: <span style={{ color: COLORS.neonRed, fontWeight: 700 }}>{municion}</span> · Tiempo: <span style={{ color: COLORS.neonBlue, fontWeight: 700 }}>{tiempoRestante}s</span> · Mejor: <span style={{ color: COLORS.neonSuccess, fontWeight: 700 }}>{mejorPuntaje}</span>
+        </div>
+        <div style={{ position: "relative", width: FERIA_ANCHO, maxWidth: "100%" }}>
+          <canvas
+            ref={canvasRef} width={FERIA_ANCHO} height={FERIA_ALTO} onMouseMove={onMouseMove} onClick={disparar}
+            style={{ width: "100%", height: "auto", display: "block", background: "#05070d", border: `2px solid ${COLORS.neonAmber}`, borderRadius: 8, boxShadow: `0 0 26px ${COLORS.neonAmber}55, inset 0 0 40px #00000088`, cursor: "crosshair" }}
+          />
+          {!jugando && (
+            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, background: "rgba(5,7,13,0.8)", borderRadius: 8 }}>
+              <div style={{ fontFamily: FONT_DISPLAY, fontSize: 24, color: COLORS.white, letterSpacing: 2, textShadow: `0 0 12px ${COLORS.neonAmber}` }}>
+                {terminado ? "RONDA TERMINADA" : "FERIA DE TIRO"}
+              </div>
+              {terminado && <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: COLORS.neonAmber }}>Puntaje: {score}</div>}
+              <NeonButton active onClick={iniciar}>{terminado ? "Jugar de nuevo" : "Jugar"}</NeonButton>
+            </div>
+          )}
+        </div>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginTop: 10, textAlign: "center" }}>
+          Mueve el mouse para apuntar, clic para disparar. Patos = 10, latas = 5, botellas = 15.
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ---- Menú "Cúpula Games" ----
+const CUPULA_GAMES_LISTA = [
+  { id: "happyweed", nombre: "Happy Weed", desc: "Estilo Flappy Bird: esquiva los portales neón con tu propia foto convertida en pajarito.", color: COLORS.neonRed },
+  { id: "aura", nombre: "Batallas de Aura", desc: "Estilo Brick Breaker: rompe los bloques de energía con tu esfera de aura antes de perder tus vidas.", color: COLORS.neonBlue },
+  { id: "feria", nombre: "Feria de Tiro", desc: "Galería de disparos en primera persona: dale a patos, latas y botellas antes de quedarte sin tiempo o munición.", color: COLORS.neonAmber },
+];
+
+function CupulaGamesView({ user }) {
+  const [juegoActivo, setJuegoActivo] = useState(null);
+
+  if (juegoActivo === "happyweed") return <HappyWeedView user={user} onVolver={() => setJuegoActivo(null)} />;
+  if (juegoActivo === "aura") return <AuraBattleView user={user} onVolver={() => setJuegoActivo(null)} />;
+  if (juegoActivo === "feria") return <FeriaTiroView user={user} onVolver={() => setJuegoActivo(null)} />;
+
+  return (
+    <div>
+      <SectionTitle>Cúpula Games</SectionTitle>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        {CUPULA_GAMES_LISTA.map((j) => (
+          <Card key={j.id} style={{ flex: "1 1 260px", minWidth: 240 }}>
+            <CornerFrame color={j.color} size={14} thickness={2} />
+            <div style={{ fontFamily: FONT_DISPLAY, fontSize: 20, color: COLORS.white, letterSpacing: 1, marginBottom: 8, textShadow: `0 0 10px ${j.color}` }}>
+              {j.nombre}
+            </div>
+            <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.textMuted, marginBottom: 14, lineHeight: 1.4 }}>
+              {j.desc}
+            </div>
+            <NeonButton active onClick={() => setJuegoActivo(j.id)}>Jugar</NeonButton>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CanchaEquipo({ usuarios, onVolver }) {
   const lider = usuarios.find((u) => u.rol === "lider");
   const agentes = usuarios.filter((u) => u.rol === "agente");
@@ -2989,6 +3800,7 @@ export default function LaCupula() {
         {active === "ranking" && <RankingView usuarios={users} esLider={session.rol === "lider"} onAjustarPuntos={ajustarPuntos} />}
         {active === "chat" && <ChatView user={session} mensajes={mensajes} mensajesArchivo={mensajesArchivo} chatConfig={chatConfig} onEnviar={enviarMensaje} onCambiarModo={cambiarModoChat} onGuardarArchivo={guardarEnArchivo} onEliminarArchivo={eliminarDelArchivo} />}
         {active === "cupulaai" && <CupulaAIView user={session} />}
+        {active === "juego" && <CupulaGamesView user={session} />}
         {active === "papelera" && session.rol === "lider" && <PapeleraView candidatos={candidatos} onUpdate={updateCandidatos} />}
       </div>
     </div>
