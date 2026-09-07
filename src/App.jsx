@@ -36,6 +36,30 @@ if (typeof window !== "undefined" && !window.storage) {
         return { keys };
       } catch (e) { return null; }
     },
+    // Suscripción en tiempo real (Server-Sent Events) a una clave: en vez de preguntar cada tanto
+    // ("polling" — cada pregunta suma una ida y vuelta completa más el retraso de esperar al
+    // siguiente intervalo), abre UNA conexión persistente y Firebase empuja el valor apenas
+    // cambia. Mucho menos retraso (no hay que esperar el próximo sondeo) y mucho menos tráfico
+    // (una sola conexión abierta en vez de varias peticiones HTTP por segundo). El navegador
+    // reconecta esta conexión solo si se corta. Se usa para el estado y los botones de "No haga
+    // sino Jogar" en línea, que es donde más se sentía el lag. Devuelve una función para cancelar.
+    subscribe(key, onValor) {
+      try {
+        const es = new EventSource(`${FIREBASE_DB_URL}/${encodeURIComponent(key)}.json`);
+        const manejar = (e) => {
+          try {
+            const evt = JSON.parse(e.data);
+            if (evt && evt.path === "/") onValor(evt.data);
+          } catch (err) {}
+        };
+        es.addEventListener("put", manejar);
+        es.addEventListener("patch", manejar);
+        es.onerror = () => {}; // EventSource reintenta la conexión solo, no hace falta manejarlo
+        return () => { try { es.close(); } catch (err) {} };
+      } catch (e) {
+        return () => {};
+      }
+    },
   };
 }
 
@@ -359,6 +383,16 @@ async function fetchData(key) {
     if (result && result.value) return JSON.parse(result.value);
   } catch (e) {}
   return null;
+}
+// Suscripción en tiempo real a una clave (ver window.storage.subscribe más arriba): llama a
+// onValor(objeto) cada vez que Firebase empuja un cambio, en vez de tener que preguntar cada
+// tanto. Devuelve una función para cancelar la suscripción (llamarla al desmontar).
+function suscribirseDatos(key, onValor) {
+  if (typeof window === "undefined" || !window.storage || !window.storage.subscribe) return () => {};
+  return window.storage.subscribe(key, (raw) => {
+    if (raw === null || raw === undefined) { onValor(null); return; }
+    try { onValor(JSON.parse(raw)); } catch (e) { onValor(null); }
+  });
 }
 
 function GlobalStyle() {
@@ -3464,26 +3498,65 @@ function avanzarPartidoCabezones(estado, dt, entradaIzq, entradaDer) {
   return nuevo;
 }
 
-// IA sencilla del bot (siempre juega en el lado derecho): persigue el balón en X, patea/cabecea
-// cuando está a su alcance y a veces salta si el balón le viene por el aire. Se llama unas 10
-// veces por segundo (no cada cuadro) para que no reaccione de forma sobrehumana.
-function decidirEntradaBotCabezones(estado) {
+// Tres niveles de dificultad (Fácil / Medio / Modo Ronaldinho). "reaccion" es la probabilidad de
+// que el bot realmente reaccione en cada llamada (simula reflejos humanos más lentos en fácil);
+// "zonaMuerta" qué tan preciso es ubicándose; "alcanceExtra" multiplica el alcance de golpe (mejor
+// anticipación/timing en los niveles altos); "probSalto" qué tan seguido intenta cabecear un balón
+// aéreo que se le viene; "cobertura" qué tan agresivo es defendiendo (ver más abajo).
+const DIFICULTADES_BOT_CABEZONES = {
+  facil: { reaccion: 0.55, zonaMuerta: 26, alcanceExtra: 1.15, probSalto: 0.3, cobertura: 0.3 },
+  medio: { reaccion: 0.8, zonaMuerta: 16, alcanceExtra: 1.4, probSalto: 0.48, cobertura: 0.65 },
+  ronaldinho: { reaccion: 1, zonaMuerta: 8, alcanceExtra: 1.7, probSalto: 0.6, cobertura: 1 },
+};
+// IA del bot (siempre juega en el lado derecho). Se llama unas 10 veces por segundo (no cada
+// cuadro) para que no reaccione de forma sobrehumana. Además de perseguir el balón:
+//  - Defiende de verdad: si el balón está más cerca de SU arco que del arco rival y el bot todavía
+//    está del lado equivocado (el balón quedó "detrás" suyo, más cerca del arco que él), primero se
+//    ubica ENTRE el balón y su propio arco (cobertura) para poder despejar hacia afuera, en vez de
+//    arriesgarse a empujarlo hacia adentro con el cuerpo al llegar por el lado malo (la causa típica
+//    de un autogol accidental por colisión pasiva).
+//  - intentarGolpe ya solo patea hacia el arco rival por diseño (nunca hacia el propio), así que la
+//    parte de "no autogol" que le toca a la IA es sobre todo esta cobertura defensiva.
+//  - No se queda empujando de frente contra el rival sin avanzar: si queda pegado a él (choque de
+//    cuerpos) y no puede alcanzar el balón, salta para separarse en vez de insistir sin resultado.
+function decidirEntradaBotCabezones(estado, dificultad) {
+  const cfg = DIFICULTADES_BOT_CABEZONES[dificultad] || DIFICULTADES_BOT_CABEZONES.medio;
   const jugador = estado.jugadorDer;
+  const rival = estado.jugadorIzq;
   const balon = estado.balon;
-  const distX = balon.x - jugador.x;
-  const zonaMuerta = 16;
+
+  const distBalonArcoPropio = Math.abs(CABEZONES_ANCHO - balon.x);
+  const distBalonArcoRival = Math.abs(0 - balon.x);
+  const enPeligro = distBalonArcoPropio < distBalonArcoRival;
+  const malUbicado = enPeligro && jugador.x < balon.x - 4;
+  const objetivoX = (malUbicado && cfg.cobertura > 0.4)
+    ? Math.min(CABEZONES_ANCHO - CABEZONES_ARCO_ANCHO - 8, balon.x + 30)
+    : balon.x;
+
   const entrada = { izq: false, der: false, saltar: false, patear: false };
-  if (distX > zonaMuerta) entrada.der = true;
-  else if (distX < -zonaMuerta) entrada.izq = true;
+  const distX = objetivoX - jugador.x;
+  if (Math.random() < cfg.reaccion) {
+    if (distX > cfg.zonaMuerta) entrada.der = true;
+    else if (distX < -cfg.zonaMuerta) entrada.izq = true;
+  }
+
   const centroJugadorY = CABEZONES_SUELO_Y - jugador.altura - CABEZONES_CUERPO_CENTRO_Y;
   const centroBalonY = CABEZONES_SUELO_Y - balon.altura;
-  const distancia = Math.hypot(distX, centroBalonY - centroJugadorY);
-  if (distancia < CABEZONES_ALCANCE_GOLPE * 1.5) {
+  const distanciaBalon = Math.hypot(balon.x - jugador.x, centroBalonY - centroJugadorY);
+  const alcance = CABEZONES_ALCANCE_GOLPE * cfg.alcanceExtra;
+  if (distanciaBalon < alcance) {
     entrada.patear = true;
     if (centroBalonY < centroJugadorY - 15 && jugador.altura === 0) entrada.saltar = true;
-  } else if (balon.vx < 0 && Math.abs(distX) < 230 && centroBalonY < centroJugadorY && jugador.altura === 0 && Math.random() < 0.5) {
+  } else if (balon.vx < 0 && Math.abs(balon.x - jugador.x) < 230 && centroBalonY < centroJugadorY && jugador.altura === 0 && Math.random() < cfg.probSalto) {
     entrada.saltar = true;
   }
+
+  const distanciaRival = Math.hypot(rival.x - jugador.x, (CABEZONES_SUELO_Y - rival.altura) - (CABEZONES_SUELO_Y - jugador.altura));
+  const pegadoAlRival = distanciaRival < CABEZONES_CUERPO_RADIO * 2;
+  if (pegadoAlRival && distanciaBalon > alcance && jugador.altura === 0 && Math.random() < (0.35 + cfg.cobertura * 0.35)) {
+    entrada.saltar = true;
+  }
+
   return entrada;
 }
 
@@ -3986,7 +4059,7 @@ function MotorCabezones({
 }
 
 // ── Vista de una partida contra el computador (todo local, no usa Firebase) ──
-function PartidaBotCabezones({ user, colorLocal, config, onVolver, onTerminar }) {
+function PartidaBotCabezones({ user, colorLocal, config, dificultad, onVolver, onTerminar }) {
   const estadoLocalRef = useRef(crearEstadoPartidoCabezones(config));
   const entradaLocalRef = useRef({ izq: false, der: false, saltar: false, patear: false });
   const entradaBotRef = useRef({ izq: false, der: false, saltar: false, patear: false });
@@ -4003,9 +4076,10 @@ function PartidaBotCabezones({ user, colorLocal, config, onVolver, onTerminar })
   }, []);
 
   useEffect(() => {
-    const id = setInterval(() => { entradaBotRef.current = decidirEntradaBotCabezones(estadoLocalRef.current); }, 90);
+    const id = setInterval(() => { entradaBotRef.current = decidirEntradaBotCabezones(estadoLocalRef.current, dificultad); }, 90);
     return () => clearInterval(id);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dificultad]);
 
   const alEstadoActualizado = (estado) => {
     if (!estado) return;
@@ -4030,6 +4104,9 @@ function PartidaBotCabezones({ user, colorLocal, config, onVolver, onTerminar })
       <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
         <Badge color={COLORS.neonBlue}>Tú {marcador.golesIzq} - {marcador.golesDer} Computador</Badge>
         <Badge color={COLORS.textMuted}>⏱ {Math.ceil(marcador.tiempoRestante)}s</Badge>
+        <Badge color={(DIFICULTADES_BOT_UI.find((d) => d.id === dificultad) || DIFICULTADES_BOT_UI[1]).color}>
+          {(DIFICULTADES_BOT_UI.find((d) => d.id === dificultad) || DIFICULTADES_BOT_UI[1]).etiqueta}
+        </Badge>
       </div>
       <Card style={{ padding: 6, marginBottom: 14 }}>
         <div style={{ position: "relative", width: "100%", aspectRatio: `${CABEZONES_ANCHO} / ${CABEZONES_ALTO}`, borderRadius: 8, overflow: "hidden", border: `2px solid ${COLORS.neonMagenta}`, boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
@@ -4090,6 +4167,29 @@ function SelectorPillCabezones({ opciones, valor, onCambiar, sufijo }) {
           color: valor === op ? COLORS.white : COLORS.textMuted,
           fontFamily: FONT_MONO, fontSize: 12, fontWeight: 700,
         }}>{op}{sufijo}</button>
+      ))}
+    </div>
+  );
+}
+
+// ── Selector de dificultad del bot: Fácil / Medio / Modo Ronaldinho ──
+const DIFICULTADES_BOT_UI = [
+  { id: "facil", etiqueta: "Fácil", color: COLORS.neonSuccess },
+  { id: "medio", etiqueta: "Medio", color: COLORS.neonAmber },
+  { id: "ronaldinho", etiqueta: "Modo Ronaldinho", color: COLORS.neonMagenta },
+];
+function SelectorDificultadCabezones({ valor, onCambiar }) {
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      {DIFICULTADES_BOT_UI.map((d) => (
+        <button key={d.id} onClick={() => onCambiar(d.id)} style={{
+          padding: "8px 14px", borderRadius: 10, cursor: "pointer",
+          border: `1.5px solid ${valor === d.id ? d.color : COLORS.steel}`,
+          background: valor === d.id ? `${d.color}22` : "transparent",
+          color: valor === d.id ? COLORS.white : COLORS.textMuted,
+          fontFamily: FONT_MONO, fontSize: 12, fontWeight: 700,
+          boxShadow: valor === d.id ? `0 0 10px ${d.color}55` : "none",
+        }}>{d.etiqueta}</button>
       ))}
     </div>
   );
@@ -4281,42 +4381,46 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
     if (!soyJugador1) return;
     const id = setInterval(() => {
       if (estadoLocalRef.current) saveData(k(claveEstado), estadoLocalRef.current);
-    }, 110);
+    }, 70);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador1, roomId]);
 
+  // Anfitrión: se SUSCRIBE a los botones del invitado en vez de preguntar cada 90ms — Firebase
+  // empuja el dato apenas el invitado lo manda, sin esperar el próximo sondeo ni la ida-y-vuelta de
+  // cada pregunta. Esto es lo que antes se sentía como "el muñeco se pega": aunque la conexión de
+  // ambos sea buena, sondear cada tanto siempre suma un retraso extra que una conexión push no tiene.
   useEffect(() => {
     if (!soyJugador1) return;
-    const id = setInterval(async () => {
-      const e = await fetchData(k(claveEntrada2));
-      if (e) entradaOponenteRef.current = e;
-    }, 90);
-    return () => clearInterval(id);
+    const cancelar = suscribirseDatos(k(claveEntrada2), (e) => { if (e) entradaOponenteRef.current = e; });
+    return cancelar;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador1, roomId]);
 
-  // Si soy invitado y en 10s nunca llega ni un solo estado del anfitrión, es que se fue antes de
-  // arrancar (o nunca estuvo) — libero la sala en vez de dejarla trabada para siempre.
+  // Invitado: se suscribe al estado del anfitrión en vez de sondearlo — lo recibe apenas el
+  // anfitrión lo transmite. Se mantiene el mismo resguardo de antes con un "vigía" aparte y liviano:
+  // si en 10s no llega NINGÚN dato (el anfitrión nunca estuvo o se fue antes de arrancar), se libera
+  // la sala sola en vez de quedar trabada para siempre.
   useEffect(() => {
     if (!soyJugador2) return;
     let ultimoOk = Date.now();
-    const id = setInterval(async () => {
-      const e = await fetchData(k(claveEstado));
+    const cancelar = suscribirseDatos(k(claveEstado), (e) => {
       if (e) { estadoRemotoRef.current = e; ultimoOk = Date.now(); }
-      else if (Date.now() - ultimoOk > 10000) {
+    });
+    const idVigia = setInterval(() => {
+      if (Date.now() - ultimoOk > 10000) {
         const limpia = salaVaciaCabezones();
         saveData(k(claveSala), limpia);
         setSala(limpia);
       }
-    }, 110);
-    return () => clearInterval(id);
+    }, 2000);
+    return () => { cancelar(); clearInterval(idVigia); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador2, roomId]);
 
   useEffect(() => {
     if (!soyJugador2) return;
-    const id = setInterval(() => { saveData(k(claveEntrada2), entradaLocalRef.current); }, 90);
+    const id = setInterval(() => { saveData(k(claveEntrada2), entradaLocalRef.current); }, 60);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador2, roomId]);
@@ -4483,6 +4587,7 @@ function NoHagaSinoJogarView({ user, onVolver }) {
   const [record, setRecord] = useState(null);
   const [metaGoles, setMetaGoles] = useState(CABEZONES_GOLES_PARA_GANAR);
   const [duracionMin, setDuracionMin] = useState(CABEZONES_DURACION_PARTIDO_S / 60);
+  const [dificultadBot, setDificultadBot] = useState("medio");
   const [oponenteElegido, setOponenteElegido] = useState(null);
   const configElegida = { metaGoles, duracionS: duracionMin * 60 };
 
@@ -4539,6 +4644,10 @@ function NoHagaSinoJogarView({ user, onVolver }) {
         <button onClick={() => setPantalla("modo")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
         <SectionTitle>Ajustes del partido</SectionTitle>
         <Card>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 6 }}>DIFICULTAD</div>
+          <div style={{ marginBottom: 18 }}>
+            <SelectorDificultadCabezones valor={dificultadBot} onCambiar={setDificultadBot} />
+          </div>
           <AjustesPartidaCabezones metaGoles={metaGoles} duracionMin={duracionMin} onCambiarMeta={setMetaGoles} onCambiarDuracion={setDuracionMin} />
           <NeonButton active onClick={() => setPantalla("bot")}>🎮 Empezar</NeonButton>
         </Card>
@@ -4551,6 +4660,7 @@ function NoHagaSinoJogarView({ user, onVolver }) {
         user={user}
         colorLocal={colorLocal}
         config={configElegida}
+        dificultad={dificultadBot}
         onVolver={() => setPantalla("hub")}
         onTerminar={registrarResultado}
       />
