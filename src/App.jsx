@@ -3101,11 +3101,1068 @@ function FeriaTiroView({ user, onVolver }) {
   );
 }
 
+
+// ---- 4) Llegaron los Feos (multijugador estilo Among Us + Garry's Mod + camuflaje) ----
+// Los 5 comparten una sola sala guardada en Firebase (clave feos_sala_<DATA_VERSION>).
+// A diferencia del resto de "Cúpula Games", este es en tiempo real entre varios celulares:
+// cada quien mueve a su "Feo" con teclado/flechas (o la cruceta en pantalla) sobre uno de
+// varios mapas, hace misiones, se puede camuflar como un objeto del escenario para
+// esconderse, y hay un infiltrado en secreto que elimina y sabotea. Reuniones + votación
+// para expulsar a quien sospechen, igual que en Among Us.
+
+// ── Personalización del Feo ──
+const PALETA_FEOS = [
+  { id: "rojo", hex: "#FF1E3C" }, { id: "azul", hex: "#2FA8FF" }, { id: "verde", hex: "#3DFFA0" },
+  { id: "amarillo", hex: "#FFB020" }, { id: "magenta", hex: "#FF2FD6" }, { id: "naranja", hex: "#FF7A1A" },
+  { id: "morado", hex: "#9B5CFF" }, { id: "cyan", hex: "#2FE0D0" },
+];
+const SOMBREROS_FEOS = [
+  { id: "ninguno", emoji: null, label: "Sin sombrero" },
+  { id: "gorra", emoji: "🧢", label: "Gorra" },
+  { id: "copa", emoji: "🎩", label: "Copa" },
+  { id: "corona", emoji: "👑", label: "Corona" },
+  { id: "graduacion", emoji: "🎓", label: "Birrete" },
+  { id: "casco", emoji: "🪖", label: "Casco" },
+  { id: "helado", emoji: "🍦", label: "Cono" },
+];
+const CARAS_FEOS = [
+  { id: "feliz", emoji: "😀" }, { id: "cool", emoji: "😎" }, { id: "loco", emoji: "🤪" },
+  { id: "asustado", emoji: "😱" }, { id: "picaro", emoji: "😏" }, { id: "monstruo", emoji: "👹" },
+];
+function hashCadenaFeos(str) { let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return Math.abs(h); }
+function personajeAleatorioFeos(seedId) {
+  const idx = hashCadenaFeos(String(seedId));
+  return { color: PALETA_FEOS[idx % PALETA_FEOS.length].id, sombrero: "ninguno", cara: CARAS_FEOS[Math.floor(idx / 7) % CARAS_FEOS.length].id };
+}
+function cargarPersonajeFeosGuardado(userId) {
+  try {
+    const raw = localStorage.getItem(`cupula_feo_personaje_${userId}`);
+    if (raw) { const p = JSON.parse(raw); if (p && p.color) return p; }
+  } catch (e) {}
+  return personajeAleatorioFeos(userId);
+}
+function guardarPersonajeFeosLocal(userId, personaje) {
+  try { localStorage.setItem(`cupula_feo_personaje_${userId}`, JSON.stringify(personaje)); } catch (e) {}
+}
+
+function PersonajeFeo({ personaje, size = 46, oculto, etiqueta }) {
+  const p = personaje || personajeAleatorioFeos("x");
+  const color = (PALETA_FEOS.find((c) => c.id === p.color) || PALETA_FEOS[0]).hex;
+  const sombrero = SOMBREROS_FEOS.find((s) => s.id === p.sombrero) || SOMBREROS_FEOS[0];
+  const cara = CARAS_FEOS.find((c) => c.id === p.cara) || CARAS_FEOS[0];
+  return (
+    <div style={{ position: "relative", width: size, height: size, opacity: oculto ? 0.35 : 1 }}>
+      <div style={{
+        width: size, height: size, borderRadius: "45% 45% 50% 50% / 55% 55% 60% 60%",
+        background: `radial-gradient(circle at 35% 30%, ${color}ee, ${color}99 75%)`,
+        border: `2px solid ${color}`, boxShadow: `0 0 10px ${color}88`,
+        display: "flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box",
+      }}>
+        <span style={{ fontSize: size * 0.5, lineHeight: 1 }}>{cara.emoji}</span>
+      </div>
+      {sombrero.emoji && (
+        <span style={{ position: "absolute", top: -size * 0.34, left: "50%", transform: "translateX(-50%)", fontSize: size * 0.42 }}>{sombrero.emoji}</span>
+      )}
+      {etiqueta && (
+        <div style={{ position: "absolute", top: size + 2, left: "50%", transform: "translateX(-50%)", whiteSpace: "nowrap", fontFamily: FONT_MONO, fontSize: 9, color: COLORS.white, background: "rgba(0,0,0,0.65)", padding: "1px 5px", borderRadius: 3, pointerEvents: "none" }}>{etiqueta}</div>
+      )}
+    </div>
+  );
+}
+
+// ── Mapas ── (mismo tamaño de lienzo para los dos: 920x540, así el motor no cambia)
+const MAPS_FEOS = {
+  base: {
+    id: "base", nombre: "La Base Feota", icono: "🛰", ancho: 920, alto: 540,
+    spawn: { x: 460, y: 140 },
+    zonas: [
+      { id: "comunicaciones", nombre: "Comunicaciones", color: COLORS.neonBlue, rect: { x: 20, y: 20, w: 280, h: 240 } },
+      { id: "cafeteria", nombre: "Cafetería", color: COLORS.neonAmber, rect: { x: 320, y: 20, w: 280, h: 240 } },
+      { id: "armeria", nombre: "Armería", color: COLORS.neonMagenta, rect: { x: 620, y: 20, w: 280, h: 240 } },
+      { id: "electrico", nombre: "Eléctrico", color: COLORS.neonSuccess, rect: { x: 20, y: 280, w: 280, h: 240 } },
+      { id: "reactor", nombre: "Reactor", color: COLORS.neonRed, rect: { x: 320, y: 280, w: 280, h: 240 } },
+      { id: "navegacion", nombre: "Navegación", color: COLORS.neonBlue, rect: { x: 620, y: 280, w: 280, h: 240 } },
+    ],
+    props: [
+      { id: "p1", x: 90, y: 90, icono: "🖥" }, { id: "p2", x: 550, y: 70, icono: "☕" },
+      { id: "p3", x: 860, y: 90, icono: "🔫" }, { id: "p4", x: 90, y: 470, icono: "🧯" },
+      { id: "p5", x: 480, y: 470, icono: "🛢" }, { id: "p6", x: 860, y: 470, icono: "🧭" },
+      { id: "p7", x: 250, y: 470, icono: "🪴" }, { id: "p8", x: 700, y: 210, icono: "📦" },
+    ],
+    tareas: [
+      { id: "tk1", tipo: "codigo", nombre: "Activar el percolador", x: 460, y: 100 },
+      { id: "tk2", tipo: "cables", nombre: "Sintonizar la antena", x: 160, y: 140 },
+      { id: "tk3", tipo: "escaneo", nombre: "Estabilizar el reactor", x: 460, y: 400 },
+      { id: "tk4", tipo: "cables", nombre: "Revisar el cableado", x: 400, y: 460 },
+      { id: "tk5", tipo: "codigo", nombre: "Cargar munición", x: 760, y: 140 },
+      { id: "tk6", tipo: "escaneo", nombre: "Calibrar el rumbo", x: 760, y: 400 },
+      { id: "tk7", tipo: "cables", nombre: "Revisar fusibles", x: 160, y: 400 },
+    ],
+    puntoEmergencia: { x: 460, y: 220 },
+    puntosSabotaje: { luces: { x: 160, y: 460 }, reactor: { x: 460, y: 460 } },
+    sabotajeNombres: { luces: "Cortan la luz", reactor: "Reactor crítico" },
+  },
+  mall: {
+    id: "mall", nombre: "El Centro Comercial Feota", icono: "🛍", ancho: 920, alto: 540,
+    spawn: { x: 460, y: 400 },
+    zonas: [
+      { id: "comida", nombre: "Zona de Comida", color: COLORS.neonAmber, rect: { x: 20, y: 20, w: 280, h: 240 } },
+      { id: "ropa", nombre: "Tienda de Ropa", color: COLORS.neonMagenta, rect: { x: 320, y: 20, w: 280, h: 240 } },
+      { id: "juegos", nombre: "Sala de Juegos", color: COLORS.neonBlue, rect: { x: 620, y: 20, w: 280, h: 240 } },
+      { id: "seguridad", nombre: "Cuarto de Seguridad", color: COLORS.neonRed, rect: { x: 20, y: 280, w: 280, h: 240 } },
+      { id: "fuente", nombre: "Fuente Central", color: COLORS.neonSuccess, rect: { x: 320, y: 280, w: 280, h: 240 } },
+      { id: "bodega", nombre: "Bodega", color: COLORS.neonAmber, rect: { x: 620, y: 280, w: 280, h: 240 } },
+    ],
+    props: [
+      { id: "p1", x: 90, y: 90, icono: "🍿" }, { id: "p2", x: 550, y: 70, icono: "👗" },
+      { id: "p3", x: 860, y: 90, icono: "🕹" }, { id: "p4", x: 90, y: 470, icono: "🎥" },
+      { id: "p5", x: 480, y: 340, icono: "⛲" }, { id: "p6", x: 860, y: 470, icono: "📦" },
+      { id: "p7", x: 250, y: 470, icono: "🧸" }, { id: "p8", x: 700, y: 210, icono: "🛍" },
+    ],
+    tareas: [
+      { id: "tk1", tipo: "codigo", nombre: "Freír las papas sin quemarlas", x: 160, y: 140 },
+      { id: "tk2", tipo: "cables", nombre: "Desenredar las luces navideñas", x: 460, y: 100 },
+      { id: "tk3", tipo: "escaneo", nombre: "Ganarle a la máquina de garra", x: 760, y: 140 },
+      { id: "tk4", tipo: "cables", nombre: "Reconectar las cámaras", x: 160, y: 400 },
+      { id: "tk5", tipo: "codigo", nombre: "Arreglar la caja registradora", x: 460, y: 460 },
+      { id: "tk6", tipo: "escaneo", nombre: "Contar las cajas de bodega", x: 760, y: 400 },
+      { id: "tk7", tipo: "codigo", nombre: "Resetear la alarma", x: 240, y: 460 },
+    ],
+    puntoEmergencia: { x: 460, y: 400 },
+    puntosSabotaje: { luces: { x: 160, y: 460 }, reactor: { x: 760, y: 460 } },
+    sabotajeNombres: { luces: "Apagón general", reactor: "Fuga de gas en la Bodega" },
+  },
+};
+const MAPS_FEOS_LISTA = [MAPS_FEOS.base, MAPS_FEOS.mall];
+
+function distanciaFeos(a, b) { const dx = a.x - b.x, dy = a.y - b.y; return Math.sqrt(dx * dx + dy * dy); }
+
+const FEOS_INTERACT_RADIO = 65;
+const FEOS_KILL_COOLDOWN_MS = 18000;
+const FEOS_SABOTAJE_COOLDOWN_MS = 28000;
+const FEOS_SABOTAJE_LUCES_MS = 22000;
+const FEOS_SABOTAJE_REACTOR_MS = 38000;
+const FEOS_REUNION_MS = 35000;
+const FEOS_CAMUFLAJE_COOLDOWN_MS = 15000;
+const FEOS_CAMUFLAJE_DURACION_MS = 14000;
+const FEOS_TECLAS = { w: "up", arrowup: "up", s: "down", arrowdown: "down", a: "left", arrowleft: "left", d: "right", arrowright: "right" };
+
+function jugadorFeosVacio(mapa, personaje) {
+  return {
+    vivo: true, expulsado: false, x: mapa.spawn.x, y: mapa.spawn.y, personaje,
+    usoEmergencia: false, ultimoKillTs: 0, ultimoSabotajeTs: 0,
+    camuflado: false, camuflajeIcono: null, camuflajeVenceEn: 0, ultimoCamuflajeTs: 0,
+  };
+}
+function crearSalaFeosVacia() {
+  return {
+    fase: "lobby", mapaId: "base", jugadores: {}, impostores: [], numImpostores: 1, hostId: null,
+    tareasHechas: [], sabotaje: null, reunion: null, cuerpo: null, ganador: null, inicio: 0,
+  };
+}
+// Función pura: decide si ya hay un bando ganador a partir del estado actual de la sala.
+function evaluarGanadorFeos(sala) {
+  const mapa = MAPS_FEOS[sala.mapaId] || MAPS_FEOS.base;
+  const jugadores = sala.jugadores || {};
+  const ids = Object.keys(jugadores);
+  const vivos = ids.filter((id) => jugadores[id].vivo && !jugadores[id].expulsado);
+  const impVivos = vivos.filter((id) => sala.impostores.includes(id));
+  const tripVivos = vivos.filter((id) => !sala.impostores.includes(id));
+  if (sala.tareasHechas && sala.tareasHechas.length >= mapa.tareas.length) return "tripulantes";
+  if (impVivos.length === 0) return "tripulantes";
+  if (impVivos.length >= tripVivos.length) return "impostores";
+  if (sala.sabotaje && sala.sabotaje.tipo === "reactor" && Date.now() > sala.sabotaje.venceEn) return "impostores";
+  return null;
+}
+
+function BotonDireccionFeos({ dir, keysRef, children }) {
+  const activar = (e) => { e.preventDefault(); keysRef.current[dir] = true; };
+  const desactivar = (e) => { e.preventDefault(); keysRef.current[dir] = false; };
+  return (
+    <button
+      onMouseDown={activar} onMouseUp={desactivar} onMouseLeave={desactivar}
+      onTouchStart={activar} onTouchEnd={desactivar} onTouchCancel={desactivar}
+      style={{
+        width: 46, height: 46, borderRadius: 8, background: COLORS.bgBase, border: `1px solid ${COLORS.neonMagenta}`,
+        color: COLORS.white, fontSize: 17, cursor: "pointer", userSelect: "none", touchAction: "none",
+      }}
+    >{children}</button>
+  );
+}
+
+function TareaEscaneo({ onCompletar, onCancelar }) {
+  const [progreso, setProgreso] = useState(0);
+  const rafRef = useRef(null);
+  const sostenerRef = useRef(false);
+  const inicioRef = useRef(0);
+  const DURACION = 2500;
+
+  const tick = () => {
+    if (!sostenerRef.current) return;
+    const p = Math.min(1, (Date.now() - inicioRef.current) / DURACION);
+    setProgreso(p);
+    if (p >= 1) { onCompletar(); return; }
+    rafRef.current = requestAnimationFrame(tick);
+  };
+  const empezar = () => {
+    sostenerRef.current = true;
+    inicioRef.current = Date.now() - progreso * DURACION;
+    rafRef.current = requestAnimationFrame(tick);
+  };
+  const soltar = () => {
+    sostenerRef.current = false;
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    setProgreso((p) => Math.max(0, p - 0.15));
+  };
+  useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
+
+  return (
+    <div style={{ textAlign: "center" }}>
+      <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 16, letterSpacing: 1 }}>MANTÉN PRESIONADO PARA ESCANEAR</div>
+      <div style={{ width: "100%", height: 14, background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 8, overflow: "hidden", marginBottom: 20 }}>
+        <div style={{ width: `${progreso * 100}%`, height: "100%", background: COLORS.neonSuccess, boxShadow: `0 0 10px ${COLORS.neonSuccess}` }} />
+      </div>
+      <button
+        onMouseDown={empezar} onMouseUp={soltar} onMouseLeave={soltar}
+        onTouchStart={(e) => { e.preventDefault(); empezar(); }} onTouchEnd={(e) => { e.preventDefault(); soltar(); }}
+        style={{
+          width: 120, height: 120, borderRadius: "50%", background: `${COLORS.neonSuccess}22`,
+          border: `3px solid ${COLORS.neonSuccess}`, color: COLORS.white, fontFamily: FONT_DISPLAY, fontSize: 16,
+          letterSpacing: 1, cursor: "pointer", boxShadow: `0 0 24px ${COLORS.neonSuccess}55`, userSelect: "none",
+        }}
+      >ESCANEAR</button>
+      <div style={{ marginTop: 20 }}><NeonButton small onClick={onCancelar}>Cancelar</NeonButton></div>
+    </div>
+  );
+}
+
+function TareaCodigo({ onCompletar, onCancelar }) {
+  const [codigo] = useState(() => Array.from({ length: 4 }, () => Math.floor(Math.random() * 10)));
+  const [mostrar, setMostrar] = useState(true);
+  const [ingresado, setIngresado] = useState([]);
+  const [error, setError] = useState(false);
+
+  useEffect(() => { const t = setTimeout(() => setMostrar(false), 2200); return () => clearTimeout(t); }, []);
+
+  const tocar = (n) => {
+    const siguiente = [...ingresado, n];
+    setIngresado(siguiente);
+    if (siguiente.length === codigo.length) {
+      if (siguiente.every((d, i) => d === codigo[i])) {
+        setTimeout(onCompletar, 250);
+      } else {
+        setError(true);
+        setTimeout(() => { setIngresado([]); setError(false); }, 700);
+      }
+    }
+  };
+
+  return (
+    <div style={{ textAlign: "center" }}>
+      <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 12, letterSpacing: 1 }}>
+        {mostrar ? "MEMORIZA EL CÓDIGO" : "ESCRIBE EL CÓDIGO"}
+      </div>
+      <div style={{ display: "flex", justifyContent: "center", gap: 10, marginBottom: 22 }}>
+        {codigo.map((d, i) => (
+          <div key={i} style={{
+            width: 44, height: 54, display: "flex", alignItems: "center", justifyContent: "center",
+            fontFamily: FONT_DISPLAY, fontSize: 26, borderRadius: 6, color: error ? COLORS.neonRed : COLORS.white,
+            background: COLORS.bgBase, border: `2px solid ${error ? COLORS.neonRed : COLORS.neonBlue}`,
+          }}>
+            {mostrar ? d : (ingresado[i] !== undefined ? ingresado[i] : "")}
+          </div>
+        ))}
+      </div>
+      {!mostrar && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, maxWidth: 220, margin: "0 auto" }}>
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
+            <NeonButton key={n} onClick={() => tocar(n)}>{n}</NeonButton>
+          ))}
+          <div />
+          <NeonButton onClick={() => tocar(0)}>0</NeonButton>
+          <NeonButton small onClick={() => setIngresado([])}>⌫</NeonButton>
+        </div>
+      )}
+      <div style={{ marginTop: 20 }}><NeonButton small onClick={onCancelar}>Cancelar</NeonButton></div>
+    </div>
+  );
+}
+
+function TareaCables({ onCompletar, onCancelar }) {
+  const COLORES_CABLE = [COLORS.neonRed, COLORS.neonBlue, COLORS.neonSuccess, COLORS.neonAmber];
+  const [derecha] = useState(() => [...COLORES_CABLE].sort(() => Math.random() - 0.5));
+  const [conectados, setConectados] = useState({});
+  const [seleccion, setSeleccion] = useState(null);
+
+  const tocarIzquierda = (color) => { if (!conectados[color]) setSeleccion(color); };
+  const tocarDerecha = (color) => {
+    if (!seleccion || conectados[color]) return;
+    if (seleccion === color) {
+      const next = { ...conectados, [color]: true };
+      setConectados(next);
+      setSeleccion(null);
+      if (Object.keys(next).length === COLORES_CABLE.length) setTimeout(onCompletar, 300);
+    } else {
+      setSeleccion(null);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 16, textAlign: "center", letterSpacing: 1 }}>CONECTA LOS CABLES DEL MISMO COLOR</div>
+      <div style={{ display: "flex", justifyContent: "space-between", maxWidth: 260, margin: "0 auto" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {COLORES_CABLE.map((c) => (
+            <button key={c} onClick={() => tocarIzquierda(c)} disabled={!!conectados[c]} style={{
+              width: 46, height: 30, borderRadius: 4, background: conectados[c] ? COLORS.steel : c,
+              border: seleccion === c ? `2px solid ${COLORS.white}` : "2px solid transparent",
+              opacity: conectados[c] ? 0.35 : 1, cursor: conectados[c] ? "default" : "pointer",
+            }} />
+          ))}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {derecha.map((c, i) => (
+            <button key={c + i} onClick={() => tocarDerecha(c)} disabled={!!conectados[c]} style={{
+              width: 46, height: 30, borderRadius: 4, background: conectados[c] ? COLORS.steel : c,
+              opacity: conectados[c] ? 0.35 : 1, cursor: conectados[c] ? "default" : "pointer", border: "2px solid transparent",
+            }} />
+          ))}
+        </div>
+      </div>
+      <div style={{ marginTop: 20, textAlign: "center" }}><NeonButton small onClick={onCancelar}>Cancelar</NeonButton></div>
+    </div>
+  );
+}
+
+function LlegaronLosFeosView({ user, onVolver }) {
+  const miId = user.id;
+  const [pantalla, setPantalla] = useState("hub"); // hub | personalizar | reglas | sala
+  const [personajeLocal, setPersonajeLocal] = useState(() => cargarPersonajeFeosGuardado(miId));
+  const [sala, setSala] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [tareaAbierta, setTareaAbierta] = useState(null);
+  const [mapaElegido, setMapaElegido] = useState("base");
+  const [numImpostoresElegido, setNumImpostoresElegido] = useState(1);
+  const [ahora, setAhora] = useState(Date.now());
+  const [miPos, setMiPos] = useState({ x: 460, y: 300 });
+
+  const keysRef = useRef({ up: false, down: false, left: false, right: false });
+  const miPosRef = useRef(miPos);
+  const salaRef = useRef(sala);
+  const misDatosRef = useRef(null);
+  const tareaAbiertaRef = useRef(null);
+  const primerCargaRef = useRef(true);
+  const rondaVistaRef = useRef(0);
+  const rafRef = useRef(null);
+
+  useEffect(() => { miPosRef.current = miPos; }, [miPos]);
+  useEffect(() => { salaRef.current = sala; }, [sala]);
+  useEffect(() => { misDatosRef.current = (sala && sala.jugadores) ? sala.jugadores[miId] : null; }, [sala, miId]);
+  useEffect(() => { tareaAbiertaRef.current = tareaAbierta; }, [tareaAbierta]);
+
+  useEffect(() => {
+    const id = setInterval(() => setAhora(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const cambiarPersonaje = async (cambios) => {
+    const siguiente = { ...personajeLocal, ...cambios };
+    setPersonajeLocal(siguiente);
+    guardarPersonajeFeosLocal(miId, siguiente);
+    const actual = salaRef.current;
+    if (actual && actual.fase === "lobby" && actual.jugadores[miId]) {
+      const fresco = await fetchData(k("feos_sala"));
+      if (fresco && fresco.fase === "lobby" && fresco.jugadores[miId]) {
+        const s = { ...fresco, jugadores: { ...fresco.jugadores, [miId]: { ...fresco.jugadores[miId], personaje: siguiente } } };
+        setSala(s);
+        await saveData(k("feos_sala"), s);
+      }
+    }
+  };
+
+  // ── Carga + sondeo de la sala compartida (solo mientras estamos en la pantalla "sala") ──
+  useEffect(() => {
+    if (pantalla !== "sala") return;
+    let cancelado = false;
+    const cargar = async () => {
+      let s = await fetchData(k("feos_sala"));
+      if (!s) { s = crearSalaFeosVacia(); await saveData(k("feos_sala"), s); }
+      if (cancelado) return;
+      const esPrimeraCarga = primerCargaRef.current;
+      primerCargaRef.current = false;
+      const mapa = MAPS_FEOS[s.mapaId] || MAPS_FEOS.base;
+      if (s.fase === "jugando" && s.inicio) {
+        if (esPrimeraCarga && s.jugadores && s.jugadores[miId]) {
+          miPosRef.current = { x: s.jugadores[miId].x, y: s.jugadores[miId].y };
+          setMiPos(miPosRef.current);
+          rondaVistaRef.current = s.inicio;
+        } else if (s.inicio !== rondaVistaRef.current) {
+          rondaVistaRef.current = s.inicio;
+          miPosRef.current = { x: mapa.spawn.x, y: mapa.spawn.y };
+          setMiPos(miPosRef.current);
+        } else if (s.jugadores && s.jugadores[miId]) {
+          s.jugadores[miId] = { ...s.jugadores[miId], x: miPosRef.current.x, y: miPosRef.current.y };
+        }
+      }
+      setSala(s);
+      setCargando(false);
+    };
+    cargar();
+    const id = setInterval(cargar, 1000);
+    return () => { cancelado = true; clearInterval(id); };
+  }, [pantalla, miId]);
+
+  const refrescar = async () => {
+    const s = await fetchData(k("feos_sala"));
+    if (s) return s;
+    return salaRef.current;
+  };
+  const escribir = async (siguiente) => {
+    setSala(siguiente);
+    await saveData(k("feos_sala"), siguiente);
+  };
+
+  // Unirse automáticamente a la sala mientras está en el lobby.
+  useEffect(() => {
+    if (!sala || sala.fase !== "lobby") return;
+    if (sala.jugadores[miId]) return;
+    (async () => {
+      const fresco = await refrescar();
+      if (fresco.fase !== "lobby" || fresco.jugadores[miId]) return;
+      const mapa = MAPS_FEOS[fresco.mapaId] || MAPS_FEOS.base;
+      const siguiente = { ...fresco, jugadores: { ...fresco.jugadores, [miId]: jugadorFeosVacio(mapa, personajeLocal) } };
+      await escribir(siguiente);
+      miPosRef.current = { x: mapa.spawn.x, y: mapa.spawn.y };
+      setMiPos(miPosRef.current);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sala, miId]);
+
+  const iniciarPartida = async () => {
+    const fresco = await refrescar();
+    const ids = Object.keys(fresco.jugadores);
+    if (ids.length < 3) return;
+    const mapa = MAPS_FEOS[mapaElegido] || MAPS_FEOS.base;
+    const maxImpostores = Math.max(1, Math.ceil(ids.length / 2) - 1);
+    const numImp = Math.min(numImpostoresElegido, maxImpostores);
+    const barajados = [...ids].sort(() => Math.random() - 0.5);
+    const impostores = barajados.slice(0, numImp);
+    const jugadores = {};
+    ids.forEach((id) => { jugadores[id] = jugadorFeosVacio(mapa, fresco.jugadores[id].personaje); });
+    const siguiente = {
+      ...fresco, fase: "jugando", mapaId: mapaElegido, jugadores, impostores, numImpostores: impostores.length,
+      hostId: miId, tareasHechas: [], sabotaje: null, reunion: null, cuerpo: null, ganador: null, inicio: Date.now(),
+    };
+    rondaVistaRef.current = siguiente.inicio;
+    miPosRef.current = { x: mapa.spawn.x, y: mapa.spawn.y };
+    setMiPos(miPosRef.current);
+    await escribir(siguiente);
+  };
+
+  // ── Motor de movimiento: teclado + cruceta en pantalla, con predicción local ──
+  useEffect(() => {
+    if (pantalla !== "sala") return;
+    const onKeyDown = (e) => {
+      const dir = FEOS_TECLAS[e.key.toLowerCase()];
+      if (dir) { e.preventDefault(); keysRef.current[dir] = true; }
+    };
+    const onKeyUp = (e) => {
+      const dir = FEOS_TECLAS[e.key.toLowerCase()];
+      if (dir) keysRef.current[dir] = false;
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      keysRef.current = { up: false, down: false, left: false, right: false };
+    };
+  }, [pantalla]);
+
+  useEffect(() => {
+    if (pantalla !== "sala") return;
+    let activo = true;
+    let ultimo = performance.now();
+    const paso = (ahoraMs) => {
+      if (!activo) return;
+      const dt = Math.min(60, ahoraMs - ultimo);
+      ultimo = ahoraMs;
+      const s = salaRef.current;
+      const yo = misDatosRef.current;
+      const puedeMoverse = s && s.fase === "jugando" && yo && yo.vivo && !yo.expulsado && !yo.camuflado && !tareaAbiertaRef.current;
+      if (puedeMoverse) {
+        const kd = keysRef.current;
+        let dx = (kd.right ? 1 : 0) - (kd.left ? 1 : 0);
+        let dy = (kd.down ? 1 : 0) - (kd.up ? 1 : 0);
+        if (dx || dy) {
+          const largo = Math.sqrt(dx * dx + dy * dy) || 1;
+          const velocidad = 0.27;
+          dx = (dx / largo) * velocidad * dt;
+          dy = (dy / largo) * velocidad * dt;
+          const mapa = MAPS_FEOS[s.mapaId] || MAPS_FEOS.base;
+          setMiPos((prev) => ({
+            x: Math.max(18, Math.min(mapa.ancho - 18, prev.x + dx)),
+            y: Math.max(18, Math.min(mapa.alto - 18, prev.y + dy)),
+          }));
+        }
+      }
+      rafRef.current = requestAnimationFrame(paso);
+    };
+    rafRef.current = requestAnimationFrame(paso);
+    return () => { activo = false; if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [pantalla]);
+
+  // Difunde mi posición a los demás cada tanto (solo si me moví).
+  useEffect(() => {
+    if (pantalla !== "sala") return;
+    const id = setInterval(async () => {
+      const fresco = salaRef.current;
+      if (!fresco || fresco.fase !== "jugando") return;
+      const yo = fresco.jugadores[miId];
+      if (!yo || !yo.vivo || yo.expulsado || yo.camuflado) return;
+      const pos = miPosRef.current;
+      if (Math.abs(yo.x - pos.x) < 2 && Math.abs(yo.y - pos.y) < 2) return;
+      const siguiente = { ...fresco, jugadores: { ...fresco.jugadores, [miId]: { ...yo, x: pos.x, y: pos.y } } };
+      salaRef.current = siguiente;
+      setSala(siguiente);
+      await saveData(k("feos_sala"), siguiente);
+    }, 350);
+    return () => clearInterval(id);
+  }, [pantalla, miId]);
+
+  const completarTarea = async (tareaId, esImpostorLocal) => {
+    const fresco = await refrescar();
+    if (fresco.fase !== "jugando") { setTareaAbierta(null); return; }
+    if (esImpostorLocal || fresco.tareasHechas.includes(tareaId)) { setTareaAbierta(null); return; }
+    const siguiente = { ...fresco, tareasHechas: [...fresco.tareasHechas, tareaId] };
+    const ganador = evaluarGanadorFeos(siguiente);
+    if (ganador) { siguiente.fase = "terminado"; siguiente.ganador = ganador; }
+    await escribir(siguiente);
+    setTareaAbierta(null);
+  };
+
+  const eliminarJugador = async (objetivoId) => {
+    const fresco = await refrescar();
+    const yo = fresco.jugadores[miId];
+    if (!yo || !yo.vivo || !fresco.impostores.includes(miId)) return;
+    if (Date.now() - (yo.ultimoKillTs || 0) < FEOS_KILL_COOLDOWN_MS) return;
+    const objetivo = fresco.jugadores[objetivoId];
+    if (!objetivo || !objetivo.vivo || objetivo.camuflado || fresco.impostores.includes(objetivoId)) return;
+    if (distanciaFeos(miPosRef.current, objetivo) > FEOS_INTERACT_RADIO) return;
+    const siguiente = {
+      ...fresco,
+      jugadores: { ...fresco.jugadores, [objetivoId]: { ...objetivo, vivo: false }, [miId]: { ...yo, ultimoKillTs: Date.now() } },
+      cuerpo: { x: objetivo.x, y: objetivo.y, victimaId: objetivoId },
+    };
+    const ganador = evaluarGanadorFeos(siguiente);
+    if (ganador) { siguiente.fase = "terminado"; siguiente.ganador = ganador; }
+    await escribir(siguiente);
+  };
+
+  const camuflarse = async (icono) => {
+    const fresco = await refrescar();
+    const yo = fresco.jugadores[miId];
+    if (!yo || !yo.vivo || yo.expulsado || yo.camuflado || fresco.fase !== "jugando") return;
+    if (Date.now() - (yo.ultimoCamuflajeTs || 0) < FEOS_CAMUFLAJE_COOLDOWN_MS) return;
+    const siguiente = {
+      ...fresco,
+      jugadores: { ...fresco.jugadores, [miId]: { ...yo, camuflado: true, camuflajeIcono: icono, camuflajeVenceEn: Date.now() + FEOS_CAMUFLAJE_DURACION_MS, ultimoCamuflajeTs: Date.now() } },
+    };
+    await escribir(siguiente);
+  };
+  const revelarse = async () => {
+    const fresco = await refrescar();
+    const yo = fresco.jugadores[miId];
+    if (!yo || !yo.camuflado) return;
+    await escribir({ ...fresco, jugadores: { ...fresco.jugadores, [miId]: { ...yo, camuflado: false, camuflajeIcono: null } } });
+  };
+
+  const iniciarReunion = async (motivo) => {
+    const fresco = await refrescar();
+    const yo = fresco.jugadores[miId];
+    if (!yo || !yo.vivo || yo.expulsado || fresco.fase !== "jugando") return;
+    const mapa = MAPS_FEOS[fresco.mapaId] || MAPS_FEOS.base;
+    if (motivo === "emergencia" && (yo.usoEmergencia || distanciaFeos(miPosRef.current, mapa.puntoEmergencia) > FEOS_INTERACT_RADIO)) return;
+    if (motivo === "reporte" && (!fresco.cuerpo || distanciaFeos(miPosRef.current, fresco.cuerpo) > FEOS_INTERACT_RADIO)) return;
+    const siguiente = {
+      ...fresco,
+      fase: "reunion",
+      jugadores: motivo === "emergencia" ? { ...fresco.jugadores, [miId]: { ...yo, usoEmergencia: true } } : fresco.jugadores,
+      reunion: { motivo, iniciadaPor: miId, votos: {}, venceEn: Date.now() + FEOS_REUNION_MS, resuelta: false },
+      cuerpo: null,
+    };
+    await escribir(siguiente);
+  };
+
+  const votar = async (objetivo) => {
+    const fresco = await refrescar();
+    if (!fresco.reunion || fresco.reunion.resuelta) return;
+    const yo = fresco.jugadores[miId];
+    if (!yo || !yo.vivo || yo.expulsado) return;
+    await escribir({ ...fresco, reunion: { ...fresco.reunion, votos: { ...fresco.reunion.votos, [miId]: objetivo } } });
+  };
+
+  const resolverReunion = async () => {
+    const fresco = await refrescar();
+    if (!fresco.reunion || fresco.reunion.resuelta) return;
+    const vivos = Object.keys(fresco.jugadores).filter((id) => fresco.jugadores[id].vivo && !fresco.jugadores[id].expulsado);
+    const todosVotaron = vivos.every((id) => fresco.reunion.votos[id] !== undefined);
+    if (Date.now() < fresco.reunion.venceEn && !todosVotaron) return;
+    const conteo = {};
+    vivos.forEach((id) => {
+      const voto = fresco.reunion.votos[id];
+      if (voto && voto !== "omitir") conteo[voto] = (conteo[voto] || 0) + 1;
+    });
+    let expulsadoId = null, maxVotos = 0, empate = false;
+    Object.entries(conteo).forEach(([id, n]) => {
+      if (n > maxVotos) { maxVotos = n; expulsadoId = id; empate = false; }
+      else if (n === maxVotos) { empate = true; }
+    });
+    if (empate) expulsadoId = null;
+    let jugadores = fresco.jugadores;
+    if (expulsadoId) jugadores = { ...jugadores, [expulsadoId]: { ...jugadores[expulsadoId], expulsado: true } };
+    const siguiente = {
+      ...fresco, jugadores,
+      reunion: { ...fresco.reunion, resuelta: true, expulsadoId, eraImpostor: expulsadoId ? fresco.impostores.includes(expulsadoId) : null },
+    };
+    const ganador = evaluarGanadorFeos(siguiente);
+    if (ganador) { siguiente.fase = "terminado"; siguiente.ganador = ganador; }
+    await escribir(siguiente);
+  };
+
+  const cerrarResultadoReunion = async () => {
+    const fresco = await refrescar();
+    if (!fresco.reunion || !fresco.reunion.resuelta || fresco.fase === "terminado") return;
+    await escribir({ ...fresco, fase: "jugando", reunion: null });
+  };
+
+  const activarSabotaje = async (tipo) => {
+    const fresco = await refrescar();
+    const yo = fresco.jugadores[miId];
+    if (!yo || !yo.vivo || !fresco.impostores.includes(miId) || fresco.fase !== "jugando" || fresco.sabotaje) return;
+    if (Date.now() - (yo.ultimoSabotajeTs || 0) < FEOS_SABOTAJE_COOLDOWN_MS) return;
+    const duracion = tipo === "reactor" ? FEOS_SABOTAJE_REACTOR_MS : FEOS_SABOTAJE_LUCES_MS;
+    const siguiente = {
+      ...fresco,
+      sabotaje: { tipo, venceEn: Date.now() + duracion },
+      jugadores: { ...fresco.jugadores, [miId]: { ...yo, ultimoSabotajeTs: Date.now() } },
+    };
+    await escribir(siguiente);
+  };
+
+  const repararSabotaje = async () => {
+    const fresco = await refrescar();
+    if (!fresco.sabotaje) return;
+    const yo = fresco.jugadores[miId];
+    if (!yo || !yo.vivo || yo.expulsado) return;
+    const mapa = MAPS_FEOS[fresco.mapaId] || MAPS_FEOS.base;
+    const punto = mapa.puntosSabotaje[fresco.sabotaje.tipo];
+    if (distanciaFeos(miPosRef.current, punto) > FEOS_INTERACT_RADIO) return;
+    await escribir({ ...fresco, sabotaje: null });
+  };
+
+  const volverALobby = async () => { await escribir(crearSalaFeosVacia()); };
+
+  // Relojes: resuelve la reunión sola, revisa sabotaje de reactor vencido y me revela
+  // solo (a mí) si mi camuflaje ya expiró.
+  useEffect(() => {
+    if (!sala) return;
+    if (sala.fase === "reunion" && sala.reunion && !sala.reunion.resuelta) {
+      const vivos = Object.keys(sala.jugadores).filter((id) => sala.jugadores[id].vivo && !sala.jugadores[id].expulsado);
+      const todosVotaron = vivos.every((id) => sala.reunion.votos[id] !== undefined);
+      if (Date.now() >= sala.reunion.venceEn || todosVotaron) resolverReunion();
+    }
+    if (sala.fase === "jugando" && sala.sabotaje && sala.sabotaje.tipo === "reactor" && Date.now() > sala.sabotaje.venceEn) {
+      (async () => {
+        const fresco = await refrescar();
+        if (fresco.fase === "jugando" && fresco.sabotaje && fresco.sabotaje.tipo === "reactor" && Date.now() > fresco.sabotaje.venceEn) {
+          await escribir({ ...fresco, fase: "terminado", ganador: "impostores" });
+        }
+      })();
+    }
+    const yo = sala.jugadores && sala.jugadores[miId];
+    if (sala.fase === "jugando" && yo && yo.camuflado && Date.now() > yo.camuflajeVenceEn) revelarse();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ahora, sala]);
+
+  useEffect(() => {
+    if (!sala || sala.fase !== "reunion" || !sala.reunion || !sala.reunion.resuelta) return;
+    const t = setTimeout(() => cerrarResultadoReunion(), 6000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sala && sala.reunion && sala.reunion.resuelta]);
+
+  // ══════════════════ HUB LOCAL (no toca Firebase) ══════════════════
+  if (pantalla === "hub") {
+    return (
+      <div>
+        <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver a Cúpula Games</button>
+        <SectionTitle>Llegaron los Feos</SectionTitle>
+        <Card style={{ textAlign: "center", padding: "34px 20px" }}>
+          <CornerFrame color={COLORS.neonMagenta} size={16} thickness={2} />
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 18 }}>
+            <PersonajeFeo personaje={personajeLocal} size={74} />
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 26, maxWidth: 440, marginLeft: "auto", marginRight: "auto", lineHeight: 1.6 }}>
+            Un Feo infiltrado se coló entre ustedes. Muévete con el teclado por el mapa, cumple misiones, camúflate como un objeto para esconderte... y descubran quién no es de fiar antes de que sea tarde.
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 260, margin: "0 auto" }}>
+            <NeonButton active onClick={() => setPantalla("sala")}>🎮 Jugar</NeonButton>
+            <NeonButton onClick={() => setPantalla("personalizar")}>👾 Personalizar mi Feo</NeonButton>
+            <NeonButton onClick={() => setPantalla("reglas")}>📖 Cómo jugar</NeonButton>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  if (pantalla === "personalizar") {
+    return (
+      <div>
+        <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+        <SectionTitle>Personaliza tu Feo</SectionTitle>
+        <Card>
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 24 }}>
+            <PersonajeFeo personaje={personajeLocal} size={90} />
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 8 }}>COLOR</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+            {PALETA_FEOS.map((c) => (
+              <button key={c.id} onClick={() => cambiarPersonaje({ color: c.id })} style={{
+                width: 32, height: 32, borderRadius: "50%", background: c.hex, cursor: "pointer",
+                border: personajeLocal.color === c.id ? `3px solid ${COLORS.white}` : "3px solid transparent",
+                boxShadow: personajeLocal.color === c.id ? `0 0 10px ${c.hex}` : "none",
+              }} />
+            ))}
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 8 }}>SOMBRERO</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+            {SOMBREROS_FEOS.map((s) => (
+              <NeonButton key={s.id} small active={personajeLocal.sombrero === s.id} onClick={() => cambiarPersonaje({ sombrero: s.id })}>{s.emoji || "🚫"} {s.label}</NeonButton>
+            ))}
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 8 }}>CARA</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 24 }}>
+            {CARAS_FEOS.map((c) => (
+              <NeonButton key={c.id} small active={personajeLocal.cara === c.id} onClick={() => cambiarPersonaje({ cara: c.id })}>{c.emoji}</NeonButton>
+            ))}
+          </div>
+          <NeonButton active onClick={() => setPantalla("hub")}>Guardar y volver</NeonButton>
+        </Card>
+      </div>
+    );
+  }
+
+  if (pantalla === "reglas") {
+    return (
+      <div>
+        <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+        <SectionTitle>Cómo jugar</SectionTitle>
+        <Card style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.textMuted, lineHeight: 1.7 }}>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Meta:</b> si eres tripulante, terminen todas las misiones del mapa o descubran y expulsen al infiltrado. Si eres el infiltrado, elimina hasta quedar en igualdad de número (o deja que un sabotaje sin reparar acabe con todos).</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Moverse:</b> teclado (WASD o flechas) en computador, o la cruceta en pantalla en el celular.</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Misiones:</b> acércate a un ícono 📋 y tócalo para jugar el mini-juego. Solo cuentan si las hace un tripulante.</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Camuflaje:</b> acércate a un objeto del mapa y camúflate para desaparecer del radar de los demás por un rato — útil para esconderte del infiltrado o, si lo eres, para tender una emboscada. No puedes moverte ni hacer nada más mientras estás camuflado.</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Reuniones:</b> reporta un cuerpo 💀 o usa el punto rojo de emergencia para votar y expulsar a quien sospechen.</div>
+          <div><b style={{ color: COLORS.white }}>Sabotajes:</b> el infiltrado puede provocar un apagón o una avería crítica — repárenla a tiempo en el punto indicado del mapa o los tripulantes pierden.</div>
+        </Card>
+      </div>
+    );
+  }
+
+  // ══════════════════ PANTALLA "SALA" (conectada a Firebase) ══════════════════
+  if (cargando || !sala) {
+    return (
+      <div>
+        <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+        <SectionTitle>Llegaron los Feos</SectionTitle>
+        <Card><div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>Conectando con la sala...</div></Card>
+      </div>
+    );
+  }
+
+  if (sala.fase === "lobby") {
+    const unidos = Object.keys(sala.jugadores);
+    const puedeIniciar = user.rol === "lider" && unidos.length >= 3;
+    return (
+      <div>
+        <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+        <SectionTitle>Llegaron los Feos</SectionTitle>
+        <Card style={{ marginBottom: 14 }}>
+          <CornerFrame color={COLORS.neonMagenta} size={12} thickness={2} />
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 20 }}>
+            {USUARIOS_REALES.map((u) => {
+              const j = sala.jugadores[u.id];
+              return (
+                <div key={u.id} style={{ display: "flex", flexDirection: "column", alignItems: "center", opacity: j ? 1 : 0.35, width: 76 }}>
+                  <PersonajeFeo personaje={j ? j.personaje : personajeAleatorioFeos(u.id)} size={48} />
+                  <div style={{ fontFamily: FONT_BODY, fontSize: 11, fontWeight: 700, color: COLORS.white, marginTop: 4, textTransform: "uppercase", textAlign: "center" }}>{u.nombre}</div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: j ? COLORS.neonSuccess : COLORS.textMuted }}>{j ? "Listo" : "Esperando"}</div>
+                </div>
+              );
+            })}
+          </div>
+          {user.rol === "lider" ? (
+            <>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 8 }}>MAPA</div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+                {MAPS_FEOS_LISTA.map((m) => (
+                  <NeonButton key={m.id} small active={mapaElegido === m.id} onClick={() => setMapaElegido(m.id)}>{m.icono} {m.nombre}</NeonButton>
+                ))}
+              </div>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 8 }}>INFILTRADOS</div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+                <NeonButton small active={numImpostoresElegido === 1} onClick={() => setNumImpostoresElegido(1)}>1</NeonButton>
+                <NeonButton small active={numImpostoresElegido === 2} onClick={() => setNumImpostoresElegido(2)}>2</NeonButton>
+              </div>
+              <NeonButton active disabled={!puedeIniciar} onClick={iniciarPartida}>{puedeIniciar ? "Iniciar partida" : "Se necesitan al menos 3 jugadores"}</NeonButton>
+            </>
+          ) : (
+            <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.neonBlue }}>Esperando a que {USUARIOS_REALES.find((u) => u.rol === "lider")?.nombre} elija mapa e inicie la partida...</div>
+          )}
+        </Card>
+      </div>
+    );
+  }
+
+  // ── En partida / reunión / terminado ──
+  const misDatos = sala.jugadores[miId] || jugadorFeosVacio(MAPS_FEOS[sala.mapaId] || MAPS_FEOS.base, personajeLocal);
+  const esImpostor = sala.impostores.includes(miId);
+  const estoyVivo = !!sala.jugadores[miId] && misDatos.vivo && !misDatos.expulsado;
+  const mapa = MAPS_FEOS[sala.mapaId] || MAPS_FEOS.base;
+
+  if (sala.fase === "terminado") {
+    const gananImpostores = sala.ganador === "impostores";
+    return (
+      <div>
+        <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+        <SectionTitle>Llegaron los Feos</SectionTitle>
+        <Card style={{ textAlign: "center" }}>
+          <CornerFrame color={gananImpostores ? COLORS.neonRed : COLORS.neonSuccess} size={14} thickness={2} />
+          <div style={{ fontFamily: FONT_DISPLAY, fontSize: 30, letterSpacing: 2, color: gananImpostores ? COLORS.neonRed : COLORS.neonSuccess, textShadow: `0 0 16px ${gananImpostores ? COLORS.neonRed : COLORS.neonSuccess}88`, marginBottom: 14 }}>
+            {gananImpostores ? "GANÓ EL INFILTRADO" : "GANARON LOS TRIPULANTES"}
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 6, letterSpacing: 1 }}>EL FEO INFILTRADO ERA:</div>
+          <div style={{ display: "flex", justifyContent: "center", gap: 14, marginBottom: 24, flexWrap: "wrap" }}>
+            {sala.impostores.map((id) => (
+              <div key={id} style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                <PersonajeFeo personaje={sala.jugadores[id]?.personaje} size={44} />
+                <Badge color={COLORS.neonRed}>{USUARIOS_REALES.find((u) => u.id === id)?.nombre || id}</Badge>
+              </div>
+            ))}
+          </div>
+          <NeonButton active onClick={volverALobby}>Jugar de nuevo</NeonButton>
+        </Card>
+      </div>
+    );
+  }
+
+  const miPosActual = estoyVivo ? miPos : misDatos;
+  const zonaActual = mapa.zonas.find((z) => miPosActual.x >= z.rect.x && miPosActual.x <= z.rect.x + z.rect.w && miPosActual.y >= z.rect.y && miPosActual.y <= z.rect.y + z.rect.h);
+  const tareasCercanas = mapa.tareas.filter((t) => distanciaFeos(miPosActual, t) <= FEOS_INTERACT_RADIO);
+  const propCercano = mapa.props.find((p) => distanciaFeos(miPosActual, p) <= FEOS_INTERACT_RADIO);
+  const cercanosParaMatar = Object.entries(sala.jugadores)
+    .filter(([id, j]) => id !== miId && j.vivo && !j.expulsado && !j.camuflado && !sala.impostores.includes(id) && distanciaFeos(miPosActual, j) <= FEOS_INTERACT_RADIO)
+    .map(([id]) => id);
+  const cuerpoCerca = !!(sala.cuerpo && distanciaFeos(miPosActual, sala.cuerpo) <= FEOS_INTERACT_RADIO);
+  const emergenciaCerca = distanciaFeos(miPosActual, mapa.puntoEmergencia) <= FEOS_INTERACT_RADIO;
+  const sabotajeCerca = !!(sala.sabotaje && distanciaFeos(miPosActual, mapa.puntosSabotaje[sala.sabotaje.tipo]) <= FEOS_INTERACT_RADIO);
+  const killCooldownRestante = Math.max(0, FEOS_KILL_COOLDOWN_MS - (ahora - (misDatos.ultimoKillTs || 0)));
+  const sabotajeCooldownRestante = Math.max(0, FEOS_SABOTAJE_COOLDOWN_MS - (ahora - (misDatos.ultimoSabotajeTs || 0)));
+  const camuflajeCooldownRestante = Math.max(0, FEOS_CAMUFLAJE_COOLDOWN_MS - (ahora - (misDatos.ultimoCamuflajeTs || 0)));
+
+  return (
+    <div>
+      <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+      <SectionTitle>Llegaron los Feos</SectionTitle>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+        <Badge color={esImpostor ? COLORS.neonRed : COLORS.neonBlue}>{esImpostor ? "Eres el infiltrado" : "Eres tripulante"}</Badge>
+        <Badge color={COLORS.neonSuccess}>Misiones: {sala.tareasHechas.length}/{mapa.tareas.length}</Badge>
+        <Badge color={COLORS.textMuted}>{mapa.icono} {mapa.nombre}</Badge>
+        {!estoyVivo && <Badge color={COLORS.textMuted}>{misDatos.expulsado ? "Fuiste expulsado" : "Te eliminaron"} — modo fantasma</Badge>}
+      </div>
+
+      {sala.sabotaje && (
+        <Card style={{ marginBottom: 14, borderColor: COLORS.neonRed }}>
+          <div style={{ fontFamily: FONT_DISPLAY, fontSize: 16, color: COLORS.neonRed, letterSpacing: 1, textShadow: `0 0 10px ${COLORS.neonRed}88` }}>
+            ⚠ {(mapa.sabotajeNombres[sala.sabotaje.tipo] || "SABOTAJE").toUpperCase()} — {Math.max(0, Math.ceil((sala.sabotaje.venceEn - ahora) / 1000))}s
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>
+            Repárenlo en el punto marcado del mapa antes de que se acabe el tiempo.
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ marginBottom: 14, padding: 10 }}>
+        <div style={{ position: "relative", width: "100%", maxWidth: mapa.ancho, aspectRatio: `${mapa.ancho} / ${mapa.alto}`, margin: "0 auto", background: "#05060a", border: `2px solid ${COLORS.neonMagenta}`, borderRadius: 8, overflow: "hidden", boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
+          {mapa.zonas.map((z) => (
+            <div key={z.id} style={{
+              position: "absolute", left: `${(z.rect.x / mapa.ancho) * 100}%`, top: `${(z.rect.y / mapa.alto) * 100}%`,
+              width: `${(z.rect.w / mapa.ancho) * 100}%`, height: `${(z.rect.h / mapa.alto) * 100}%`,
+              background: `${z.color}0d`, border: `1px dashed ${z.color}44`, boxSizing: "border-box",
+            }}>
+              <span style={{ position: "absolute", top: 4, left: 6, fontFamily: FONT_MONO, fontSize: 9, color: `${z.color}aa`, letterSpacing: 1 }}>{z.nombre.toUpperCase()}</span>
+            </div>
+          ))}
+          {mapa.props.map((p) => (
+            <div key={p.id} style={{ position: "absolute", left: `${(p.x / mapa.ancho) * 100}%`, top: `${(p.y / mapa.alto) * 100}%`, transform: "translate(-50%, -50%)", fontSize: 22, opacity: 0.85 }}>{p.icono}</div>
+          ))}
+          {mapa.tareas.map((t) => {
+            const hecha = sala.tareasHechas.includes(t.id);
+            return (
+              <div key={t.id} style={{ position: "absolute", left: `${(t.x / mapa.ancho) * 100}%`, top: `${(t.y / mapa.alto) * 100}%`, transform: "translate(-50%, -50%)", fontSize: 20, opacity: hecha ? 0.3 : 1, filter: hecha ? "grayscale(1)" : "none" }}>
+                {hecha ? "✅" : "📋"}
+              </div>
+            );
+          })}
+          <div style={{ position: "absolute", left: `${(mapa.puntoEmergencia.x / mapa.ancho) * 100}%`, top: `${(mapa.puntoEmergencia.y / mapa.alto) * 100}%`, transform: "translate(-50%, -50%)", fontSize: 22 }}>🔴</div>
+          {sala.cuerpo && (
+            <div style={{ position: "absolute", left: `${(sala.cuerpo.x / mapa.ancho) * 100}%`, top: `${(sala.cuerpo.y / mapa.alto) * 100}%`, transform: "translate(-50%, -50%)", fontSize: 22 }}>💀</div>
+          )}
+          {Object.entries(sala.jugadores).map(([id, j]) => {
+            if (!j.vivo || j.expulsado) return null;
+            if (id !== miId && j.camuflado) return null;
+            const posX = id === miId ? miPos.x : j.x;
+            const posY = id === miId ? miPos.y : j.y;
+            return (
+              <div key={id} style={{
+                position: "absolute", left: `${(posX / mapa.ancho) * 100}%`, top: `${(posY / mapa.alto) * 100}%`,
+                transform: "translate(-50%, -50%)", transition: id === miId ? "none" : "left 0.4s linear, top 0.4s linear",
+                zIndex: id === miId ? 5 : 3,
+              }}>
+                <PersonajeFeo personaje={j.personaje} size={32} oculto={id === miId && j.camuflado} etiqueta={USUARIOS_REALES.find((u) => u.id === id)?.nombre} />
+              </div>
+            );
+          })}
+        </div>
+
+        {estoyVivo && sala.fase === "jugando" && !misDatos.camuflado && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 46px)", gridTemplateRows: "repeat(3, 46px)", gap: 4, margin: "16px auto 0", justifyContent: "center" }}>
+            <div /><BotonDireccionFeos dir="up" keysRef={keysRef}>▲</BotonDireccionFeos><div />
+            <BotonDireccionFeos dir="left" keysRef={keysRef}>◀</BotonDireccionFeos><div /><BotonDireccionFeos dir="right" keysRef={keysRef}>▶</BotonDireccionFeos>
+            <div /><BotonDireccionFeos dir="down" keysRef={keysRef}>▼</BotonDireccionFeos><div />
+          </div>
+        )}
+      </Card>
+
+      {estoyVivo && sala.fase === "jugando" && (
+        <Card style={{ marginBottom: 14 }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>
+            {misDatos.camuflado ? "ESTÁS CAMUFLADO — NO PUEDES MOVERTE" : `ESTÁS EN: ${(zonaActual ? zonaActual.nombre : "zona desconocida").toUpperCase()}`}
+          </div>
+          {misDatos.camuflado ? (
+            <NeonButton active onClick={revelarse}>Salir del camuflaje</NeonButton>
+          ) : (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {tareasCercanas.map((t) => {
+                const hecha = sala.tareasHechas.includes(t.id);
+                return <NeonButton key={t.id} small active={hecha} disabled={hecha} onClick={() => setTareaAbierta(t)}>{hecha ? "✓ " : ""}{t.nombre}</NeonButton>;
+              })}
+              {propCercano && (
+                <NeonButton small disabled={camuflajeCooldownRestante > 0} onClick={() => camuflarse(propCercano.icono)}>
+                  {camuflajeCooldownRestante > 0 ? `Camuflaje (${Math.ceil(camuflajeCooldownRestante / 1000)}s)` : `${propCercano.icono} Camuflarse`}
+                </NeonButton>
+              )}
+              {esImpostor && cercanosParaMatar.map((id) => (
+                <NeonButton key={id} small disabled={killCooldownRestante > 0} onClick={() => eliminarJugador(id)}>
+                  {killCooldownRestante > 0 ? `Eliminar (${Math.ceil(killCooldownRestante / 1000)}s)` : `Eliminar a ${USUARIOS_REALES.find((u) => u.id === id)?.nombre || id}`}
+                </NeonButton>
+              ))}
+              {cuerpoCerca && <NeonButton small active onClick={() => iniciarReunion("reporte")}>🚨 Reportar cuerpo</NeonButton>}
+              {emergenciaCerca && !misDatos.usoEmergencia && <NeonButton small onClick={() => iniciarReunion("emergencia")}>📢 Reunión de emergencia</NeonButton>}
+              {sabotajeCerca && <NeonButton small active onClick={repararSabotaje}>🔧 Reparar: {mapa.sabotajeNombres[sala.sabotaje.tipo]}</NeonButton>}
+            </div>
+          )}
+          {esImpostor && !misDatos.camuflado && (
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.neonRed, letterSpacing: 1, marginBottom: 8 }}>SABOTAJE</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <NeonButton small disabled={!!sala.sabotaje || sabotajeCooldownRestante > 0} onClick={() => activarSabotaje("luces")}>
+                  {sabotajeCooldownRestante > 0 && !sala.sabotaje ? `Espera (${Math.ceil(sabotajeCooldownRestante / 1000)}s)` : `Sabotear: ${mapa.sabotajeNombres.luces}`}
+                </NeonButton>
+                <NeonButton small disabled={!!sala.sabotaje || sabotajeCooldownRestante > 0} onClick={() => activarSabotaje("reactor")}>
+                  {sabotajeCooldownRestante > 0 && !sala.sabotaje ? `Espera (${Math.ceil(sabotajeCooldownRestante / 1000)}s)` : `Sabotear: ${mapa.sabotajeNombres.reactor}`}
+                </NeonButton>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {!estoyVivo && sala.fase === "jugando" && (
+        <Card style={{ marginBottom: 14 }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, textAlign: "center" }}>
+            Sigues viendo la partida en el mapa de arriba, pero ya no puedes moverte ni interactuar.
+          </div>
+        </Card>
+      )}
+
+      {tareaAbierta && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <Card style={{ width: "min(360px, 92vw)" }}>
+            <CornerFrame color={COLORS.neonBlue} size={12} thickness={2} />
+            <div style={{ fontFamily: FONT_DISPLAY, fontSize: 16, color: COLORS.white, letterSpacing: 1, marginBottom: 16, textAlign: "center" }}>{tareaAbierta.nombre}</div>
+            {tareaAbierta.tipo === "escaneo" && <TareaEscaneo onCompletar={() => completarTarea(tareaAbierta.id, esImpostor)} onCancelar={() => setTareaAbierta(null)} />}
+            {tareaAbierta.tipo === "codigo" && <TareaCodigo onCompletar={() => completarTarea(tareaAbierta.id, esImpostor)} onCancelar={() => setTareaAbierta(null)} />}
+            {tareaAbierta.tipo === "cables" && <TareaCables onCompletar={() => completarTarea(tareaAbierta.id, esImpostor)} onCancelar={() => setTareaAbierta(null)} />}
+          </Card>
+        </div>
+      )}
+
+      {sala.fase === "reunion" && sala.reunion && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, overflowY: "auto" }}>
+          <Card style={{ width: "min(420px, 92vw)" }}>
+            <CornerFrame color={COLORS.neonRed} size={14} thickness={2} />
+            {!sala.reunion.resuelta ? (
+              <>
+                <div style={{ fontFamily: FONT_DISPLAY, fontSize: 20, color: COLORS.neonRed, letterSpacing: 1, marginBottom: 6, textAlign: "center" }}>
+                  {sala.reunion.motivo === "reporte" ? "🚨 CUERPO REPORTADO" : "📢 REUNIÓN DE EMERGENCIA"}
+                </div>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, textAlign: "center", marginBottom: 16 }}>
+                  Vota a quien sospeches — {Math.max(0, Math.ceil((sala.reunion.venceEn - ahora) / 1000))}s
+                </div>
+                {estoyVivo ? (
+                  sala.reunion.votos[miId] !== undefined ? (
+                    <div style={{ textAlign: "center", fontFamily: FONT_MONO, fontSize: 12, color: COLORS.neonSuccess }}>
+                      Voto registrado. Esperando a los demás ({Object.keys(sala.reunion.votos).length}/{Object.keys(sala.jugadores).filter((id) => sala.jugadores[id].vivo && !sala.jugadores[id].expulsado).length})...
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {Object.keys(sala.jugadores).filter((id) => sala.jugadores[id].vivo && !sala.jugadores[id].expulsado && id !== miId).map((id) => (
+                        <NeonButton key={id} onClick={() => votar(id)}>{USUARIOS_REALES.find((u) => u.id === id)?.nombre || id}</NeonButton>
+                      ))}
+                      <NeonButton onClick={() => votar("omitir")}>Omitir voto</NeonButton>
+                    </div>
+                  )
+                ) : (
+                  <div style={{ textAlign: "center", fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>No puedes votar — estás fuera de la partida.</div>
+                )}
+              </>
+            ) : (
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontFamily: FONT_DISPLAY, fontSize: 20, color: COLORS.white, letterSpacing: 1, marginBottom: 10 }}>
+                  {sala.reunion.expulsadoId ? `${USUARIOS_REALES.find((u) => u.id === sala.reunion.expulsadoId)?.nombre || sala.reunion.expulsadoId} fue expulsado` : "Nadie fue expulsado (empate)"}
+                </div>
+                {sala.reunion.expulsadoId && (
+                  <Badge color={sala.reunion.eraImpostor ? COLORS.neonRed : COLORS.neonBlue}>{sala.reunion.eraImpostor ? "SÍ era el infiltrado" : "NO era el infiltrado"}</Badge>
+                )}
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ---- Menú "Cúpula Games" ----
 const CUPULA_GAMES_LISTA = [
   { id: "happyweed", nombre: "Happy Weed", desc: "Estilo Flappy Bird: esquiva los portales neón con tu propia foto convertida en pajarito.", color: COLORS.neonRed },
   { id: "aura", nombre: "Batallas de Aura", desc: "Estilo Brick Breaker: rompe los bloques de energía con tu esfera de aura antes de perder tus vidas.", color: COLORS.neonBlue },
   { id: "feria", nombre: "Feria de Tiro", desc: "Galería de disparos en primera persona: dale a patos, latas y botellas antes de quedarte sin tiempo o munición.", color: COLORS.neonAmber },
+  { id: "feos", nombre: "Llegaron los Feos", desc: "Multijugador para los 5 — mueve a tu Feo con el teclado por varios mapas, camúflate como un objeto, cumple misiones y descubre (o sé) al infiltrado antes de que acabe con todos.", color: COLORS.neonMagenta },
 ];
 
 function CupulaGamesView({ user }) {
@@ -3113,6 +4170,7 @@ function CupulaGamesView({ user }) {
 
   if (juegoActivo === "happyweed") return <HappyWeedView user={user} onVolver={() => setJuegoActivo(null)} />;
   if (juegoActivo === "aura") return <AuraBattleView user={user} onVolver={() => setJuegoActivo(null)} />;
+  if (juegoActivo === "feos") return <LlegaronLosFeosView user={user} onVolver={() => setJuegoActivo(null)} />;
   if (juegoActivo === "feria") return <FeriaTiroView user={user} onVolver={() => setJuegoActivo(null)} />;
 
   return (
