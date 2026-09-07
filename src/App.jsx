@@ -3119,23 +3119,23 @@ const CABEZONES_ALTO = 400;
 const CABEZONES_SUELO_Y = 340;
 const CABEZONES_ARCO_ALTO = 130;
 const CABEZONES_ARCO_ANCHO = 26;
-const CABEZONES_RADIO_CABEZA = 30;
+const CABEZONES_RADIO_CABEZA = 26;
 const CABEZONES_RADIO_BALON = 14;
-const CABEZONES_CUERPO_RADIO = 34;
-const CABEZONES_CUERPO_CENTRO_Y = 48;
-const CABEZONES_GRAVEDAD = 1500;
+const CABEZONES_CUERPO_RADIO = 29;
+const CABEZONES_CUERPO_CENTRO_Y = 41;
+const CABEZONES_GRAVEDAD = 1300;
 const CABEZONES_GRAVEDAD_BALON = 1050;
-const CABEZONES_SALTO_V = 640;
+const CABEZONES_SALTO_V = 720;
 const CABEZONES_VELOCIDAD = 300;
 const CABEZONES_RESTITUCION = 0.72;
 const CABEZONES_FRICCION_SUELO = 0.985;
-const CABEZONES_ALCANCE_GOLPE = 74;
+const CABEZONES_ALCANCE_GOLPE = 68;
 const CABEZONES_COOLDOWN_GOLPE = 0.32;
 const CABEZONES_DURACION_PARTIDO_S = 120;
 const CABEZONES_GOLES_PARA_GANAR = 5;
 const CABEZONES_POWERUP_INTERVALO_S = 16;
 const CABEZONES_POWERUP_DURACION_S = 9;
-const CABEZONES_SUBPASOS = 3;
+const CABEZONES_SUBPASOS = 4;
 const CABEZONES_TRAVESANO_GROSOR = 10;
 const CABEZONES_POWERUPS = [
   { tipo: "velocidad", icono: "⚡", nombre: "Velocidad", color: "#FFE94D" },
@@ -3295,19 +3295,33 @@ function revisarColisionArco(balon) {
   });
 }
 
-function resolverColisionJugadorBalon(jugador, balon) {
+// balonAntesX/balonAntesAltura (opcionales) son la posición del balón ANTES de moverse este
+// sub-paso. Con ellas se revisa el punto más cercano al jugador de todo el TRAYECTO que recorrió
+// el balón en el sub-paso (no solo su posición final) — así, si iba muy rápido y su punto final ya
+// quedó del otro lado del jugador, igual se detecta que "pasó rozando" y rebota en vez de
+// atravesarlo sin tocarlo (el reporte de "el balón pasa como si no hubiera box collider"). Si no se
+// pasan, se comporta igual que antes (solo posición final).
+function resolverColisionJugadorBalon(jugador, balon, balonAntesX, balonAntesAltura) {
   const centroJugadorY = CABEZONES_SUELO_Y - jugador.altura - CABEZONES_CUERPO_CENTRO_Y;
-  const centroBalonY = CABEZONES_SUELO_Y - balon.altura;
   const radioBalon = balon.efecto === "gigante" ? CABEZONES_RADIO_BALON * 1.8 : CABEZONES_RADIO_BALON;
-  const dx = balon.x - jugador.x;
-  const dy = centroBalonY - centroJugadorY;
-  const distancia = Math.hypot(dx, dy) || 0.001;
   const radios = CABEZONES_CUERPO_RADIO + radioBalon;
+
+  const x1 = balonAntesX === undefined ? balon.x : balonAntesX;
+  const y1 = CABEZONES_SUELO_Y - (balonAntesAltura === undefined ? balon.altura : balonAntesAltura);
+  const x2 = balon.x, y2 = CABEZONES_SUELO_Y - balon.altura;
+  const segX = x2 - x1, segY = y2 - y1;
+  const largoSeg2 = segX * segX + segY * segY;
+  let t = largoSeg2 > 0.0001 ? ((jugador.x - x1) * segX + (centroJugadorY - y1) * segY) / largoSeg2 : 1;
+  t = Math.max(0, Math.min(1, t));
+  const cercaX = x1 + segX * t, cercaY = y1 + segY * t;
+  const dx = cercaX - jugador.x, dy = cercaY - centroJugadorY;
+  const distancia = Math.hypot(dx, dy) || 0.001;
   if (distancia >= radios) return false;
   const nx = dx / distancia, ny = dy / distancia;
-  const solape = radios - distancia;
-  balon.x += nx * solape;
-  const nuevoCentroBalonY = centroBalonY + ny * solape;
+  // Reubicamos el balón justo afuera del cuerpo en la dirección del punto de contacto real
+  // (no de su posición final), para que quede visualmente pegado al jugador en vez de "adentro".
+  balon.x = jugador.x + nx * radios;
+  const nuevoCentroBalonY = centroJugadorY + ny * radios;
   balon.altura = CABEZONES_SUELO_Y - nuevoCentroBalonY;
   const impulso = 260;
   balon.vx = nx * impulso + jugador.vx * 0.5;
@@ -3420,10 +3434,11 @@ function avanzarPartidoCabezones(estado, dt, entradaIzq, entradaDer) {
     moverJugadorCabezones(nuevo.jugadorIzq, entradaIzq, subDt);
     moverJugadorCabezones(nuevo.jugadorDer, entradaDer, subDt);
     resolverColisionJugadorJugador(nuevo.jugadorIzq, nuevo.jugadorDer);
+    const balonAntesX = nuevo.balon.x, balonAntesAltura = nuevo.balon.altura;
     avanzarBalonCabezones(nuevo.balon, subDt);
     revisarColisionArco(nuevo.balon);
-    if (resolverColisionJugadorBalon(nuevo.jugadorIzq, nuevo.balon)) nuevo.ultimoToque = "izquierda";
-    if (resolverColisionJugadorBalon(nuevo.jugadorDer, nuevo.balon)) nuevo.ultimoToque = "derecha";
+    if (resolverColisionJugadorBalon(nuevo.jugadorIzq, nuevo.balon, balonAntesX, balonAntesAltura)) nuevo.ultimoToque = "izquierda";
+    if (resolverColisionJugadorBalon(nuevo.jugadorDer, nuevo.balon, balonAntesX, balonAntesAltura)) nuevo.ultimoToque = "derecha";
     if (intentarGolpe(nuevo.jugadorIzq, nuevo.balon)) nuevo.ultimoToque = "izquierda";
     if (intentarGolpe(nuevo.jugadorDer, nuevo.balon)) nuevo.ultimoToque = "derecha";
     gol = revisarGolYParedes(nuevo.balon);
@@ -3497,11 +3512,25 @@ function hexColorCabezones(colorId) {
 function dibujarJugadorCabezones(ctx, jugador, colorHex, mirarDerecha, equipo) {
   const eq = equipo || EQUIPOS_CABEZONES[0];
   const pies = CABEZONES_SUELO_Y - jugador.altura;
-  const altoCuerpo = 58;
-  const anchoCuerpo = 34;
+  // Muñecos más chicos y ágiles que antes (escala 0.85 sobre las medidas originales de dibujo,
+  // en línea con el radio de colisión ya reducido) para darle más dinamismo a la jugabilidad.
+  const escala = 0.85;
+  const altoCuerpo = 58 * escala;
+  const anchoCuerpo = 34 * escala;
   const cuerpoTopY = pies - altoCuerpo;
   const centroCabezaY = cuerpoTopY - CABEZONES_RADIO_CABEZA * 0.55;
   const radioCabeza = jugador.efecto === "cabezon" ? CABEZONES_RADIO_CABEZA * 1.35 : CABEZONES_RADIO_CABEZA;
+
+  // Sombra en el piso: se achica y se desvanece mientras salta (da sensación real de altura/salto
+  // en vez de que el cuerpo simplemente "flote" sin referencia al suelo).
+  const sombraFactor = Math.max(0.3, 1 - jugador.altura / 220);
+  ctx.save();
+  ctx.globalAlpha = 0.32 * sombraFactor;
+  ctx.fillStyle = "#000000";
+  ctx.beginPath();
+  ctx.ellipse(jugador.x, CABEZONES_SUELO_Y + 3, anchoCuerpo * 0.9 * sombraFactor, 6 * sombraFactor, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 
   if (jugador.efecto === "congelado") {
     ctx.save();
@@ -3527,34 +3556,38 @@ function dibujarJugadorCabezones(ctx, jugador, colorHex, mirarDerecha, equipo) {
   }
 
   // piernas + medias (color secundario del equipo) y guayos (suela oscura)
-  const piePatada = jugador.x + (jugador.pateando ? 22 : 9);
+  const pieQuieto = 9 * escala;
+  const pieAdelante = 22 * escala;
+  const rodillaAdelante = 16 * escala;
+  const piePatada = jugador.x + (jugador.pateando ? pieAdelante : pieQuieto);
   ctx.strokeStyle = eq.secundario;
-  ctx.lineWidth = 8;
+  ctx.lineWidth = 8 * escala;
   ctx.lineCap = "round";
   ctx.beginPath();
-  ctx.moveTo(jugador.x - 9, pies - 18);
-  ctx.lineTo(jugador.x - 9, pies - 4);
-  ctx.moveTo(jugador.x + (jugador.pateando ? 16 : 9), pies - 18);
-  ctx.lineTo(piePatada, pies - 4);
+  ctx.moveTo(jugador.x - pieQuieto, pies - 18 * escala);
+  ctx.lineTo(jugador.x - pieQuieto, pies - 4 * escala);
+  ctx.moveTo(jugador.x + (jugador.pateando ? rodillaAdelante : pieQuieto), pies - 18 * escala);
+  ctx.lineTo(piePatada, pies - 4 * escala);
   ctx.stroke();
   ctx.fillStyle = "#161616";
-  ctx.beginPath(); ctx.ellipse(jugador.x - 9, pies - 2, 7.5, 4.5, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.ellipse(piePatada, pies - 2, 7.5, 4.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(jugador.x - pieQuieto, pies - 2 * escala, 7.5 * escala, 4.5 * escala, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(piePatada, pies - 2 * escala, 7.5 * escala, 4.5 * escala, 0, 0, Math.PI * 2); ctx.fill();
 
   // camiseta (arriba) + pantaloneta (abajo), recortadas a la silueta redondeada del cuerpo
-  const rr = 12;
+  const rr = 12 * escala;
+  const bordeAbajo = 16 * escala;
   const trazarSilueta = () => {
     ctx.beginPath();
     ctx.moveTo(jugador.x - anchoCuerpo / 2 + rr, cuerpoTopY);
-    ctx.arcTo(jugador.x + anchoCuerpo / 2, cuerpoTopY, jugador.x + anchoCuerpo / 2, pies - 16, rr);
-    ctx.arcTo(jugador.x + anchoCuerpo / 2, pies - 16, jugador.x - anchoCuerpo / 2, pies - 16, rr);
-    ctx.arcTo(jugador.x - anchoCuerpo / 2, pies - 16, jugador.x - anchoCuerpo / 2, cuerpoTopY, rr);
+    ctx.arcTo(jugador.x + anchoCuerpo / 2, cuerpoTopY, jugador.x + anchoCuerpo / 2, pies - bordeAbajo, rr);
+    ctx.arcTo(jugador.x + anchoCuerpo / 2, pies - bordeAbajo, jugador.x - anchoCuerpo / 2, pies - bordeAbajo, rr);
+    ctx.arcTo(jugador.x - anchoCuerpo / 2, pies - bordeAbajo, jugador.x - anchoCuerpo / 2, cuerpoTopY, rr);
     ctx.closePath();
   };
   ctx.save();
   trazarSilueta();
   ctx.clip();
-  const altoTotal = (pies - 16) - cuerpoTopY;
+  const altoTotal = (pies - bordeAbajo) - cuerpoTopY;
   const splitY = cuerpoTopY + altoTotal * 0.6;
   ctx.fillStyle = eq.principal;
   ctx.fillRect(jugador.x - anchoCuerpo, cuerpoTopY - 2, anchoCuerpo * 2, (splitY - cuerpoTopY) + 2);
@@ -3567,11 +3600,23 @@ function dibujarJugadorCabezones(ctx, jugador, colorHex, mirarDerecha, equipo) {
     }
   }
   ctx.fillStyle = eq.secundario;
-  ctx.fillRect(jugador.x - anchoCuerpo, splitY, anchoCuerpo * 2, ((pies - 16) - splitY) + 4);
+  ctx.fillRect(jugador.x - anchoCuerpo, splitY, anchoCuerpo * 2, ((pies - bordeAbajo) - splitY) + 4);
+  // brillo sutil arriba de la camiseta (le da un poco de volumen/profundidad en vez de verse plana)
+  const brillo = ctx.createLinearGradient(jugador.x - anchoCuerpo / 2, cuerpoTopY, jugador.x + anchoCuerpo / 2, cuerpoTopY + altoTotal * 0.35);
+  brillo.addColorStop(0, "rgba(255,255,255,0.22)");
+  brillo.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = brillo;
+  ctx.fillRect(jugador.x - anchoCuerpo / 2, cuerpoTopY, anchoCuerpo, altoTotal * 0.35);
   ctx.restore();
   trazarSilueta();
   ctx.lineWidth = 2;
   ctx.strokeStyle = "rgba(0,0,0,0.3)";
+  ctx.stroke();
+  // cuello de la camiseta (detalle de presentación)
+  ctx.strokeStyle = "rgba(0,0,0,0.25)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(jugador.x, cuerpoTopY + 2, anchoCuerpo * 0.26, 0.1 * Math.PI, 0.9 * Math.PI);
   ctx.stroke();
 
   // cabeza (color personalizado por el jugador, elegido en "Personalizar")
@@ -3803,6 +3848,23 @@ function BotonAccionCabezones({ onPress, onRelease, children, ancho = 62, color 
 // ── Motor: corre el bucle de física/render en un <canvas> 2D. En modo "host" (bot u anfitrión en
 // línea) simula todo localmente cada cuadro; en modo "invitado" solo dibuja lo último que recibió
 // del anfitrión (más una predicción local de su propio cabezón para que se sienta responsivo). ──
+// Solo para el invitado: entre paquete y paquete del anfitrión (llegan cada ~110ms, y en wifi con
+// jitter a veces más espaciados o fuera de orden), sigue moviendo el balón y al rival con la misma
+// física real en vez de quedarse "congelado" hasta el próximo dato — así no se ve a saltos.
+function extrapolarBalonCabezones(balon, dt) {
+  const clon = { ...balon };
+  avanzarBalonCabezones(clon, dt);
+  return clon;
+}
+function extrapolarJugadorRemotoCabezones(jugador, dt) {
+  const clon = { ...jugador };
+  if (clon.efecto !== "congelado") clon.x += clon.vx * dt;
+  clon.vAltura -= CABEZONES_GRAVEDAD * dt;
+  clon.altura += clon.vAltura * dt;
+  if (clon.altura <= 0) { clon.altura = 0; clon.vAltura = 0; }
+  return clon;
+}
+
 function MotorCabezones({
   esHost, entradaLocalRef, entradaOponenteRef, estadoRemotoRef, estadoLocalRef,
   colorIzq, colorDer, nombreIzq, nombreDer, ladoLocal, onEstadoActualizado,
@@ -3810,6 +3872,9 @@ function MotorCabezones({
   const contenedorRef = useRef(null);
   const canvasRef = useRef(null);
   const posLocalPredichaRef = useRef({ x: null, altura: 0, vAltura: 0 });
+  const balonSuavizadoRef = useRef(null);
+  const jugadorIzqSuavizadoRef = useRef(null);
+  const ultimoRemotoRecibidoRef = useRef(null);
 
   useEffect(() => {
     const contenedor = contenedorRef.current;
@@ -3856,8 +3921,39 @@ function MotorCabezones({
           // reconciliación suave hacia lo que diga el anfitrión, para no divergir con el tiempo
           propio.x += (remoto.jugadorDer.x - propio.x) * Math.min(1, dt * 3);
 
+          // Suavizado del balón y del rival (jugadorIzq): en wifi los paquetes llegan cada ~110ms
+          // pero con jitter (a veces más espaciados o desordenados), y dibujar el último dato crudo
+          // se ve "a saltos". Si llegó un paquete nuevo desde el cuadro anterior, nos acercamos rápido
+          // a lo real (no de golpe, para no generar un nuevo salto); si no llegó nada nuevo todavía,
+          // seguimos moviendo el balón/jugador con la física real en vez de congelarlos.
+          const paqueteNuevo = remoto !== ultimoRemotoRecibidoRef.current;
+          ultimoRemotoRecibidoRef.current = remoto;
+          if (!balonSuavizadoRef.current) balonSuavizadoRef.current = { ...remoto.balon };
+          if (!jugadorIzqSuavizadoRef.current) jugadorIzqSuavizadoRef.current = { ...remoto.jugadorIzq };
+
+          if (paqueteNuevo) {
+            const f = Math.min(1, dt * 14);
+            const balonPrev = balonSuavizadoRef.current;
+            balonSuavizadoRef.current = {
+              ...remoto.balon,
+              x: balonPrev.x + (remoto.balon.x - balonPrev.x) * f,
+              altura: balonPrev.altura + (remoto.balon.altura - balonPrev.altura) * f,
+            };
+            const jIzqPrev = jugadorIzqSuavizadoRef.current;
+            jugadorIzqSuavizadoRef.current = {
+              ...remoto.jugadorIzq,
+              x: jIzqPrev.x + (remoto.jugadorIzq.x - jIzqPrev.x) * f,
+              altura: jIzqPrev.altura + (remoto.jugadorIzq.altura - jIzqPrev.altura) * f,
+            };
+          } else {
+            balonSuavizadoRef.current = extrapolarBalonCabezones(balonSuavizadoRef.current, dt);
+            jugadorIzqSuavizadoRef.current = extrapolarJugadorRemotoCabezones(jugadorIzqSuavizadoRef.current, dt);
+          }
+
           const estadoDibujado = {
             ...remoto,
+            balon: balonSuavizadoRef.current,
+            jugadorIzq: jugadorIzqSuavizadoRef.current,
             jugadorDer: { ...remoto.jugadorDer, x: propio.x, altura: propio.altura },
           };
           dibujarCanchaCabezones(ctx, estadoDibujado, { colorIzq, colorDer, nombreIzq, nombreDer });
