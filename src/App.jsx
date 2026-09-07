@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import * as THREE from "three";
 
 // ── Conexión real y compartida a Firebase Realtime Database ──
 const FIREBASE_DB_URL = "https://the-cupule-7cd07-default-rtdb.firebaseio.com";
@@ -3102,13 +3103,14 @@ function FeriaTiroView({ user, onVolver }) {
 }
 
 
-// ---- 4) Llegaron los Feos (multijugador estilo Among Us + Garry's Mod + camuflaje) ----
+// ---- 4) Llegaron los Feos (multijugador 3D en primera persona: Among Us + Garry's Mod + camuflaje) ----
 // Los 5 comparten una sola sala guardada en Firebase (clave feos_sala_<DATA_VERSION>).
-// A diferencia del resto de "Cúpula Games", este es en tiempo real entre varios celulares:
-// cada quien mueve a su "Feo" con teclado/flechas (o la cruceta en pantalla) sobre uno de
-// varios mapas, hace misiones, se puede camuflar como un objeto del escenario para
-// esconderse, y hay un infiltrado en secreto que elimina y sabotea. Reuniones + votación
-// para expulsar a quien sospechen, igual que en Among Us.
+// Cada quien camina en primera persona (WASD + mouse en computador, joystick + arrastre en
+// celular) por un mapa 3D, hace misiones, se puede camuflar como un objeto del escenario para
+// esconderse, y hay un infiltrado en secreto que elimina y sabotea. Reuniones + votación para
+// expulsar a quien sospechen, igual que en Among Us. Las posiciones siguen guardándose como
+// campos x/y en Firebase (y = profundidad en el mundo 3D, no "arriba"), así toda la lógica de
+// distancias, zonas y sincronización del resto de la sala funciona igual que antes.
 
 // ── Personalización del Feo ──
 const PALETA_FEOS = [
@@ -3170,66 +3172,104 @@ function PersonajeFeo({ personaje, size = 46, oculto, etiqueta }) {
   );
 }
 
-// ── Mapas ── (mismo tamaño de lienzo para los dos: 920x540, así el motor no cambia)
+// ── Mundo 3D: constantes físicas ──
+const FEOS_EYE_ALTURA = 1.65;
+const FEOS_RADIO_JUGADOR = 0.42;
+const FEOS_VELOCIDAD = 5.2; // unidades del mundo por segundo
+const FEOS_ALTURA_MURO = 3.2;
+
+// ── Colisión (funciones puras, círculo del jugador contra cajas AABB) ──
+function circuloChocaConRectFeos(cx, cy, radio, rect) {
+  const rx0 = rect.x, ry0 = rect.y, rx1 = rect.x + rect.w, ry1 = rect.y + rect.h;
+  const cercaX = Math.max(rx0, Math.min(cx, rx1));
+  const cercaY = Math.max(ry0, Math.min(cy, ry1));
+  const dx = cx - cercaX, dy = cy - cercaY;
+  return dx * dx + dy * dy < radio * radio;
+}
+function colisionaConMurosFeos(muros, x, y, radio) {
+  for (let i = 0; i < muros.length; i++) if (circuloChocaConRectFeos(x, y, radio, muros[i])) return true;
+  return false;
+}
+// Movimiento separado por eje para poder "deslizarse" a lo largo de un muro en vez de trabarse.
+function resolverMovimientoFeos(muros, actual, dx, dy, radio, limiteX, limiteY) {
+  let nx = actual.x, ny = actual.y;
+  const intentoX = nx + dx;
+  if (!colisionaConMurosFeos(muros, intentoX, ny, radio)) nx = intentoX;
+  const intentoY = ny + dy;
+  if (!colisionaConMurosFeos(muros, nx, intentoY, radio)) ny = intentoY;
+  nx = Math.max(radio, Math.min(limiteX - radio, nx));
+  ny = Math.max(radio, Math.min(limiteY - radio, ny));
+  return { x: nx, y: ny };
+}
+
+// ── Mapas 3D ── (mismo "molde" de muros para los dos: perímetro + 6 obstáculos, un mapa por zona)
+const MUROS_FEOS_ESTANDAR = [
+  { x: 0, y: 0, w: 46, h: 1 }, { x: 0, y: 29, w: 46, h: 1 },
+  { x: 0, y: 0, w: 1, h: 30 }, { x: 45, y: 0, w: 1, h: 30 },
+  { x: 3, y: 3, w: 2, h: 2 }, { x: 21, y: 3, w: 2, h: 2 }, { x: 37, y: 3, w: 2, h: 2 },
+  { x: 3, y: 24, w: 2, h: 2 }, { x: 21, y: 24, w: 2, h: 2 }, { x: 37, y: 24, w: 2, h: 2 },
+];
 const MAPS_FEOS = {
   base: {
-    id: "base", nombre: "La Base Feota", icono: "🛰", ancho: 920, alto: 540,
-    spawn: { x: 460, y: 140 },
+    id: "base", nombre: "La Base Feota", icono: "🛰", ancho: 46, alto: 30, colorAcento: COLORS.neonBlue,
+    spawn: { x: 23, y: 15 },
     zonas: [
-      { id: "comunicaciones", nombre: "Comunicaciones", color: COLORS.neonBlue, rect: { x: 20, y: 20, w: 280, h: 240 } },
-      { id: "cafeteria", nombre: "Cafetería", color: COLORS.neonAmber, rect: { x: 320, y: 20, w: 280, h: 240 } },
-      { id: "armeria", nombre: "Armería", color: COLORS.neonMagenta, rect: { x: 620, y: 20, w: 280, h: 240 } },
-      { id: "electrico", nombre: "Eléctrico", color: COLORS.neonSuccess, rect: { x: 20, y: 280, w: 280, h: 240 } },
-      { id: "reactor", nombre: "Reactor", color: COLORS.neonRed, rect: { x: 320, y: 280, w: 280, h: 240 } },
-      { id: "navegacion", nombre: "Navegación", color: COLORS.neonBlue, rect: { x: 620, y: 280, w: 280, h: 240 } },
+      { id: "comunicaciones", nombre: "Comunicaciones", color: COLORS.neonBlue, rect: { x: 1, y: 1, w: 13, h: 13 } },
+      { id: "cafeteria", nombre: "Cafetería", color: COLORS.neonAmber, rect: { x: 16, y: 1, w: 14, h: 13 } },
+      { id: "armeria", nombre: "Armería", color: COLORS.neonMagenta, rect: { x: 32, y: 1, w: 13, h: 13 } },
+      { id: "electrico", nombre: "Eléctrico", color: COLORS.neonSuccess, rect: { x: 1, y: 16, w: 13, h: 13 } },
+      { id: "reactor", nombre: "Reactor", color: COLORS.neonRed, rect: { x: 16, y: 16, w: 14, h: 13 } },
+      { id: "navegacion", nombre: "Navegación", color: COLORS.neonBlue, rect: { x: 32, y: 16, w: 13, h: 13 } },
     ],
+    muros: MUROS_FEOS_ESTANDAR,
     props: [
-      { id: "p1", x: 90, y: 90, icono: "🖥" }, { id: "p2", x: 550, y: 70, icono: "☕" },
-      { id: "p3", x: 860, y: 90, icono: "🔫" }, { id: "p4", x: 90, y: 470, icono: "🧯" },
-      { id: "p5", x: 480, y: 470, icono: "🛢" }, { id: "p6", x: 860, y: 470, icono: "🧭" },
-      { id: "p7", x: 250, y: 470, icono: "🪴" }, { id: "p8", x: 700, y: 210, icono: "📦" },
+      { id: "p1", x: 7, y: 10, icono: "🖥" }, { id: "p2", x: 23, y: 5, icono: "☕" },
+      { id: "p3", x: 39, y: 10, icono: "🔫" }, { id: "p4", x: 7, y: 20, icono: "🧯" },
+      { id: "p5", x: 23, y: 25, icono: "🛢" }, { id: "p6", x: 39, y: 20, icono: "🧭" },
+      { id: "p7", x: 14.5, y: 15, icono: "🪴" }, { id: "p8", x: 31.5, y: 15, icono: "📦" },
     ],
     tareas: [
-      { id: "tk1", tipo: "codigo", nombre: "Activar el percolador", x: 460, y: 100 },
-      { id: "tk2", tipo: "cables", nombre: "Sintonizar la antena", x: 160, y: 140 },
-      { id: "tk3", tipo: "escaneo", nombre: "Estabilizar el reactor", x: 460, y: 400 },
-      { id: "tk4", tipo: "cables", nombre: "Revisar el cableado", x: 400, y: 460 },
-      { id: "tk5", tipo: "codigo", nombre: "Cargar munición", x: 760, y: 140 },
-      { id: "tk6", tipo: "escaneo", nombre: "Calibrar el rumbo", x: 760, y: 400 },
-      { id: "tk7", tipo: "cables", nombre: "Revisar fusibles", x: 160, y: 400 },
+      { id: "tk1", tipo: "cables", nombre: "Sintonizar la antena", x: 10, y: 5 },
+      { id: "tk2", tipo: "codigo", nombre: "Activar el percolador", x: 23, y: 9 },
+      { id: "tk3", tipo: "codigo", nombre: "Cargar munición", x: 39, y: 5 },
+      { id: "tk4", tipo: "cables", nombre: "Revisar fusibles", x: 5, y: 25 },
+      { id: "tk5", tipo: "escaneo", nombre: "Estabilizar el reactor", x: 23, y: 20 },
+      { id: "tk6", tipo: "escaneo", nombre: "Calibrar el rumbo", x: 39, y: 25 },
+      { id: "tk7", tipo: "cables", nombre: "Revisar el cableado", x: 11, y: 20 },
     ],
-    puntoEmergencia: { x: 460, y: 220 },
-    puntosSabotaje: { luces: { x: 160, y: 460 }, reactor: { x: 460, y: 460 } },
+    puntoEmergencia: { x: 23, y: 15 },
+    puntosSabotaje: { luces: { x: 5, y: 22 }, reactor: { x: 28, y: 20 } },
     sabotajeNombres: { luces: "Cortan la luz", reactor: "Reactor crítico" },
   },
   mall: {
-    id: "mall", nombre: "El Centro Comercial Feota", icono: "🛍", ancho: 920, alto: 540,
-    spawn: { x: 460, y: 400 },
+    id: "mall", nombre: "El Centro Comercial Feota", icono: "🛍", ancho: 46, alto: 30, colorAcento: COLORS.neonMagenta,
+    spawn: { x: 12, y: 15 },
     zonas: [
-      { id: "comida", nombre: "Zona de Comida", color: COLORS.neonAmber, rect: { x: 20, y: 20, w: 280, h: 240 } },
-      { id: "ropa", nombre: "Tienda de Ropa", color: COLORS.neonMagenta, rect: { x: 320, y: 20, w: 280, h: 240 } },
-      { id: "juegos", nombre: "Sala de Juegos", color: COLORS.neonBlue, rect: { x: 620, y: 20, w: 280, h: 240 } },
-      { id: "seguridad", nombre: "Cuarto de Seguridad", color: COLORS.neonRed, rect: { x: 20, y: 280, w: 280, h: 240 } },
-      { id: "fuente", nombre: "Fuente Central", color: COLORS.neonSuccess, rect: { x: 320, y: 280, w: 280, h: 240 } },
-      { id: "bodega", nombre: "Bodega", color: COLORS.neonAmber, rect: { x: 620, y: 280, w: 280, h: 240 } },
+      { id: "comida", nombre: "Zona de Comida", color: COLORS.neonAmber, rect: { x: 1, y: 1, w: 13, h: 13 } },
+      { id: "ropa", nombre: "Tienda de Ropa", color: COLORS.neonMagenta, rect: { x: 16, y: 1, w: 14, h: 13 } },
+      { id: "juegos", nombre: "Sala de Juegos", color: COLORS.neonBlue, rect: { x: 32, y: 1, w: 13, h: 13 } },
+      { id: "seguridad", nombre: "Cuarto de Seguridad", color: COLORS.neonRed, rect: { x: 1, y: 16, w: 13, h: 13 } },
+      { id: "fuente", nombre: "Fuente Central", color: COLORS.neonSuccess, rect: { x: 16, y: 16, w: 14, h: 13 } },
+      { id: "bodega", nombre: "Bodega", color: COLORS.neonAmber, rect: { x: 32, y: 16, w: 13, h: 13 } },
     ],
+    muros: MUROS_FEOS_ESTANDAR,
     props: [
-      { id: "p1", x: 90, y: 90, icono: "🍿" }, { id: "p2", x: 550, y: 70, icono: "👗" },
-      { id: "p3", x: 860, y: 90, icono: "🕹" }, { id: "p4", x: 90, y: 470, icono: "🎥" },
-      { id: "p5", x: 480, y: 340, icono: "⛲" }, { id: "p6", x: 860, y: 470, icono: "📦" },
-      { id: "p7", x: 250, y: 470, icono: "🧸" }, { id: "p8", x: 700, y: 210, icono: "🛍" },
+      { id: "p1", x: 7, y: 10, icono: "🍿" }, { id: "p2", x: 23, y: 5, icono: "👗" },
+      { id: "p3", x: 39, y: 10, icono: "🕹" }, { id: "p4", x: 7, y: 20, icono: "🎥" },
+      { id: "p5", x: 23, y: 25, icono: "⛲" }, { id: "p6", x: 39, y: 20, icono: "📦" },
+      { id: "p7", x: 14.5, y: 15, icono: "🧸" }, { id: "p8", x: 31.5, y: 15, icono: "🛍" },
     ],
     tareas: [
-      { id: "tk1", tipo: "codigo", nombre: "Freír las papas sin quemarlas", x: 160, y: 140 },
-      { id: "tk2", tipo: "cables", nombre: "Desenredar las luces navideñas", x: 460, y: 100 },
-      { id: "tk3", tipo: "escaneo", nombre: "Ganarle a la máquina de garra", x: 760, y: 140 },
-      { id: "tk4", tipo: "cables", nombre: "Reconectar las cámaras", x: 160, y: 400 },
-      { id: "tk5", tipo: "codigo", nombre: "Arreglar la caja registradora", x: 460, y: 460 },
-      { id: "tk6", tipo: "escaneo", nombre: "Contar las cajas de bodega", x: 760, y: 400 },
-      { id: "tk7", tipo: "codigo", nombre: "Resetear la alarma", x: 240, y: 460 },
+      { id: "tk1", tipo: "codigo", nombre: "Freír las papas sin quemarlas", x: 10, y: 5 },
+      { id: "tk2", tipo: "cables", nombre: "Desenredar las luces navideñas", x: 23, y: 9 },
+      { id: "tk3", tipo: "escaneo", nombre: "Ganarle a la máquina de garra", x: 39, y: 5 },
+      { id: "tk4", tipo: "cables", nombre: "Reconectar las cámaras", x: 5, y: 25 },
+      { id: "tk5", tipo: "codigo", nombre: "Arreglar la caja registradora", x: 23, y: 20 },
+      { id: "tk6", tipo: "escaneo", nombre: "Contar las cajas de bodega", x: 39, y: 25 },
+      { id: "tk7", tipo: "codigo", nombre: "Resetear la alarma", x: 11, y: 20 },
     ],
-    puntoEmergencia: { x: 460, y: 400 },
-    puntosSabotaje: { luces: { x: 160, y: 460 }, reactor: { x: 760, y: 460 } },
+    puntoEmergencia: { x: 23, y: 15 },
+    puntosSabotaje: { luces: { x: 5, y: 22 }, reactor: { x: 39, y: 22 } },
     sabotajeNombres: { luces: "Apagón general", reactor: "Fuga de gas en la Bodega" },
   },
 };
@@ -3237,7 +3277,7 @@ const MAPS_FEOS_LISTA = [MAPS_FEOS.base, MAPS_FEOS.mall];
 
 function distanciaFeos(a, b) { const dx = a.x - b.x, dy = a.y - b.y; return Math.sqrt(dx * dx + dy * dy); }
 
-const FEOS_INTERACT_RADIO = 65;
+const FEOS_INTERACT_RADIO = 3.4;
 const FEOS_KILL_COOLDOWN_MS = 18000;
 const FEOS_SABOTAJE_COOLDOWN_MS = 28000;
 const FEOS_SABOTAJE_LUCES_MS = 22000;
@@ -3275,18 +3315,99 @@ function evaluarGanadorFeos(sala) {
   return null;
 }
 
-function BotonDireccionFeos({ dir, keysRef, children }) {
-  const activar = (e) => { e.preventDefault(); keysRef.current[dir] = true; };
-  const desactivar = (e) => { e.preventDefault(); keysRef.current[dir] = false; };
+// ── Helpers 3D: texturas dibujadas en un <canvas> para íconos y letreros que siempre miran a la cámara ──
+function crearTexturaEmoji(emoji) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 128; canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  ctx.font = "92px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(emoji || "❓", 64, 68);
+  return new THREE.CanvasTexture(canvas);
+}
+function crearSpriteEmoji(emoji, tam = 1) {
+  const mat = new THREE.SpriteMaterial({ map: crearTexturaEmoji(emoji), transparent: true, depthWrite: false });
+  const spr = new THREE.Sprite(mat);
+  spr.scale.set(tam, tam, 1);
+  return spr;
+}
+function crearSpriteEtiqueta(texto, color) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512; canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  ctx.font = "700 52px 'Courier New', monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(16, 28, canvas.width - 32, 72);
+  ctx.fillStyle = typeof color === "string" ? color : "#ffffff";
+  ctx.fillText(texto, canvas.width / 2, 64);
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+  const spr = new THREE.Sprite(mat);
+  spr.scale.set(2.6, 0.65, 1);
+  return spr;
+}
+
+// ── Joystick virtual (solo celular): un círculo fijo abajo a la izquierda que reporta -1..1 en x/y ──
+function VirtualJoystickFeos({ onCambio }) {
+  const baseRef = useRef(null);
+  const [activo, setActivo] = useState(false);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const origenRef = useRef({ x: 0, y: 0 });
+  const idToqueRef = useRef(null);
+  const RADIO = 46;
+
+  const empezar = (e) => {
+    e.preventDefault();
+    const t = e.changedTouches ? e.changedTouches[0] : e;
+    idToqueRef.current = e.changedTouches ? t.identifier : "mouse";
+    const base = baseRef.current;
+    if (!base) return;
+    const rect = base.getBoundingClientRect();
+    origenRef.current = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    setActivo(true);
+  };
+  const mover = (e) => {
+    if (!activo) return;
+    e.preventDefault();
+    let t = null;
+    if (e.changedTouches) {
+      for (let i = 0; i < e.changedTouches.length; i++) if (e.changedTouches[i].identifier === idToqueRef.current) t = e.changedTouches[i];
+      if (!t) return;
+    } else t = e;
+    let dx = t.clientX - origenRef.current.x;
+    let dy = t.clientY - origenRef.current.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > RADIO) { dx = (dx / dist) * RADIO; dy = (dy / dist) * RADIO; }
+    setPos({ x: dx, y: dy });
+    onCambio({ x: dx / RADIO, y: dy / RADIO });
+  };
+  const soltar = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    setActivo(false);
+    setPos({ x: 0, y: 0 });
+    onCambio({ x: 0, y: 0 });
+    idToqueRef.current = null;
+  };
+
   return (
-    <button
-      onMouseDown={activar} onMouseUp={desactivar} onMouseLeave={desactivar}
-      onTouchStart={activar} onTouchEnd={desactivar} onTouchCancel={desactivar}
+    <div
+      ref={baseRef}
+      onTouchStart={empezar} onTouchMove={mover} onTouchEnd={soltar} onTouchCancel={soltar}
+      onMouseDown={empezar} onMouseMove={mover} onMouseUp={soltar} onMouseLeave={soltar}
       style={{
-        width: 46, height: 46, borderRadius: 8, background: COLORS.bgBase, border: `1px solid ${COLORS.neonMagenta}`,
-        color: COLORS.white, fontSize: 17, cursor: "pointer", userSelect: "none", touchAction: "none",
+        position: "absolute", left: 18, bottom: 18, width: RADIO * 2, height: RADIO * 2, borderRadius: "50%",
+        background: "rgba(10,10,20,0.45)", border: `2px solid ${COLORS.neonMagenta}66`, touchAction: "none", zIndex: 40,
       }}
-    >{children}</button>
+    >
+      <div style={{
+        position: "absolute", left: "50%", top: "50%", width: 40, height: 40, borderRadius: "50%",
+        background: `${COLORS.neonMagenta}55`, border: `2px solid ${COLORS.neonMagenta}`,
+        transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))`, pointerEvents: "none",
+      }} />
+    </div>
   );
 }
 
@@ -3434,8 +3555,364 @@ function TareaCables({ onCompletar, onCancelar }) {
   );
 }
 
+// ── Escena 3D en primera persona (Three.js). Recibe refs compartidos con el componente padre
+// para no duplicar el "estado de verdad": miPosRef es la posición local autoritativa (el padre
+// la sigue transmitiendo a Firebase igual que antes), keysRef son las teclas WASD/flechas ya
+// mapeadas a up/down/left/right por el padre. Esta escena solo decide QUÉ significa "adelante"
+// (según hacia dónde mira la cámara) y resuelve colisiones contra los muros del mapa. ──
+function EscenaFeos3D({
+  mapa, miPosRef, keysRef, activo, jugadoresRemotos, cuerpo, tareas, tareasHechas,
+  props: propsMapa, puntoEmergencia, puntosSabotaje, sabotaje,
+}) {
+  const isMobile = useIsMobile();
+  const contenedorRef = useRef(null);
+  const canvasElRef = useRef(null);
+  const escenaObjRef = useRef(null);
+  const eulerRef = useRef(new THREE.Euler(0, 0, 0, "YXZ"));
+  const [bloqueadoUI, setBloqueadoUI] = useState(false);
+  const joyRef = useRef({ x: 0, y: 0 });
+  const activoRef = useRef(activo);
+  const jugadoresRemotosRef = useRef(jugadoresRemotos);
+  const cuerpoRef = useRef(cuerpo);
+
+  useEffect(() => { activoRef.current = activo; }, [activo]);
+  useEffect(() => { jugadoresRemotosRef.current = jugadoresRemotos; }, [jugadoresRemotos]);
+  useEffect(() => { cuerpoRef.current = cuerpo; }, [cuerpo]);
+
+  useEffect(() => {
+    const contenedor = contenedorRef.current;
+    if (!contenedor) return;
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color("#05060a");
+    scene.fog = new THREE.Fog("#05060a", 16, Math.max(mapa.ancho, mapa.alto) * 1.2);
+
+    const camera = new THREE.PerspectiveCamera(72, 1, 0.1, 200);
+    camera.position.set(mapa.spawn.x, FEOS_EYE_ALTURA, mapa.spawn.y);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.domElement.style.display = "block";
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
+    contenedor.innerHTML = "";
+    contenedor.appendChild(renderer.domElement);
+    canvasElRef.current = renderer.domElement;
+
+    scene.add(new THREE.HemisphereLight("#8fb8ff", "#0a0510", 0.85));
+    const dirLuz = new THREE.DirectionalLight("#ffffff", 0.5);
+    dirLuz.position.set(mapa.ancho * 0.3, 20, mapa.alto * 0.2);
+    scene.add(dirLuz);
+
+    const piso = new THREE.Mesh(
+      new THREE.PlaneGeometry(mapa.ancho + 6, mapa.alto + 6),
+      new THREE.MeshStandardMaterial({ color: "#101018", roughness: 0.95 })
+    );
+    piso.rotation.x = -Math.PI / 2;
+    piso.position.set(mapa.ancho / 2, 0, mapa.alto / 2);
+    scene.add(piso);
+
+    const techo = new THREE.Mesh(
+      new THREE.PlaneGeometry(mapa.ancho + 6, mapa.alto + 6),
+      new THREE.MeshBasicMaterial({ color: "#05060a", side: THREE.BackSide })
+    );
+    techo.rotation.x = -Math.PI / 2;
+    techo.position.set(mapa.ancho / 2, FEOS_ALTURA_MURO + 1.5, mapa.alto / 2);
+    scene.add(techo);
+
+    (mapa.zonas || []).forEach((z) => {
+      const tinte = new THREE.Mesh(
+        new THREE.PlaneGeometry(z.rect.w, z.rect.h),
+        new THREE.MeshBasicMaterial({ color: z.color, transparent: true, opacity: 0.1 })
+      );
+      tinte.rotation.x = -Math.PI / 2;
+      tinte.position.set(z.rect.x + z.rect.w / 2, 0.02, z.rect.y + z.rect.h / 2);
+      scene.add(tinte);
+
+      const luz = new THREE.PointLight(z.color, 3.2, Math.max(z.rect.w, z.rect.h) * 1.3, 2);
+      luz.position.set(z.rect.x + z.rect.w / 2, FEOS_ALTURA_MURO * 0.8, z.rect.y + z.rect.h / 2);
+      scene.add(luz);
+
+      const letrero = crearSpriteEtiqueta(z.nombre.toUpperCase(), z.color);
+      letrero.position.set(z.rect.x + z.rect.w / 2, FEOS_ALTURA_MURO - 0.3, z.rect.y + 0.4);
+      scene.add(letrero);
+    });
+
+    (mapa.muros || []).forEach((m) => {
+      const muro = new THREE.Mesh(
+        new THREE.BoxGeometry(m.w, FEOS_ALTURA_MURO, m.h),
+        new THREE.MeshStandardMaterial({ color: "#232338", roughness: 0.8, emissive: mapa.colorAcento || "#ff2fd6", emissiveIntensity: 0.06 })
+      );
+      muro.position.set(m.x + m.w / 2, FEOS_ALTURA_MURO / 2, m.y + m.h / 2);
+      scene.add(muro);
+      const borde = new THREE.LineSegments(
+        new THREE.EdgesGeometry(muro.geometry),
+        new THREE.LineBasicMaterial({ color: mapa.colorAcento || "#ff2fd6", transparent: true, opacity: 0.35 })
+      );
+      borde.position.copy(muro.position);
+      scene.add(borde);
+    });
+
+    (propsMapa || []).forEach((p) => {
+      const spr = crearSpriteEmoji(p.icono, 1.3);
+      spr.position.set(p.x, 1.3, p.y);
+      scene.add(spr);
+    });
+
+    const spritesTarea = {};
+    (tareas || []).forEach((t) => {
+      const spr = crearSpriteEmoji(tareasHechas.includes(t.id) ? "✅" : "📋", 1.1);
+      spr.userData.hecha = tareasHechas.includes(t.id);
+      spr.position.set(t.x, 1.5, t.y);
+      scene.add(spr);
+      spritesTarea[t.id] = spr;
+    });
+
+    const spriteEmergencia = crearSpriteEmoji("🔴", 1.4);
+    spriteEmergencia.position.set(puntoEmergencia.x, 1.4, puntoEmergencia.y);
+    scene.add(spriteEmergencia);
+
+    const spritesSabotaje = {};
+    Object.entries(puntosSabotaje || {}).forEach(([tipo, pt]) => {
+      const spr = crearSpriteEmoji("🔧", 1.3);
+      spr.position.set(pt.x, 1.3, pt.y);
+      spr.visible = !!(sabotaje && sabotaje.tipo === tipo);
+      scene.add(spr);
+      spritesSabotaje[tipo] = spr;
+    });
+
+    let spriteCuerpo = null;
+    const remotos = new Map();
+
+    function asegurarJugadorRemoto(j) {
+      if (remotos.has(j.id)) return remotos.get(j.id);
+      const per = j.personaje || {};
+      const color = (PALETA_FEOS.find((c) => c.id === per.color) || PALETA_FEOS[0]).hex;
+      const cara = CARAS_FEOS.find((c) => c.id === per.cara) || CARAS_FEOS[0];
+      const sombrero = SOMBREROS_FEOS.find((s) => s.id === per.sombrero) || SOMBREROS_FEOS[0];
+      const grupo = new THREE.Group();
+      const cuerpo3d = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.42, 1.1, 4, 8),
+        new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.35, roughness: 0.5 })
+      );
+      cuerpo3d.position.y = 0.95;
+      grupo.add(cuerpo3d);
+      const cara3d = crearSpriteEmoji(cara.emoji, 0.8);
+      cara3d.position.y = 1.9;
+      grupo.add(cara3d);
+      if (sombrero.emoji) {
+        const s3d = crearSpriteEmoji(sombrero.emoji, 0.6);
+        s3d.position.y = 2.2;
+        grupo.add(s3d);
+      }
+      const nombreSprite = crearSpriteEtiqueta(j.nombre || "?", "#ffffff");
+      nombreSprite.position.y = 2.55;
+      grupo.add(nombreSprite);
+      grupo.position.set(j.x, 0, j.y);
+      scene.add(grupo);
+      const entrada = { grupo, actual: { x: j.x, y: j.y }, destino: { x: j.x, y: j.y } };
+      remotos.set(j.id, entrada);
+      return entrada;
+    }
+
+    const clock = new THREE.Clock();
+    let vivo = true;
+
+    function ajustarTamano() {
+      const w = contenedor.clientWidth || 1;
+      const h = contenedor.clientHeight || 1;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }
+    ajustarTamano();
+    const resizeObs = typeof ResizeObserver !== "undefined" ? new ResizeObserver(ajustarTamano) : null;
+    if (resizeObs) resizeObs.observe(contenedor);
+    else window.addEventListener("resize", ajustarTamano);
+
+    const LIMITE_PITCH = Math.PI / 2 - 0.06;
+    function alPuntero(e) {
+      if (document.pointerLockElement !== renderer.domElement) return;
+      const SENS = 0.0022;
+      eulerRef.current.y -= e.movementX * SENS;
+      eulerRef.current.x -= e.movementY * SENS;
+      eulerRef.current.x = Math.max(-LIMITE_PITCH, Math.min(LIMITE_PITCH, eulerRef.current.x));
+    }
+    function alCambiarBloqueo() {
+      setBloqueadoUI(document.pointerLockElement === renderer.domElement);
+    }
+    document.addEventListener("mousemove", alPuntero);
+    document.addEventListener("pointerlockchange", alCambiarBloqueo);
+
+    let toqueMirarPrev = null;
+    function alTocarMirar(e) {
+      if (!e.touches || e.touches.length === 0) return;
+      const t = e.touches[0];
+      if (t.clientX < contenedor.clientWidth * 0.42) return;
+      if (toqueMirarPrev && toqueMirarPrev.id === t.identifier) {
+        const SENS = 0.0055;
+        eulerRef.current.y -= (t.clientX - toqueMirarPrev.x) * SENS;
+        eulerRef.current.x -= (t.clientY - toqueMirarPrev.y) * SENS;
+        eulerRef.current.x = Math.max(-LIMITE_PITCH, Math.min(LIMITE_PITCH, eulerRef.current.x));
+      }
+      toqueMirarPrev = { id: t.identifier, x: t.clientX, y: t.clientY };
+    }
+    function alSoltarMirar(e) {
+      if (!e.changedTouches || !e.changedTouches[0]) return;
+      if (toqueMirarPrev && toqueMirarPrev.id === e.changedTouches[0].identifier) toqueMirarPrev = null;
+    }
+    renderer.domElement.addEventListener("touchstart", alTocarMirar, { passive: true });
+    renderer.domElement.addEventListener("touchmove", alTocarMirar, { passive: true });
+    renderer.domElement.addEventListener("touchend", alSoltarMirar, { passive: true });
+    renderer.domElement.addEventListener("touchcancel", alSoltarMirar, { passive: true });
+
+    function animar() {
+      if (!vivo) return;
+      const dt = Math.min(0.12, clock.getDelta());
+      camera.quaternion.setFromEuler(eulerRef.current);
+
+      if (activoRef.current) {
+        const yaw = eulerRef.current.y;
+        const adelanteX = -Math.sin(yaw), adelanteZ = -Math.cos(yaw);
+        const derechaX = Math.cos(yaw), derechaZ = -Math.sin(yaw);
+        const kd = keysRef.current;
+        let entradaAdelante = (kd.up ? 1 : 0) - (kd.down ? 1 : 0) - joyRef.current.y;
+        let entradaDerecha = (kd.right ? 1 : 0) - (kd.left ? 1 : 0) + joyRef.current.x;
+        entradaAdelante = Math.max(-1, Math.min(1, entradaAdelante));
+        entradaDerecha = Math.max(-1, Math.min(1, entradaDerecha));
+        if (entradaAdelante || entradaDerecha) {
+          let mx = adelanteX * entradaAdelante + derechaX * entradaDerecha;
+          let mz = adelanteZ * entradaAdelante + derechaZ * entradaDerecha;
+          const largo = Math.hypot(mx, mz) || 1;
+          mx = (mx / largo) * FEOS_VELOCIDAD * dt;
+          mz = (mz / largo) * FEOS_VELOCIDAD * dt;
+          miPosRef.current = resolverMovimientoFeos(mapa.muros || [], miPosRef.current, mx, mz, FEOS_RADIO_JUGADOR, mapa.ancho, mapa.alto);
+        }
+      }
+
+      const pos = miPosRef.current;
+      camera.position.set(pos.x, FEOS_EYE_ALTURA, pos.y);
+
+      const cRef = cuerpoRef.current;
+      if (cRef && !spriteCuerpo) {
+        spriteCuerpo = crearSpriteEmoji("💀", 1.2);
+        spriteCuerpo.position.set(cRef.x, 1, cRef.y);
+        scene.add(spriteCuerpo);
+      } else if (!cRef && spriteCuerpo) {
+        scene.remove(spriteCuerpo);
+        if (spriteCuerpo.material.map) spriteCuerpo.material.map.dispose();
+        spriteCuerpo.material.dispose();
+        spriteCuerpo = null;
+      }
+
+      const activos = new Set();
+      (jugadoresRemotosRef.current || []).forEach((j) => {
+        activos.add(j.id);
+        const entrada = asegurarJugadorRemoto(j);
+        entrada.destino.x = j.x;
+        entrada.destino.y = j.y;
+      });
+      remotos.forEach((entrada, id) => {
+        if (!activos.has(id)) {
+          scene.remove(entrada.grupo);
+          remotos.delete(id);
+          return;
+        }
+        const suav = Math.min(1, dt * 6);
+        entrada.actual.x += (entrada.destino.x - entrada.actual.x) * suav;
+        entrada.actual.y += (entrada.destino.y - entrada.actual.y) * suav;
+        entrada.grupo.position.set(entrada.actual.x, 0, entrada.actual.y);
+      });
+
+      renderer.render(scene, camera);
+      requestAnimationFrame(animar);
+    }
+    const idAnim = requestAnimationFrame(animar);
+    escenaObjRef.current = { spritesTarea, spritesSabotaje };
+
+    return () => {
+      vivo = false;
+      cancelAnimationFrame(idAnim);
+      if (resizeObs) resizeObs.disconnect();
+      else window.removeEventListener("resize", ajustarTamano);
+      document.removeEventListener("mousemove", alPuntero);
+      document.removeEventListener("pointerlockchange", alCambiarBloqueo);
+      if (document.pointerLockElement === renderer.domElement) document.exitPointerLock();
+      renderer.domElement.removeEventListener("touchstart", alTocarMirar);
+      renderer.domElement.removeEventListener("touchmove", alTocarMirar);
+      renderer.domElement.removeEventListener("touchend", alSoltarMirar);
+      renderer.domElement.removeEventListener("touchcancel", alSoltarMirar);
+      scene.traverse((obj) => {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+          const materiales = Array.isArray(obj.material) ? obj.material : [obj.material];
+          materiales.forEach((m) => { if (m.map) m.map.dispose(); m.dispose(); });
+        }
+      });
+      renderer.dispose();
+      if (contenedor) contenedor.innerHTML = "";
+      escenaObjRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapa]);
+
+  // Suelta el mouse capturado en cuanto dejamos de poder movernos (tarea abierta, camuflado, reunión...).
+  useEffect(() => {
+    if (!activo && canvasElRef.current && document.pointerLockElement === canvasElRef.current) {
+      document.exitPointerLock();
+    }
+  }, [activo]);
+
+  // Actualiza los íconos de tareas cuando cambian (comparando contra lo ya dibujado, no en cada poll).
+  useEffect(() => {
+    const eo = escenaObjRef.current;
+    if (!eo) return;
+    (tareas || []).forEach((t) => {
+      const spr = eo.spritesTarea[t.id];
+      if (!spr) return;
+      const hecha = tareasHechas.includes(t.id);
+      if (spr.userData.hecha === hecha) return;
+      spr.userData.hecha = hecha;
+      const anterior = spr.material.map;
+      spr.material.map = crearTexturaEmoji(hecha ? "✅" : "📋");
+      spr.material.needsUpdate = true;
+      if (anterior) anterior.dispose();
+    });
+  }, [tareasHechas, tareas]);
+
+  useEffect(() => {
+    const eo = escenaObjRef.current;
+    if (!eo) return;
+    Object.entries(eo.spritesSabotaje).forEach(([tipo, spr]) => {
+      spr.visible = !!(sabotaje && sabotaje.tipo === tipo);
+    });
+  }, [sabotaje]);
+
+  const alClicCanvas = () => {
+    if (isMobile) return;
+    const el = canvasElRef.current;
+    if (el && document.pointerLockElement !== el && el.requestPointerLock) el.requestPointerLock();
+  };
+
+  return (
+    <div ref={contenedorRef} onClick={alClicCanvas} style={{ position: "absolute", inset: 0, cursor: isMobile ? "default" : "pointer" }}>
+      {!isMobile && !bloqueadoUI && activo && (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+          background: "rgba(0,0,0,0.4)", zIndex: 30, textAlign: "center", pointerEvents: "none",
+        }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.white, letterSpacing: 1, background: "rgba(0,0,0,0.6)", padding: "10px 16px", borderRadius: 8, border: `1px solid ${COLORS.neonMagenta}` }}>
+            Haz clic para mirar con el mouse · WASD para moverte
+          </div>
+        </div>
+      )}
+      {isMobile && activo && <VirtualJoystickFeos onCambio={(v) => { joyRef.current = v; }} />}
+    </div>
+  );
+}
+
 function LlegaronLosFeosView({ user, onVolver }) {
   const miId = user.id;
+  const esMovil = useIsMobile();
   const [pantalla, setPantalla] = useState("hub"); // hub | personalizar | reglas | sala
   const [personajeLocal, setPersonajeLocal] = useState(() => cargarPersonajeFeosGuardado(miId));
   const [sala, setSala] = useState(null);
@@ -3444,7 +3921,7 @@ function LlegaronLosFeosView({ user, onVolver }) {
   const [mapaElegido, setMapaElegido] = useState("base");
   const [numImpostoresElegido, setNumImpostoresElegido] = useState(1);
   const [ahora, setAhora] = useState(Date.now());
-  const [miPos, setMiPos] = useState({ x: 460, y: 300 });
+  const [miPos, setMiPos] = useState({ x: 23, y: 15 });
 
   const keysRef = useRef({ up: false, down: false, left: false, right: false });
   const miPosRef = useRef(miPos);
@@ -3453,7 +3930,6 @@ function LlegaronLosFeosView({ user, onVolver }) {
   const tareaAbiertaRef = useRef(null);
   const primerCargaRef = useRef(true);
   const rondaVistaRef = useRef(0);
-  const rafRef = useRef(null);
 
   useEffect(() => { miPosRef.current = miPos; }, [miPos]);
   useEffect(() => { salaRef.current = sala; }, [sala]);
@@ -3559,7 +4035,7 @@ function LlegaronLosFeosView({ user, onVolver }) {
     await escribir(siguiente);
   };
 
-  // ── Motor de movimiento: teclado + cruceta en pantalla, con predicción local ──
+  // ── Captura de teclado: WASD/flechas → keysRef (la escena 3D decide adelante/atrás según la cámara) ──
   useEffect(() => {
     if (pantalla !== "sala") return;
     const onKeyDown = (e) => {
@@ -3579,37 +4055,19 @@ function LlegaronLosFeosView({ user, onVolver }) {
     };
   }, [pantalla]);
 
+  // El movimiento en sí ocurre dentro de <EscenaFeos3D> (mutando miPosRef cada cuadro). Aquí solo
+  // reflejamos ese ref en el estado de React cada tanto, para que el resto de la pantalla (zona
+  // actual, tareas cercanas, etc.) se siga recalculando sin duplicar la física del movimiento.
   useEffect(() => {
     if (pantalla !== "sala") return;
-    let activo = true;
-    let ultimo = performance.now();
-    const paso = (ahoraMs) => {
-      if (!activo) return;
-      const dt = Math.min(60, ahoraMs - ultimo);
-      ultimo = ahoraMs;
-      const s = salaRef.current;
-      const yo = misDatosRef.current;
-      const puedeMoverse = s && s.fase === "jugando" && yo && yo.vivo && !yo.expulsado && !yo.camuflado && !tareaAbiertaRef.current;
-      if (puedeMoverse) {
-        const kd = keysRef.current;
-        let dx = (kd.right ? 1 : 0) - (kd.left ? 1 : 0);
-        let dy = (kd.down ? 1 : 0) - (kd.up ? 1 : 0);
-        if (dx || dy) {
-          const largo = Math.sqrt(dx * dx + dy * dy) || 1;
-          const velocidad = 0.27;
-          dx = (dx / largo) * velocidad * dt;
-          dy = (dy / largo) * velocidad * dt;
-          const mapa = MAPS_FEOS[s.mapaId] || MAPS_FEOS.base;
-          setMiPos((prev) => ({
-            x: Math.max(18, Math.min(mapa.ancho - 18, prev.x + dx)),
-            y: Math.max(18, Math.min(mapa.alto - 18, prev.y + dy)),
-          }));
-        }
-      }
-      rafRef.current = requestAnimationFrame(paso);
-    };
-    rafRef.current = requestAnimationFrame(paso);
-    return () => { activo = false; if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+    const id = setInterval(() => {
+      setMiPos((prev) => {
+        const r = miPosRef.current;
+        if (Math.abs(prev.x - r.x) < 0.01 && Math.abs(prev.y - r.y) < 0.01) return prev;
+        return { x: r.x, y: r.y };
+      });
+    }, 150);
+    return () => clearInterval(id);
   }, [pantalla]);
 
   // Difunde mi posición a los demás cada tanto (solo si me moví).
@@ -3621,7 +4079,7 @@ function LlegaronLosFeosView({ user, onVolver }) {
       const yo = fresco.jugadores[miId];
       if (!yo || !yo.vivo || yo.expulsado || yo.camuflado) return;
       const pos = miPosRef.current;
-      if (Math.abs(yo.x - pos.x) < 2 && Math.abs(yo.y - pos.y) < 2) return;
+      if (Math.abs(yo.x - pos.x) < 0.05 && Math.abs(yo.y - pos.y) < 0.05) return;
       const siguiente = { ...fresco, jugadores: { ...fresco.jugadores, [miId]: { ...yo, x: pos.x, y: pos.y } } };
       salaRef.current = siguiente;
       setSala(siguiente);
@@ -3804,7 +4262,7 @@ function LlegaronLosFeosView({ user, onVolver }) {
             <PersonajeFeo personaje={personajeLocal} size={74} />
           </div>
           <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 26, maxWidth: 440, marginLeft: "auto", marginRight: "auto", lineHeight: 1.6 }}>
-            Un Feo infiltrado se coló entre ustedes. Muévete con el teclado por el mapa, cumple misiones, camúflate como un objeto para esconderte... y descubran quién no es de fiar antes de que sea tarde.
+            Un Feo infiltrado se coló entre ustedes. Camina en primera persona por el mapa, cumple misiones, camúflate como un objeto para esconderte... y descubran quién no es de fiar antes de que sea tarde.
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 260, margin: "0 auto" }}>
             <NeonButton active onClick={() => setPantalla("sala")}>🎮 Jugar</NeonButton>
@@ -3860,8 +4318,8 @@ function LlegaronLosFeosView({ user, onVolver }) {
         <SectionTitle>Cómo jugar</SectionTitle>
         <Card style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.textMuted, lineHeight: 1.7 }}>
           <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Meta:</b> si eres tripulante, terminen todas las misiones del mapa o descubran y expulsen al infiltrado. Si eres el infiltrado, elimina hasta quedar en igualdad de número (o deja que un sabotaje sin reparar acabe con todos).</div>
-          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Moverse:</b> teclado (WASD o flechas) en computador, o la cruceta en pantalla en el celular.</div>
-          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Misiones:</b> acércate a un ícono 📋 y tócalo para jugar el mini-juego. Solo cuentan si las hace un tripulante.</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Moverse y mirar:</b> en computador, WASD para caminar y el mouse para mirar (haz clic sobre el mapa para activar el control del mouse; Esc lo suelta). En celular, el joystick de la izquierda mueve y arrastra el dedo en la mitad derecha de la pantalla para mirar.</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Misiones:</b> camina hasta un ícono 📋 — cuando esté cerca aparecerá el botón para jugar el mini-juego. Solo cuentan si las hace un tripulante.</div>
           <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Camuflaje:</b> acércate a un objeto del mapa y camúflate para desaparecer del radar de los demás por un rato — útil para esconderte del infiltrado o, si lo eres, para tender una emboscada. No puedes moverte ni hacer nada más mientras estás camuflado.</div>
           <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Reuniones:</b> reporta un cuerpo 💀 o usa el punto rojo de emergencia para votar y expulsar a quien sospechen.</div>
           <div><b style={{ color: COLORS.white }}>Sabotajes:</b> el infiltrado puede provocar un apagón o una avería crítica — repárenla a tiempo en el punto indicado del mapa o los tripulantes pierden.</div>
@@ -3970,6 +4428,7 @@ function LlegaronLosFeosView({ user, onVolver }) {
   const killCooldownRestante = Math.max(0, FEOS_KILL_COOLDOWN_MS - (ahora - (misDatos.ultimoKillTs || 0)));
   const sabotajeCooldownRestante = Math.max(0, FEOS_SABOTAJE_COOLDOWN_MS - (ahora - (misDatos.ultimoSabotajeTs || 0)));
   const camuflajeCooldownRestante = Math.max(0, FEOS_CAMUFLAJE_COOLDOWN_MS - (ahora - (misDatos.ultimoCamuflajeTs || 0)));
+  const activo3D = estoyVivo && sala.fase === "jugando" && !misDatos.camuflado && !tareaAbierta;
 
   return (
     <div>
@@ -3994,56 +4453,28 @@ function LlegaronLosFeosView({ user, onVolver }) {
         </Card>
       )}
 
-      <Card style={{ marginBottom: 14, padding: 10 }}>
-        <div style={{ position: "relative", width: "100%", maxWidth: mapa.ancho, aspectRatio: `${mapa.ancho} / ${mapa.alto}`, margin: "0 auto", background: "#05060a", border: `2px solid ${COLORS.neonMagenta}`, borderRadius: 8, overflow: "hidden", boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
-          {mapa.zonas.map((z) => (
-            <div key={z.id} style={{
-              position: "absolute", left: `${(z.rect.x / mapa.ancho) * 100}%`, top: `${(z.rect.y / mapa.alto) * 100}%`,
-              width: `${(z.rect.w / mapa.ancho) * 100}%`, height: `${(z.rect.h / mapa.alto) * 100}%`,
-              background: `${z.color}0d`, border: `1px dashed ${z.color}44`, boxSizing: "border-box",
-            }}>
-              <span style={{ position: "absolute", top: 4, left: 6, fontFamily: FONT_MONO, fontSize: 9, color: `${z.color}aa`, letterSpacing: 1 }}>{z.nombre.toUpperCase()}</span>
-            </div>
-          ))}
-          {mapa.props.map((p) => (
-            <div key={p.id} style={{ position: "absolute", left: `${(p.x / mapa.ancho) * 100}%`, top: `${(p.y / mapa.alto) * 100}%`, transform: "translate(-50%, -50%)", fontSize: 22, opacity: 0.85 }}>{p.icono}</div>
-          ))}
-          {mapa.tareas.map((t) => {
-            const hecha = sala.tareasHechas.includes(t.id);
-            return (
-              <div key={t.id} style={{ position: "absolute", left: `${(t.x / mapa.ancho) * 100}%`, top: `${(t.y / mapa.alto) * 100}%`, transform: "translate(-50%, -50%)", fontSize: 20, opacity: hecha ? 0.3 : 1, filter: hecha ? "grayscale(1)" : "none" }}>
-                {hecha ? "✅" : "📋"}
-              </div>
-            );
-          })}
-          <div style={{ position: "absolute", left: `${(mapa.puntoEmergencia.x / mapa.ancho) * 100}%`, top: `${(mapa.puntoEmergencia.y / mapa.alto) * 100}%`, transform: "translate(-50%, -50%)", fontSize: 22 }}>🔴</div>
-          {sala.cuerpo && (
-            <div style={{ position: "absolute", left: `${(sala.cuerpo.x / mapa.ancho) * 100}%`, top: `${(sala.cuerpo.y / mapa.alto) * 100}%`, transform: "translate(-50%, -50%)", fontSize: 22 }}>💀</div>
-          )}
-          {Object.entries(sala.jugadores).map(([id, j]) => {
-            if (!j.vivo || j.expulsado) return null;
-            if (id !== miId && j.camuflado) return null;
-            const posX = id === miId ? miPos.x : j.x;
-            const posY = id === miId ? miPos.y : j.y;
-            return (
-              <div key={id} style={{
-                position: "absolute", left: `${(posX / mapa.ancho) * 100}%`, top: `${(posY / mapa.alto) * 100}%`,
-                transform: "translate(-50%, -50%)", transition: id === miId ? "none" : "left 0.4s linear, top 0.4s linear",
-                zIndex: id === miId ? 5 : 3,
-              }}>
-                <PersonajeFeo personaje={j.personaje} size={32} oculto={id === miId && j.camuflado} etiqueta={USUARIOS_REALES.find((u) => u.id === id)?.nombre} />
-              </div>
-            );
-          })}
+      <Card style={{ marginBottom: 14, padding: 6 }}>
+        <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 10", background: "#05060a", border: `2px solid ${COLORS.neonMagenta}`, borderRadius: 8, overflow: "hidden", boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
+          <EscenaFeos3D
+            mapa={mapa}
+            miPosRef={miPosRef}
+            keysRef={keysRef}
+            activo={activo3D}
+            jugadoresRemotos={Object.entries(sala.jugadores)
+              .filter(([id, j]) => id !== miId && j.vivo && !j.expulsado && !j.camuflado)
+              .map(([id, j]) => ({ id, x: j.x, y: j.y, personaje: j.personaje, nombre: USUARIOS_REALES.find((u) => u.id === id)?.nombre || id }))}
+            cuerpo={sala.cuerpo}
+            tareas={mapa.tareas}
+            tareasHechas={sala.tareasHechas}
+            props={mapa.props}
+            puntoEmergencia={mapa.puntoEmergencia}
+            puntosSabotaje={mapa.puntosSabotaje}
+            sabotaje={sala.sabotaje}
+          />
         </div>
-
-        {estoyVivo && sala.fase === "jugando" && !misDatos.camuflado && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 46px)", gridTemplateRows: "repeat(3, 46px)", gap: 4, margin: "16px auto 0", justifyContent: "center" }}>
-            <div /><BotonDireccionFeos dir="up" keysRef={keysRef}>▲</BotonDireccionFeos><div />
-            <BotonDireccionFeos dir="left" keysRef={keysRef}>◀</BotonDireccionFeos><div /><BotonDireccionFeos dir="right" keysRef={keysRef}>▶</BotonDireccionFeos>
-            <div /><BotonDireccionFeos dir="down" keysRef={keysRef}>▼</BotonDireccionFeos><div />
-          </div>
-        )}
+        <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: COLORS.textMuted, textAlign: "center", marginTop: 6, letterSpacing: 0.5 }}>
+          {esMovil ? "Joystick para moverte · desliza a la derecha del mapa para mirar" : "WASD para moverte · clic sobre el mapa + mouse para mirar"}
+        </div>
       </Card>
 
       {estoyVivo && sala.fase === "jugando" && (
@@ -4156,13 +4587,12 @@ function LlegaronLosFeosView({ user, onVolver }) {
   );
 }
 
-
 // ---- Menú "Cúpula Games" ----
 const CUPULA_GAMES_LISTA = [
   { id: "happyweed", nombre: "Happy Weed", desc: "Estilo Flappy Bird: esquiva los portales neón con tu propia foto convertida en pajarito.", color: COLORS.neonRed },
   { id: "aura", nombre: "Batallas de Aura", desc: "Estilo Brick Breaker: rompe los bloques de energía con tu esfera de aura antes de perder tus vidas.", color: COLORS.neonBlue },
   { id: "feria", nombre: "Feria de Tiro", desc: "Galería de disparos en primera persona: dale a patos, latas y botellas antes de quedarte sin tiempo o munición.", color: COLORS.neonAmber },
-  { id: "feos", nombre: "Llegaron los Feos", desc: "Multijugador para los 5 — mueve a tu Feo con el teclado por varios mapas, camúflate como un objeto, cumple misiones y descubre (o sé) al infiltrado antes de que acabe con todos.", color: COLORS.neonMagenta },
+  { id: "feos", nombre: "Llegaron los Feos", desc: "Multijugador en 3D y primera persona para los 5 — camina por varios mapas, camúflate como un objeto, cumple misiones y descubre (o sé) al infiltrado antes de que acabe con todos.", color: COLORS.neonMagenta },
 ];
 
 function CupulaGamesView({ user }) {
