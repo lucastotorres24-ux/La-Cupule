@@ -3179,15 +3179,20 @@ function crearPowerupCabezones() {
     t: 0,
   };
 }
-function crearEstadoPartidoCabezones() {
+// opts permite ajustar la meta del partido (elegida antes de empezar): { metaGoles, duracionS }.
+// Si no se pasa nada, usa los valores por defecto de siempre (5 goles / 120s).
+function crearEstadoPartidoCabezones(opts) {
   const equipoIzq = equipoAleatorioCabezones();
   const equipoDer = equipoAleatorioCabezones(equipoIzq.nombre);
+  const metaGoles = (opts && opts.metaGoles) || CABEZONES_GOLES_PARA_GANAR;
+  const duracionS = (opts && opts.duracionS) || CABEZONES_DURACION_PARTIDO_S;
   return {
     jugadorIzq: crearJugadorCabezones("izquierda"),
     jugadorDer: crearJugadorCabezones("derecha"),
     balon: crearBalonCabezones(),
     golesIzq: 0, golesDer: 0,
-    tiempoRestante: CABEZONES_DURACION_PARTIDO_S,
+    metaGoles, duracionS,
+    tiempoRestante: duracionS,
     fase: "jugando",
     ultimoGol: null,
     ultimoGolTs: 0,
@@ -3436,7 +3441,8 @@ function avanzarPartidoCabezones(estado, dt, entradaIzq, entradaDer) {
     nuevo.balon = crearBalonCabezones();
     nuevo.powerup = null;
   }
-  if (nuevo.tiempoRestante <= 0 || nuevo.golesIzq >= CABEZONES_GOLES_PARA_GANAR || nuevo.golesDer >= CABEZONES_GOLES_PARA_GANAR) {
+  const metaGoles = nuevo.metaGoles || CABEZONES_GOLES_PARA_GANAR;
+  if (nuevo.tiempoRestante <= 0 || nuevo.golesIzq >= metaGoles || nuevo.golesDer >= metaGoles) {
     nuevo.fase = "terminado";
     nuevo.ganador = nuevo.golesIzq === nuevo.golesDer ? "empate" : (nuevo.golesIzq > nuevo.golesDer ? "izquierda" : "derecha");
   }
@@ -3884,11 +3890,11 @@ function MotorCabezones({
 }
 
 // ── Vista de una partida contra el computador (todo local, no usa Firebase) ──
-function PartidaBotCabezones({ user, colorLocal, onVolver, onTerminar }) {
-  const estadoLocalRef = useRef(crearEstadoPartidoCabezones());
+function PartidaBotCabezones({ user, colorLocal, config, onVolver, onTerminar }) {
+  const estadoLocalRef = useRef(crearEstadoPartidoCabezones(config));
   const entradaLocalRef = useRef({ izq: false, der: false, saltar: false, patear: false });
   const entradaBotRef = useRef({ izq: false, der: false, saltar: false, patear: false });
-  const [marcador, setMarcador] = useState({ golesIzq: 0, golesDer: 0, tiempoRestante: CABEZONES_DURACION_PARTIDO_S, fase: "jugando", ganador: null });
+  const [marcador, setMarcador] = useState({ golesIzq: 0, golesDer: 0, tiempoRestante: estadoLocalRef.current.tiempoRestante, fase: "jugando", ganador: null });
   const terminadoNotificadoRef = useRef(false);
 
   useEffect(() => {
@@ -3916,7 +3922,7 @@ function PartidaBotCabezones({ user, colorLocal, onVolver, onTerminar }) {
 
   const jugarDeNuevo = () => {
     terminadoNotificadoRef.current = false;
-    estadoLocalRef.current = crearEstadoPartidoCabezones();
+    estadoLocalRef.current = crearEstadoPartidoCabezones(config);
   };
   const presionar = (accion) => { entradaLocalRef.current[accion] = true; };
   const soltar = (accion) => { entradaLocalRef.current[accion] = false; };
@@ -3972,92 +3978,252 @@ function PartidaBotCabezones({ user, colorLocal, onVolver, onTerminar }) {
   );
 }
 
-// ── Vista de una partida en línea 1v1 contra otro de los 5 de la cúpula ──
-function PartidaOnlineCabezones({ user, colorLocal, onVolver, onTerminar }) {
+// ── Ajustes de partido (meta de goles / duración), elegibles antes de empezar tanto contra el
+// computador como en línea ──
+const OPCIONES_GOLES_CABEZONES = [2, 3, 5, 10];
+const OPCIONES_MINUTOS_CABEZONES = [2, 3, 5, 10];
+
+function SelectorPillCabezones({ opciones, valor, onCambiar, sufijo }) {
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {opciones.map((op) => (
+        <button key={op} onClick={() => onCambiar(op)} style={{
+          padding: "6px 12px", borderRadius: 8, cursor: "pointer",
+          border: `1.5px solid ${valor === op ? COLORS.neonMagenta : COLORS.steel}`,
+          background: valor === op ? `${COLORS.neonMagenta}22` : "transparent",
+          color: valor === op ? COLORS.white : COLORS.textMuted,
+          fontFamily: FONT_MONO, fontSize: 12, fontWeight: 700,
+        }}>{op}{sufijo}</button>
+      ))}
+    </div>
+  );
+}
+
+function AjustesPartidaCabezones({ metaGoles, duracionMin, onCambiarMeta, onCambiarDuracion }) {
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 6 }}>META DE GOLES</div>
+      <SelectorPillCabezones opciones={OPCIONES_GOLES_CABEZONES} valor={metaGoles} onCambiar={onCambiarMeta} sufijo=" goles" />
+      <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, margin: "14px 0 6px" }}>DURACIÓN MÁXIMA</div>
+      <SelectorPillCabezones opciones={OPCIONES_MINUTOS_CABEZONES} valor={duracionMin} onCambiar={onCambiarDuracion} sufijo=" min" />
+    </div>
+  );
+}
+
+// ── Salas 1v1 en línea: una sala fija POR PAREJA de usuarios (no una sola sala global) — así
+// varias parejas de la cúpula pueden jugar al mismo tiempo sin estorbarse, y elegís contra quién
+// jugar en vez de que te toque el primero que entre. Cada sala tiene su propia clave de estado y
+// de entrada (con el id de la pareja incluido) para que dos partidos simultáneos nunca se pisen. ──
+function idSalaCabezones(idA, idB) { return [idA, idB].sort().join("_"); }
+function salaVaciaCabezones() { return { jugador1Id: null, jugador2Id: null, fase: "vacio", creadaEn: Date.now(), latido: Date.now(), config: null }; }
+
+// ── Lobby: a quién de la cúpula retar. Muestra quién está en línea (late cada ~5s mientras tiene
+// abierto "No haga sino Jogar") y quién ya está jugando (y contra quién), para no toparse con una
+// sala ocupada a ciegas. ──
+function LobbyCabezones({ user, onVolver, onElegirOponente }) {
   const miId = user.id;
+  const [presencia, setPresencia] = useState({});
+  const [salas, setSalas] = useState({});
+  const [cargando, setCargando] = useState(true);
+
+  useEffect(() => {
+    let vivo = true;
+    const refrescar = async () => {
+      const [p, listaSalas] = await Promise.all([
+        fetchData(k("cabezones_presencia")),
+        Promise.all(USUARIOS_REALES.flatMap((a, i) => USUARIOS_REALES.slice(i + 1).map((b) => fetchData(k(`cabezones_sala_${idSalaCabezones(a.id, b.id)}`)).then((s) => [idSalaCabezones(a.id, b.id), s])))),
+      ]);
+      if (!vivo) return;
+      const mapaSalas = {};
+      listaSalas.forEach(([id, s]) => { if (s) mapaSalas[id] = s; });
+      setPresencia(p || {});
+      setSalas(mapaSalas);
+      setCargando(false);
+    };
+    refrescar();
+    const id = setInterval(refrescar, 3000);
+    return () => { vivo = false; clearInterval(id); };
+  }, [miId]);
+
+  const otros = USUARIOS_REALES.filter((u) => u.id !== miId);
+  const nombrePorId = (id) => (USUARIOS_REALES.find((u) => u.id === id) || {}).nombre || "";
+
+  const estadoDe = (otroId) => {
+    const enLinea = !!(presencia[otroId] && Date.now() - presencia[otroId] < 12000);
+    let jugandoContra = null;
+    Object.values(salas).forEach((s) => {
+      if (s && s.fase === "jugando" && (s.jugador1Id === otroId || s.jugador2Id === otroId)) {
+        const rivalId = s.jugador1Id === otroId ? s.jugador2Id : s.jugador1Id;
+        jugandoContra = nombrePorId(rivalId);
+      }
+    });
+    const miSala = salas[idSalaCabezones(miId, otroId)];
+    const meEstaEsperando = !!(miSala && miSala.fase === "esperando" && miSala.jugador1Id === otroId);
+    return { enLinea, jugandoContra, meEstaEsperando };
+  };
+
+  return (
+    <div>
+      <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+      <SectionTitle>¿Contra quién juegas?</SectionTitle>
+      {cargando ? (
+        <Card><div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>Cargando...</div></Card>
+      ) : (
+        otros.map((u) => {
+          const { enLinea, jugandoContra, meEstaEsperando } = estadoDe(u.id);
+          const ocupado = !!jugandoContra;
+          return (
+            <Card key={u.id} style={{ marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+              <div>
+                <div style={{ fontFamily: FONT_BODY, fontSize: 15, color: COLORS.white, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: enLinea ? COLORS.neonSuccess : COLORS.steel, display: "inline-block", flexShrink: 0 }} />
+                  {u.nombre}
+                </div>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: ocupado ? COLORS.neonAmber : meEstaEsperando ? COLORS.neonSuccess : COLORS.textMuted, marginTop: 3 }}>
+                  {ocupado ? `🔴 Jugando vs. ${jugandoContra}` : meEstaEsperando ? "¡Te está esperando para jugar!" : enLinea ? "En línea" : "Desconectado"}
+                </div>
+              </div>
+              {ocupado ? (
+                <Badge color={COLORS.textMuted}>Ocupado</Badge>
+              ) : (
+                <NeonButton active={meEstaEsperando} onClick={() => onElegirOponente(u, meEstaEsperando)}>{meEstaEsperando ? "Unirme" : "Retar"}</NeonButton>
+              )}
+            </Card>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+// ── Vista de una partida en línea 1v1 contra un rival elegido en el lobby. La sala vive bajo una
+// clave fija para esa pareja: quien la crea (jugador1) es el anfitrión de la física; el otro
+// (jugador2) solo manda sus botones y dibuja lo que el anfitrión transmite. ──
+function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, onTerminar }) {
+  const miId = user.id;
+  const roomId = idSalaCabezones(miId, oponente.id);
+  const claveSala = `cabezones_sala_${roomId}`;
+  const claveEstado = `cabezones_estado_${roomId}`;
+  const claveEntrada2 = `cabezones_entrada2_${roomId}`;
+
   const [sala, setSala] = useState(null);
   const [cargando, setCargando] = useState(true);
-  const [marcador, setMarcador] = useState({ golesIzq: 0, golesDer: 0, tiempoRestante: CABEZONES_DURACION_PARTIDO_S, fase: "esperando", ganador: null });
+  const [marcador, setMarcador] = useState({ golesIzq: 0, golesDer: 0, tiempoRestante: (configElegida && configElegida.duracionS) || CABEZONES_DURACION_PARTIDO_S, fase: "esperando", ganador: null });
   const salaRef = useRef(null);
-  const estadoLocalRef = useRef(crearEstadoPartidoCabezones());
+  const estadoLocalRef = useRef(crearEstadoPartidoCabezones(configElegida));
   const estadoRemotoRef = useRef(null);
   const entradaLocalRef = useRef({ izq: false, der: false, saltar: false, patear: false });
   const entradaOponenteRef = useRef({ izq: false, der: false, saltar: false, patear: false });
   const terminadoNotificadoRef = useRef(false);
   const estadoSembradoRef = useRef(false);
+  const estabaEnPartidaRef = useRef(false);
 
   useEffect(() => { salaRef.current = sala; }, [sala]);
 
+  // Al entrar: crea la sala si no existe/está vacía, se une como jugador2 si {oponente} ya me
+  // estaba esperando, o retoma la sala si ya estaba jugando (por ejemplo, recargó a mitad de
+  // partido). Una sala "jugando" sin latido reciente del anfitrión (>15s) se considera abandonada
+  // y se libera sola — nunca mientras de verdad se está jugando, porque el anfitrión manda un
+  // latido cada 5s todo el tiempo que dura el partido.
   useEffect(() => {
     let cancelado = false;
     (async () => {
-      let s = await fetchData(k("cabezones_sala"));
-      if (!s || s.fase === "terminado") s = { jugador1Id: null, jugador2Id: null, fase: "esperando", creadaEn: Date.now() };
-      if (!s.jugador1Id) {
-        s = { ...s, jugador1Id: miId, fase: s.jugador2Id && s.jugador2Id !== miId ? "jugando" : "esperando" };
-        await saveData(k("cabezones_sala"), s);
-      } else if (s.jugador1Id !== miId && !s.jugador2Id) {
-        s = { ...s, jugador2Id: miId, fase: "jugando" };
-        await saveData(k("cabezones_sala"), s);
+      let s = await fetchData(k(claveSala));
+      const abandonada = s && s.fase === "jugando" && Date.now() - (s.latido || s.creadaEn || 0) > 15000;
+      if (!s || s.fase === "terminado" || s.fase === "vacio" || abandonada) {
+        s = { jugador1Id: miId, jugador2Id: null, fase: "esperando", creadaEn: Date.now(), latido: Date.now(), config: configElegida || null };
+        await saveData(k(claveSala), s);
+      } else if (s.jugador1Id === oponente.id && !s.jugador2Id) {
+        s = { ...s, jugador2Id: miId, fase: "jugando", latido: Date.now() };
+        await saveData(k(claveSala), s);
+      } else if (s.jugador1Id !== miId && s.jugador2Id !== miId) {
+        s = { jugador1Id: miId, jugador2Id: null, fase: "esperando", creadaEn: Date.now(), latido: Date.now(), config: configElegida || null };
+        await saveData(k(claveSala), s);
       }
       if (cancelado) return;
       setSala(s);
       setCargando(false);
     })();
     return () => { cancelado = true; };
-  }, [miId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [miId, oponente.id]);
 
   useEffect(() => {
     const id = setInterval(async () => {
-      const s = await fetchData(k("cabezones_sala"));
+      const s = await fetchData(k(claveSala));
       if (s) setSala(s);
     }, 1000);
     return () => clearInterval(id);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId]);
 
   const soyJugador1 = !!(sala && sala.jugador1Id === miId);
   const soyJugador2 = !!(sala && sala.jugador2Id === miId);
   const enPartida = soyJugador1 || soyJugador2;
 
+  useEffect(() => { if (enPartida) estabaEnPartidaRef.current = true; }, [enPartida]);
+
+  // Latido del anfitrión cada 5s mientras se juega, para que una sala de verdad abandonada
+  // (cerró la pestaña sin avisar) se pueda liberar sola más adelante.
+  useEffect(() => {
+    if (!soyJugador1 || !sala || sala.fase !== "jugando") return;
+    const id = setInterval(() => { saveData(k(claveSala), { ...(salaRef.current || {}), latido: Date.now() }); }, 5000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soyJugador1, sala && sala.fase, roomId]);
+
   useEffect(() => {
     if (!soyJugador1 || !sala || sala.fase !== "jugando" || estadoSembradoRef.current) return;
     estadoSembradoRef.current = true;
     terminadoNotificadoRef.current = false;
-    estadoLocalRef.current = crearEstadoPartidoCabezones();
-    saveData(k("cabezones_estado"), estadoLocalRef.current);
-  }, [soyJugador1, sala && sala.fase]);
+    estadoLocalRef.current = crearEstadoPartidoCabezones(sala.config || configElegida);
+    saveData(k(claveEstado), estadoLocalRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soyJugador1, sala && sala.fase, roomId]);
 
   useEffect(() => {
     if (!soyJugador1) return;
     const id = setInterval(() => {
-      if (estadoLocalRef.current) saveData(k("cabezones_estado"), estadoLocalRef.current);
+      if (estadoLocalRef.current) saveData(k(claveEstado), estadoLocalRef.current);
     }, 110);
     return () => clearInterval(id);
-  }, [soyJugador1]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soyJugador1, roomId]);
 
   useEffect(() => {
     if (!soyJugador1) return;
     const id = setInterval(async () => {
-      const e = await fetchData(k("cabezones_entrada2"));
+      const e = await fetchData(k(claveEntrada2));
       if (e) entradaOponenteRef.current = e;
     }, 90);
     return () => clearInterval(id);
-  }, [soyJugador1]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soyJugador1, roomId]);
 
+  // Si soy invitado y en 10s nunca llega ni un solo estado del anfitrión, es que se fue antes de
+  // arrancar (o nunca estuvo) — libero la sala en vez de dejarla trabada para siempre.
   useEffect(() => {
     if (!soyJugador2) return;
+    let ultimoOk = Date.now();
     const id = setInterval(async () => {
-      const e = await fetchData(k("cabezones_estado"));
-      if (e) estadoRemotoRef.current = e;
+      const e = await fetchData(k(claveEstado));
+      if (e) { estadoRemotoRef.current = e; ultimoOk = Date.now(); }
+      else if (Date.now() - ultimoOk > 10000) {
+        const limpia = salaVaciaCabezones();
+        saveData(k(claveSala), limpia);
+        setSala(limpia);
+      }
     }, 110);
     return () => clearInterval(id);
-  }, [soyJugador2]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soyJugador2, roomId]);
 
   useEffect(() => {
     if (!soyJugador2) return;
-    const id = setInterval(() => { saveData(k("cabezones_entrada2"), entradaLocalRef.current); }, 90);
+    const id = setInterval(() => { saveData(k(claveEntrada2), entradaLocalRef.current); }, 90);
     return () => clearInterval(id);
-  }, [soyJugador2]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soyJugador2, roomId]);
 
   useEffect(() => {
     if (!enPartida) return;
@@ -4076,7 +4242,7 @@ function PartidaOnlineCabezones({ user, colorLocal, onVolver, onTerminar }) {
     if (terminadoNotificadoRef.current) return;
     terminadoNotificadoRef.current = true;
     if (soyJugador1) {
-      saveData(k("cabezones_sala"), { ...(salaRef.current || {}), fase: "terminado" });
+      saveData(k(claveSala), { ...(salaRef.current || {}), fase: "terminado" });
       onTerminar({ modo: "online", gano: estado.ganador === "empate" ? null : estado.ganador === "izquierda", golesFavor: estado.golesIzq, golesContra: estado.golesDer });
     } else if (soyJugador2) {
       onTerminar({ modo: "online", gano: estado.ganador === "empate" ? null : estado.ganador === "derecha", golesFavor: estado.golesDer, golesContra: estado.golesIzq });
@@ -4085,25 +4251,41 @@ function PartidaOnlineCabezones({ user, colorLocal, onVolver, onTerminar }) {
 
   const jugarDeNuevo = async () => {
     estadoSembradoRef.current = false;
-    const fresco = await fetchData(k("cabezones_sala"));
-    const siguiente = { ...(fresco || salaRef.current || {}), fase: "jugando" };
+    const fresco = await fetchData(k(claveSala));
+    const siguiente = { ...(fresco || salaRef.current || {}), fase: "jugando", latido: Date.now() };
     setSala(siguiente);
-    await saveData(k("cabezones_sala"), siguiente);
+    await saveData(k(claveSala), siguiente);
   };
+
+  // Salir es siempre explícito y siempre libera la sala al toque — "si nos salimos, la sesión se
+  // acabó". Mientras nadie se sale y de verdad se está jugando, nada la cierra sola (aparte del
+  // resguardo por abandono real de arriba).
   const salirDeLaSala = async () => {
-    await saveData(k("cabezones_sala"), { jugador1Id: null, jugador2Id: null, fase: "esperando", creadaEn: Date.now() });
+    const limpia = salaVaciaCabezones();
+    await saveData(k(claveSala), limpia);
     onVolver();
   };
 
+  // Resguardo: si salgo de esta pantalla por cualquier otro camino (cambiar de menú, salir de
+  // Cúpula Games, etc.) mientras sigo ocupando un puesto en la sala, la libero igual al desmontar.
+  useEffect(() => {
+    return () => {
+      const s = salaRef.current;
+      if (s && (s.jugador1Id === miId || s.jugador2Id === miId) && (s.fase === "esperando" || s.fase === "jugando")) {
+        saveData(k(claveSala), salaVaciaCabezones());
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId]);
+
   const presionar = (accion) => { entradaLocalRef.current[accion] = true; };
   const soltar = (accion) => { entradaLocalRef.current[accion] = false; };
-  const nombrePorId = (id) => (USUARIOS_REALES.find((u) => u.id === id) || {}).nombre || id;
 
   if (cargando || !sala) {
     return (
       <div>
         <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver</button>
-        <SectionTitle>No haga sino Jogar — En línea</SectionTitle>
+        <SectionTitle>No haga sino Jogar — vs. {oponente.nombre}</SectionTitle>
         <Card><div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>Conectando...</div></Card>
       </div>
     );
@@ -4113,10 +4295,10 @@ function PartidaOnlineCabezones({ user, colorLocal, onVolver, onTerminar }) {
     return (
       <div>
         <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver</button>
-        <SectionTitle>No haga sino Jogar — En línea</SectionTitle>
+        <SectionTitle>No haga sino Jogar — vs. {oponente.nombre}</SectionTitle>
         <Card>
           <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, textAlign: "center" }}>
-            Hay una partida en curso entre {nombrePorId(sala.jugador1Id)} y {nombrePorId(sala.jugador2Id)}. Espera a que termine para poder entrar.
+            {estabaEnPartidaRef.current ? `${oponente.nombre} salió de la partida. La sala quedó libre.` : "Esta sala ya no está disponible. Vuelve al lobby e intenta de nuevo."}
           </div>
         </Card>
       </div>
@@ -4124,28 +4306,30 @@ function PartidaOnlineCabezones({ user, colorLocal, onVolver, onTerminar }) {
   }
 
   if (sala.fase === "esperando") {
+    const cfg = sala.config || configElegida;
     return (
       <div>
-        <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver</button>
-        <SectionTitle>No haga sino Jogar — En línea</SectionTitle>
+        <button onClick={salirDeLaSala} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+        <SectionTitle>No haga sino Jogar — vs. {oponente.nombre}</SectionTitle>
         <Card style={{ textAlign: "center" }}>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 8 }}>Esperando a que otro de la cúpula entre a jugar...</div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 8 }}>Esperando a que {oponente.nombre} entre a jugar...</div>
           <Badge color={COLORS.neonBlue}>{user.nombre} está listo</Badge>
+          {cfg && <div style={{ marginTop: 10, fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted }}>Meta: {cfg.metaGoles || CABEZONES_GOLES_PARA_GANAR} goles · {Math.round((cfg.duracionS || CABEZONES_DURACION_PARTIDO_S) / 60)} min</div>}
         </Card>
       </div>
     );
   }
 
   const ladoLocal = soyJugador1 ? "izquierda" : "derecha";
-  const nombreIzq = nombrePorId(sala.jugador1Id);
-  const nombreDer = nombrePorId(sala.jugador2Id);
+  const nombreIzq = soyJugador1 ? user.nombre : oponente.nombre;
+  const nombreDer = soyJugador2 ? user.nombre : oponente.nombre;
   const colorIzq = soyJugador1 ? hexColorCabezones(colorLocal) : COLORS.neonBlue;
   const colorDer = soyJugador2 ? hexColorCabezones(colorLocal) : COLORS.neonRed;
 
   return (
     <div>
-      <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver</button>
-      <SectionTitle>No haga sino Jogar — En línea</SectionTitle>
+      <button onClick={salirDeLaSala} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+      <SectionTitle>No haga sino Jogar — vs. {oponente.nombre}</SectionTitle>
       <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
         <Badge color={COLORS.neonBlue}>{nombreIzq} {marcador.golesIzq} - {marcador.golesDer} {nombreDer}</Badge>
         <Badge color={COLORS.textMuted}>⏱ {Math.ceil(marcador.tiempoRestante)}s</Badge>
@@ -4198,9 +4382,13 @@ function PartidaOnlineCabezones({ user, colorLocal, onVolver, onTerminar }) {
 // ── Vista principal: hub / personalizar / reglas / elegir modo / partida ──
 function NoHagaSinoJogarView({ user, onVolver }) {
   const miId = user.id;
-  const [pantalla, setPantalla] = useState("hub"); // hub | personalizar | reglas | modo | bot | online
+  const [pantalla, setPantalla] = useState("hub"); // hub | personalizar | reglas | modo | ajustes-bot | bot | lobby | ajustes-online | sala
   const [colorLocal, setColorLocal] = useState(() => colorCabezonesGuardado(miId));
   const [record, setRecord] = useState(null);
+  const [metaGoles, setMetaGoles] = useState(CABEZONES_GOLES_PARA_GANAR);
+  const [duracionMin, setDuracionMin] = useState(CABEZONES_DURACION_PARTIDO_S / 60);
+  const [oponenteElegido, setOponenteElegido] = useState(null);
+  const configElegida = { metaGoles, duracionS: duracionMin * 60 };
 
   useEffect(() => {
     let cancelado = false;
@@ -4210,6 +4398,21 @@ function NoHagaSinoJogarView({ user, onVolver }) {
     })();
     return () => { cancelado = true; };
   }, [pantalla]);
+
+  // Presencia: mientras tenga abierta cualquier pantalla de "No haga sino Jogar" (el hub incluido)
+  // aviso cada 5s que sigo aquí, así el lobby puede mostrar quién está en línea de verdad. Al
+  // salir del juego (o de Cúpula Games) esto se detiene solo y en ~12s dejo de verse "en línea".
+  useEffect(() => {
+    let vivo = true;
+    const latir = async () => {
+      const fresco = (await fetchData(k("cabezones_presencia"))) || {};
+      if (!vivo) return;
+      await saveData(k("cabezones_presencia"), { ...fresco, [miId]: Date.now() });
+    };
+    latir();
+    const id = setInterval(latir, 5000);
+    return () => { vivo = false; clearInterval(id); };
+  }, [miId]);
 
   const cambiarColor = (colorId) => {
     setColorLocal(colorId);
@@ -4234,22 +4437,61 @@ function NoHagaSinoJogarView({ user, onVolver }) {
     setRecord(siguiente);
   };
 
+  if (pantalla === "ajustes-bot") {
+    return (
+      <div>
+        <button onClick={() => setPantalla("modo")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+        <SectionTitle>Ajustes del partido</SectionTitle>
+        <Card>
+          <AjustesPartidaCabezones metaGoles={metaGoles} duracionMin={duracionMin} onCambiarMeta={setMetaGoles} onCambiarDuracion={setDuracionMin} />
+          <NeonButton active onClick={() => setPantalla("bot")}>🎮 Empezar</NeonButton>
+        </Card>
+      </div>
+    );
+  }
   if (pantalla === "bot") {
     return (
       <PartidaBotCabezones
         user={user}
         colorLocal={colorLocal}
+        config={configElegida}
         onVolver={() => setPantalla("hub")}
         onTerminar={registrarResultado}
       />
     );
   }
-  if (pantalla === "online") {
+  if (pantalla === "lobby") {
     return (
-      <PartidaOnlineCabezones
+      <LobbyCabezones
         user={user}
+        onVolver={() => setPantalla("modo")}
+        onElegirOponente={(u, meEstaEsperando) => {
+          setOponenteElegido(u);
+          setPantalla(meEstaEsperando ? "sala" : "ajustes-online");
+        }}
+      />
+    );
+  }
+  if (pantalla === "ajustes-online" && oponenteElegido) {
+    return (
+      <div>
+        <button onClick={() => setPantalla("lobby")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+        <SectionTitle>Ajustes del partido vs. {oponenteElegido.nombre}</SectionTitle>
+        <Card>
+          <AjustesPartidaCabezones metaGoles={metaGoles} duracionMin={duracionMin} onCambiarMeta={setMetaGoles} onCambiarDuracion={setDuracionMin} />
+          <NeonButton active onClick={() => setPantalla("sala")}>🌐 Retar a {oponenteElegido.nombre}</NeonButton>
+        </Card>
+      </div>
+    );
+  }
+  if (pantalla === "sala" && oponenteElegido) {
+    return (
+      <SalaCabezones
+        user={user}
+        oponente={oponenteElegido}
         colorLocal={colorLocal}
-        onVolver={() => setPantalla("hub")}
+        configElegida={configElegida}
+        onVolver={() => setPantalla("lobby")}
         onTerminar={registrarResultado}
       />
     );
@@ -4286,11 +4528,11 @@ function NoHagaSinoJogarView({ user, onVolver }) {
         <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
         <SectionTitle>Cómo jugar</SectionTitle>
         <Card style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.textMuted, lineHeight: 1.7 }}>
-          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Meta:</b> mete más goles que tu rival antes de que se acabe el tiempo (2 minutos), o llega primero a 5 goles.</div>
-          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Moverse:</b> ◀ ▶ para correr, ⤴ para saltar, 🦵 para patear o cabecear (si el balón está arriba, se cabecea; si está abajo, se patea). En computador también funciona el teclado: A/D o flechas, W/flecha arriba para saltar, espacio/S/flecha abajo para patear.</div>
-          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Power-ups:</b> cada tanto cae un ícono a la cancha — el balón lo activa al tocarlo. ⚡ te hace más rápido, 🎈 te agranda la cabeza (más alcance de cabezazo y salto), 🔥 hace el balón más fuerte al patearlo, 🧊 congela al rival un momento.</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Meta:</b> mete más goles que tu rival antes de que se acabe el tiempo, o llega primero a la meta de goles — vos eliges ambas cosas antes de empezar (2/3/5/10 goles, 2/3/5/10 minutos).</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Moverse:</b> ◀ ▶ para correr por toda la cancha (podés atacar y defender en cualquier parte), ⤴ para saltar, 🦵 para patear o cabecear (si el balón está arriba, se cabecea; si está abajo, se patea). El travesaño del arco rebota si el balón lo toca. En computador también funciona el teclado: A/D o flechas, W/flecha arriba para saltar, espacio/S/flecha abajo para patear.</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Power-ups:</b> cada tanto aparece un ícono flotando en la cancha — se activa al tocarlo con el balón (se lo lleva quien tocó el balón por última vez) o directamente con el cuerpo (se lo lleva quien lo toque). ⚡ te hace más rápido, 🎈 te agranda la cabeza (más alcance de cabezazo y salto), 🔥 hace el balón más fuerte al patearlo, 🧊 congela al rival un momento.</div>
           <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Contra el computador:</b> juega solo, cuando quieras, sin depender de nadie más.</div>
-          <div><b style={{ color: COLORS.white }}>En línea:</b> 1 contra 1 con otro de los 5 de la cúpula, en tiempo real. Quien entra primero a la sala arma el partido; el resto espera si ya hay dos jugando.</div>
+          <div><b style={{ color: COLORS.white }}>En línea:</b> elige contra quién de la cúpula jugar desde el lobby — ahí ves quién está en línea y quién ya está jugando (y contra quién). Si retas a alguien que no está esperándote, se crea una sala solo para ustedes dos (varias parejas pueden jugar al mismo tiempo sin estorbarse). Si te sales de una partida, la sala queda libre al toque.</div>
         </Card>
       </div>
     );
@@ -4303,8 +4545,8 @@ function NoHagaSinoJogarView({ user, onVolver }) {
         <SectionTitle>¿Contra quién juegas?</SectionTitle>
         <Card style={{ textAlign: "center", padding: "28px 20px" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 280, margin: "0 auto" }}>
-            <NeonButton active onClick={() => setPantalla("bot")}>🤖 Contra el computador</NeonButton>
-            <NeonButton onClick={() => setPantalla("online")}>🌐 En línea vs. la cúpula</NeonButton>
+            <NeonButton active onClick={() => setPantalla("ajustes-bot")}>🤖 Contra el computador</NeonButton>
+            <NeonButton onClick={() => setPantalla("lobby")}>🌐 En línea vs. la cúpula</NeonButton>
           </div>
         </Card>
       </div>
