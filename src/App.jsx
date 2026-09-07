@@ -3135,12 +3135,31 @@ const CABEZONES_DURACION_PARTIDO_S = 120;
 const CABEZONES_GOLES_PARA_GANAR = 5;
 const CABEZONES_POWERUP_INTERVALO_S = 16;
 const CABEZONES_POWERUP_DURACION_S = 9;
+const CABEZONES_SUBPASOS = 3;
+const CABEZONES_TRAVESANO_GROSOR = 10;
 const CABEZONES_POWERUPS = [
-  { tipo: "velocidad", icono: "⚡", nombre: "Velocidad" },
-  { tipo: "cabezon", icono: "🎈", nombre: "Cabezón" },
-  { tipo: "fuego", icono: "🔥", nombre: "Balón de fuego" },
-  { tipo: "congelar", icono: "🧊", nombre: "Congela al rival" },
+  { tipo: "velocidad", icono: "⚡", nombre: "Velocidad", color: "#FFE94D" },
+  { tipo: "cabezon", icono: "🎈", nombre: "Cabezón", color: "#FF6FD8" },
+  { tipo: "fuego", icono: "🔥", nombre: "Balón de fuego", color: "#FF7A1A" },
+  { tipo: "congelar", icono: "🧊", nombre: "Congela al rival", color: "#7FE8FF" },
 ];
+
+// ── Camisetas de equipo random (por partido, no se elige — así como los juegos de cabezones de
+// Friv que usan equipos/selecciones al azar en cada partido) ──
+const EQUIPOS_CABEZONES = [
+  { nombre: "Rojo Furia", principal: "#D81E28", secundario: "#FFFFFF", rayas: false },
+  { nombre: "Azul Real", principal: "#1E3A8A", secundario: "#FFFFFF", rayas: false },
+  { nombre: "Verdeamarelo", principal: "#FEDD00", secundario: "#009739", rayas: false },
+  { nombre: "Albiceleste", principal: "#75AADB", secundario: "#FFFFFF", rayas: true },
+  { nombre: "Merengue", principal: "#F5F5F5", secundario: "#1E3A8A", rayas: false },
+  { nombre: "Xeneize", principal: "#0A2A66", secundario: "#FFD100", rayas: true },
+  { nombre: "Negro Total", principal: "#1B1B1F", secundario: "#D81E28", rayas: false },
+  { nombre: "Naranja Total", principal: "#FF6A13", secundario: "#1B1B1F", rayas: false },
+];
+function equipoAleatorioCabezones(evitarNombre) {
+  const opciones = evitarNombre ? EQUIPOS_CABEZONES.filter((e) => e.nombre !== evitarNombre) : EQUIPOS_CABEZONES;
+  return opciones[Math.floor(Math.random() * opciones.length)];
+}
 
 function crearJugadorCabezones(lado) {
   const x = lado === "izquierda" ? CABEZONES_ANCHO * 0.22 : CABEZONES_ANCHO * 0.78;
@@ -3149,7 +3168,20 @@ function crearJugadorCabezones(lado) {
 function crearBalonCabezones() {
   return { x: CABEZONES_ANCHO / 2, altura: 140, vAltura: 0, vx: 0, efecto: null, efectoVenceEn: 0 };
 }
+function crearPowerupCabezones() {
+  const def = CABEZONES_POWERUPS[Math.floor(Math.random() * CABEZONES_POWERUPS.length)];
+  const margen = CABEZONES_ARCO_ANCHO + 110;
+  return {
+    tipo: def.tipo,
+    x: margen + Math.random() * (CABEZONES_ANCHO - margen * 2),
+    alturaBase: 120 + Math.random() * 130,
+    altura: 0,
+    t: 0,
+  };
+}
 function crearEstadoPartidoCabezones() {
+  const equipoIzq = equipoAleatorioCabezones();
+  const equipoDer = equipoAleatorioCabezones(equipoIzq.nombre);
   return {
     jugadorIzq: crearJugadorCabezones("izquierda"),
     jugadorDer: crearJugadorCabezones("derecha"),
@@ -3163,6 +3195,7 @@ function crearEstadoPartidoCabezones() {
     powerup: null,
     powerupProximoEn: CABEZONES_POWERUP_INTERVALO_S,
     ganador: null,
+    equipoIzq, equipoDer,
   };
 }
 function clonarEstadoCabezones(estado) {
@@ -3185,13 +3218,10 @@ function moverJugadorCabezones(jugador, entrada, dt) {
   }
   jugador.x += vx * dt;
   jugador.vx = vx;
-  const mitad = CABEZONES_ANCHO / 2;
+  // Libre por toda la cancha: cada jugador puede atacar y defender en cualquier parte (antes
+  // quedaba encerrado en su propia mitad). El único límite es no meterse dentro de los arcos.
   const margenArco = CABEZONES_ARCO_ANCHO + CABEZONES_RADIO_CABEZA;
-  if (jugador.lado === "izquierda") {
-    jugador.x = Math.max(margenArco, Math.min(mitad - CABEZONES_RADIO_CABEZA, jugador.x));
-  } else {
-    jugador.x = Math.max(mitad + CABEZONES_RADIO_CABEZA, Math.min(CABEZONES_ANCHO - margenArco, jugador.x));
-  }
+  jugador.x = Math.max(margenArco, Math.min(CABEZONES_ANCHO - margenArco, jugador.x));
   if (entrada.saltar && jugador.altura === 0 && jugador.vAltura === 0 && !congelado) {
     jugador.vAltura = jugador.efecto === "cabezon" ? CABEZONES_SALTO_V * 1.08 : CABEZONES_SALTO_V;
   }
@@ -3229,6 +3259,37 @@ function revisarGolYParedes(balon) {
   return null;
 }
 
+// El travesano de cada arco ahora sí colisiona de verdad: si el balón lo toca (por arriba o por
+// abajo) rebota en vez de atravesarlo. Solo cubre la barra horizontal de arriba — el resto del
+// marco es visual, para no bloquear tiros que van limpio hacia el gol por abajo.
+function revisarColisionArco(balon) {
+  const radio = balon.efecto === "gigante" ? CABEZONES_RADIO_BALON * 1.8 : CABEZONES_RADIO_BALON;
+  const mitadGrosor = CABEZONES_TRAVESANO_GROSOR / 2;
+  [{ enBorde: 0, signo: 1 }, { enBorde: CABEZONES_ANCHO, signo: -1 }].forEach(({ enBorde, signo }) => {
+    const xPoste = enBorde + signo * CABEZONES_ARCO_ANCHO;
+    const yTravesano = CABEZONES_SUELO_Y - CABEZONES_ARCO_ALTO;
+    const ballY = CABEZONES_SUELO_Y - balon.altura;
+    const xMin = Math.min(enBorde, xPoste), xMax = Math.max(enBorde, xPoste);
+    const cercaX = Math.max(xMin, Math.min(balon.x, xMax));
+    const dxBar = balon.x - cercaX;
+    const dyBar = ballY - yTravesano;
+    const distBar = Math.hypot(dxBar, dyBar);
+    if (distBar < radio + mitadGrosor) {
+      const nx = distBar > 0.001 ? dxBar / distBar : 0;
+      const ny = distBar > 0.001 ? dyBar / distBar : (balon.vAltura > 0 ? -1 : 1);
+      const solape = (radio + mitadGrosor) - distBar;
+      balon.x += nx * solape;
+      balon.altura -= ny * solape;
+      if (Math.abs(ny) >= Math.abs(nx)) {
+        balon.vAltura = -balon.vAltura * CABEZONES_RESTITUCION;
+        if (Math.abs(balon.vAltura) < 60) balon.vAltura = ny < 0 ? 90 : -90;
+      } else {
+        balon.vx = -balon.vx * CABEZONES_RESTITUCION;
+      }
+    }
+  });
+}
+
 function resolverColisionJugadorBalon(jugador, balon) {
   const centroJugadorY = CABEZONES_SUELO_Y - jugador.altura - CABEZONES_CUERPO_CENTRO_Y;
   const centroBalonY = CABEZONES_SUELO_Y - balon.altura;
@@ -3249,6 +3310,23 @@ function resolverColisionJugadorBalon(jugador, balon) {
   return true;
 }
 
+// Empuje simple para que los dos cabezones no se atraviesen del todo ahora que comparten toda la
+// cancha (antes no hacía falta: cada uno estaba encerrado en su mitad y nunca se tocaban).
+function resolverColisionJugadorJugador(jIzq, jDer) {
+  const cyIzq = CABEZONES_SUELO_Y - jIzq.altura - CABEZONES_CUERPO_CENTRO_Y;
+  const cyDer = CABEZONES_SUELO_Y - jDer.altura - CABEZONES_CUERPO_CENTRO_Y;
+  const dx = jDer.x - jIzq.x;
+  const dy = cyDer - cyIzq;
+  const distancia = Math.hypot(dx, dy) || 0.001;
+  const radios = CABEZONES_CUERPO_RADIO * 1.7;
+  if (distancia >= radios) return;
+  const nx = dx / distancia;
+  const solape = radios - distancia;
+  const margenArco = CABEZONES_ARCO_ANCHO + CABEZONES_RADIO_CABEZA;
+  jIzq.x = Math.max(margenArco, Math.min(CABEZONES_ANCHO - margenArco, jIzq.x - nx * solape * 0.5));
+  jDer.x = Math.max(margenArco, Math.min(CABEZONES_ANCHO - margenArco, jDer.x + nx * solape * 0.5));
+}
+
 function intentarGolpe(jugador, balon) {
   if (!jugador.pateando || jugador.cooldownPatada > 0) return false;
   const centroJugadorY = CABEZONES_SUELO_Y - jugador.altura - CABEZONES_CUERPO_CENTRO_Y;
@@ -3266,9 +3344,9 @@ function intentarGolpe(jugador, balon) {
   return true;
 }
 
-function aplicarPowerupCabezones(estado, tipo) {
+function aplicarPowerupCabezones(estado, tipo, ladoBeneficiario) {
   if (tipo === "fuego") { estado.balon.efecto = "fuego"; estado.balon.efectoVenceEn = CABEZONES_POWERUP_DURACION_S; return; }
-  const jugador = estado.ultimoToque === "derecha" ? estado.jugadorDer : estado.jugadorIzq;
+  const jugador = ladoBeneficiario === "derecha" ? estado.jugadorDer : estado.jugadorIzq;
   if (tipo === "congelar") {
     const rival = jugador === estado.jugadorIzq ? estado.jugadorDer : estado.jugadorIzq;
     rival.efecto = "congelado"; rival.efectoVenceEn = 2.2;
@@ -3276,26 +3354,45 @@ function aplicarPowerupCabezones(estado, tipo) {
     jugador.efecto = tipo; jugador.efectoVenceEn = CABEZONES_POWERUP_DURACION_S;
   }
 }
+
+// Los power-ups ya no solo caen: flotan en el aire con un vaivén suave. Se activan al tocarlos
+// con el balón (se lo lleva quien tocó el balón por última vez) o directamente con el cuerpo de
+// un jugador (se lo lleva ese jugador, sin importar quién tocó el balón antes).
 function actualizarPowerupsCabezones(estado, dt) {
   if (!estado.powerup) {
     estado.powerupProximoEn -= dt;
     if (estado.powerupProximoEn <= 0) {
-      const def = CABEZONES_POWERUPS[Math.floor(Math.random() * CABEZONES_POWERUPS.length)];
-      estado.powerup = { tipo: def.tipo, x: CABEZONES_ANCHO / 2 + (Math.random() * 260 - 130), altura: CABEZONES_SUELO_Y - 40, vAltura: 0 };
+      estado.powerup = crearPowerupCabezones();
       estado.powerupProximoEn = CABEZONES_POWERUP_INTERVALO_S;
     }
     return;
   }
-  estado.powerup.vAltura -= 260 * dt;
-  estado.powerup.altura = Math.max(0, estado.powerup.altura + estado.powerup.vAltura * dt);
-  if (estado.powerup.altura === 0) estado.powerup.vAltura = 0;
-  const dx = estado.balon.x - estado.powerup.x;
-  const dy = (CABEZONES_SUELO_Y - estado.balon.altura) - (CABEZONES_SUELO_Y - estado.powerup.altura);
-  if (Math.hypot(dx, dy) < CABEZONES_RADIO_BALON + 22) {
-    aplicarPowerupCabezones(estado, estado.powerup.tipo);
+  const p = estado.powerup;
+  p.t += dt;
+  p.altura = p.alturaBase + Math.sin(p.t * 2.1) * 14;
+
+  const radioBalon = estado.balon.efecto === "gigante" ? CABEZONES_RADIO_BALON * 1.8 : CABEZONES_RADIO_BALON;
+  const dxBalon = estado.balon.x - p.x;
+  const dyBalon = (CABEZONES_SUELO_Y - estado.balon.altura) - (CABEZONES_SUELO_Y - p.altura);
+  if (Math.hypot(dxBalon, dyBalon) < radioBalon + 22) {
+    aplicarPowerupCabezones(estado, p.tipo, estado.ultimoToque || "izquierda");
     estado.powerup = null;
+    return;
+  }
+  const jugadores = [estado.jugadorIzq, estado.jugadorDer];
+  for (let i = 0; i < jugadores.length; i++) {
+    const jugador = jugadores[i];
+    const centroJugadorY = CABEZONES_SUELO_Y - jugador.altura - CABEZONES_CUERPO_CENTRO_Y;
+    const dxJ = jugador.x - p.x;
+    const dyJ = centroJugadorY - (CABEZONES_SUELO_Y - p.altura);
+    if (Math.hypot(dxJ, dyJ) < CABEZONES_CUERPO_RADIO + 20) {
+      aplicarPowerupCabezones(estado, p.tipo, jugador.lado);
+      estado.powerup = null;
+      return;
+    }
   }
 }
+
 function expirarEfectosCabezones(estado, dt) {
   [estado.jugadorIzq, estado.jugadorDer].forEach((j) => {
     if (j.efecto) { j.efectoVenceEn -= dt; if (j.efectoVenceEn <= 0) { j.efecto = null; j.efectoVenceEn = 0; } }
@@ -3304,20 +3401,29 @@ function expirarEfectosCabezones(estado, dt) {
 }
 
 // Motor principal: función pura, siempre da el mismo resultado para el mismo estado+entradas.
-// Probado frame a frame por fuera (reposo, patadas, gol forzado, rebote sobre el arco, tiempo
-// agotado, empate, recogida de cada power-up, jugador congelado, reinicio tras gol) antes de
-// integrarlo aquí.
+// Corre la física en varios submuestreos por cuadro (CABEZONES_SUBPASOS) para que un balón rápido
+// no atraviese a un jugador ni el travesano del arco entre un cuadro y el siguiente. Probado a
+// fondo por fuera (reposo, movimiento libre por toda la cancha, choque jugador-jugador, rebote en
+// el travesano, gol normal, power-up flotante recogido con el cuerpo y con el balón, colisión
+// balón-jugador confiable, tiempo agotado, estado congelado tras terminar) antes de integrarlo.
 function avanzarPartidoCabezones(estado, dt, entradaIzq, entradaDer) {
   if (estado.fase !== "jugando") return estado;
   const nuevo = clonarEstadoCabezones(estado);
-  moverJugadorCabezones(nuevo.jugadorIzq, entradaIzq, dt);
-  moverJugadorCabezones(nuevo.jugadorDer, entradaDer, dt);
-  avanzarBalonCabezones(nuevo.balon, dt);
-  if (resolverColisionJugadorBalon(nuevo.jugadorIzq, nuevo.balon)) nuevo.ultimoToque = "izquierda";
-  if (resolverColisionJugadorBalon(nuevo.jugadorDer, nuevo.balon)) nuevo.ultimoToque = "derecha";
-  if (intentarGolpe(nuevo.jugadorIzq, nuevo.balon)) nuevo.ultimoToque = "izquierda";
-  if (intentarGolpe(nuevo.jugadorDer, nuevo.balon)) nuevo.ultimoToque = "derecha";
-  const gol = revisarGolYParedes(nuevo.balon);
+  const subDt = dt / CABEZONES_SUBPASOS;
+  let gol = null;
+  for (let paso = 0; paso < CABEZONES_SUBPASOS; paso++) {
+    moverJugadorCabezones(nuevo.jugadorIzq, entradaIzq, subDt);
+    moverJugadorCabezones(nuevo.jugadorDer, entradaDer, subDt);
+    resolverColisionJugadorJugador(nuevo.jugadorIzq, nuevo.jugadorDer);
+    avanzarBalonCabezones(nuevo.balon, subDt);
+    revisarColisionArco(nuevo.balon);
+    if (resolverColisionJugadorBalon(nuevo.jugadorIzq, nuevo.balon)) nuevo.ultimoToque = "izquierda";
+    if (resolverColisionJugadorBalon(nuevo.jugadorDer, nuevo.balon)) nuevo.ultimoToque = "derecha";
+    if (intentarGolpe(nuevo.jugadorIzq, nuevo.balon)) nuevo.ultimoToque = "izquierda";
+    if (intentarGolpe(nuevo.jugadorDer, nuevo.balon)) nuevo.ultimoToque = "derecha";
+    gol = revisarGolYParedes(nuevo.balon);
+    if (gol) break;
+  }
   actualizarPowerupsCabezones(nuevo, dt);
   expirarEfectosCabezones(nuevo, dt);
   nuevo.tiempoRestante = Math.max(0, nuevo.tiempoRestante - dt);
@@ -3382,7 +3488,8 @@ function hexColorCabezones(colorId) {
 }
 
 // ── Dibujo de la cancha en <canvas> 2D (sin texturas ni imágenes — todo con formas y emoji nativo) ──
-function dibujarJugadorCabezones(ctx, jugador, colorHex, mirarDerecha) {
+function dibujarJugadorCabezones(ctx, jugador, colorHex, mirarDerecha, equipo) {
+  const eq = equipo || EQUIPOS_CABEZONES[0];
   const pies = CABEZONES_SUELO_Y - jugador.altura;
   const altoCuerpo = 58;
   const anchoCuerpo = 34;
@@ -3413,29 +3520,55 @@ function dibujarJugadorCabezones(ctx, jugador, colorHex, mirarDerecha) {
     ctx.restore();
   }
 
-  // piernas simples (dos trazos)
-  ctx.strokeStyle = colorHex;
+  // piernas + medias (color secundario del equipo) y guayos (suela oscura)
+  const piePatada = jugador.x + (jugador.pateando ? 22 : 9);
+  ctx.strokeStyle = eq.secundario;
   ctx.lineWidth = 8;
   ctx.lineCap = "round";
   ctx.beginPath();
-  ctx.moveTo(jugador.x - 9, pies - 16);
-  ctx.lineTo(jugador.x - 9, pies);
-  ctx.moveTo(jugador.x + (jugador.pateando ? 16 : 9), pies - 16);
-  ctx.lineTo(jugador.x + (jugador.pateando ? 22 : 9), pies);
+  ctx.moveTo(jugador.x - 9, pies - 18);
+  ctx.lineTo(jugador.x - 9, pies - 4);
+  ctx.moveTo(jugador.x + (jugador.pateando ? 16 : 9), pies - 18);
+  ctx.lineTo(piePatada, pies - 4);
+  ctx.stroke();
+  ctx.fillStyle = "#161616";
+  ctx.beginPath(); ctx.ellipse(jugador.x - 9, pies - 2, 7.5, 4.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(piePatada, pies - 2, 7.5, 4.5, 0, 0, Math.PI * 2); ctx.fill();
+
+  // camiseta (arriba) + pantaloneta (abajo), recortadas a la silueta redondeada del cuerpo
+  const rr = 12;
+  const trazarSilueta = () => {
+    ctx.beginPath();
+    ctx.moveTo(jugador.x - anchoCuerpo / 2 + rr, cuerpoTopY);
+    ctx.arcTo(jugador.x + anchoCuerpo / 2, cuerpoTopY, jugador.x + anchoCuerpo / 2, pies - 16, rr);
+    ctx.arcTo(jugador.x + anchoCuerpo / 2, pies - 16, jugador.x - anchoCuerpo / 2, pies - 16, rr);
+    ctx.arcTo(jugador.x - anchoCuerpo / 2, pies - 16, jugador.x - anchoCuerpo / 2, cuerpoTopY, rr);
+    ctx.closePath();
+  };
+  ctx.save();
+  trazarSilueta();
+  ctx.clip();
+  const altoTotal = (pies - 16) - cuerpoTopY;
+  const splitY = cuerpoTopY + altoTotal * 0.6;
+  ctx.fillStyle = eq.principal;
+  ctx.fillRect(jugador.x - anchoCuerpo, cuerpoTopY - 2, anchoCuerpo * 2, (splitY - cuerpoTopY) + 2);
+  if (eq.rayas) {
+    ctx.fillStyle = eq.secundario;
+    const nFranjas = 3;
+    for (let i = 0; i < nFranjas; i++) {
+      const fx = jugador.x - anchoCuerpo / 2 + (i + 0.15) * (anchoCuerpo / nFranjas);
+      ctx.fillRect(fx, cuerpoTopY - 2, (anchoCuerpo / nFranjas) * 0.4, (splitY - cuerpoTopY) + 2);
+    }
+  }
+  ctx.fillStyle = eq.secundario;
+  ctx.fillRect(jugador.x - anchoCuerpo, splitY, anchoCuerpo * 2, ((pies - 16) - splitY) + 4);
+  ctx.restore();
+  trazarSilueta();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(0,0,0,0.3)";
   ctx.stroke();
 
-  // cuerpo
-  ctx.fillStyle = colorHex;
-  const rr = 12;
-  ctx.beginPath();
-  ctx.moveTo(jugador.x - anchoCuerpo / 2 + rr, cuerpoTopY);
-  ctx.arcTo(jugador.x + anchoCuerpo / 2, cuerpoTopY, jugador.x + anchoCuerpo / 2, pies - 16, rr);
-  ctx.arcTo(jugador.x + anchoCuerpo / 2, pies - 16, jugador.x - anchoCuerpo / 2, pies - 16, rr);
-  ctx.arcTo(jugador.x - anchoCuerpo / 2, pies - 16, jugador.x - anchoCuerpo / 2, cuerpoTopY, rr);
-  ctx.closePath();
-  ctx.fill();
-
-  // cabeza
+  // cabeza (color personalizado por el jugador, elegido en "Personalizar")
   ctx.beginPath();
   ctx.arc(jugador.x, centroCabezaY, radioCabeza, 0, Math.PI * 2);
   ctx.fillStyle = colorHex;
@@ -3471,25 +3604,88 @@ function dibujarJugadorCabezones(ctx, jugador, colorHex, mirarDerecha) {
   }
 }
 
+// Balón estilo "brazuca" (inspirado en los balones multicolor de mundial, no una réplica exacta):
+// base clara + tres franjas curvas de colores que se cruzan en el centro.
+function dibujarBalonCabezones(ctx, x, y, radio, efecto) {
+  if (efecto === "fuego") {
+    const brasa = ctx.createRadialGradient(x, y, 1, x, y, radio * 1.6);
+    brasa.addColorStop(0, "#FFE29A");
+    brasa.addColorStop(0.55, "#FF7A1A");
+    brasa.addColorStop(1, "rgba(255,122,26,0)");
+    ctx.beginPath(); ctx.arc(x, y, radio * 1.6, 0, Math.PI * 2); ctx.fillStyle = brasa; ctx.fill();
+    ctx.beginPath(); ctx.arc(x, y, radio, 0, Math.PI * 2); ctx.fillStyle = "#FF7A1A"; ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.35)"; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.font = "16px sans-serif"; ctx.textAlign = "center"; ctx.fillText("🔥", x, y - radio - 8);
+    return;
+  }
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, radio, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.fillStyle = "#F4F1E4";
+  ctx.fillRect(x - radio - 1, y - radio - 1, radio * 2 + 2, radio * 2 + 2);
+  const franjas = [
+    { color: "#0BA84A", ang: 20 },
+    { color: "#FF8A00", ang: 100 },
+    { color: "#1477C6", ang: 200 },
+  ];
+  franjas.forEach(({ color, ang }) => {
+    const rad = (ang * Math.PI) / 180;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = radio * 0.58;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(x + Math.cos(rad) * radio * 1.5, y + Math.sin(rad) * radio * 1.5);
+    ctx.quadraticCurveTo(x, y, x - Math.cos(rad) * radio * 1.5, y - Math.sin(rad) * radio * 1.5);
+    ctx.stroke();
+  });
+  ctx.restore();
+  ctx.beginPath();
+  ctx.arc(x, y, radio, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(0,0,0,0.35)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x - radio * 0.35, y - radio * 0.35, radio * 0.26, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.fill();
+}
+
 function dibujarCanchaCabezones(ctx, estado, opts) {
   const { colorIzq, colorDer, nombreIzq, nombreDer } = opts;
   ctx.clearRect(0, 0, CABEZONES_ANCHO, CABEZONES_ALTO);
 
-  // cielo/grada
+  // grada con público falso (solo decorativo)
   const cielo = ctx.createLinearGradient(0, 0, 0, 95);
   cielo.addColorStop(0, "#0a0a16");
-  cielo.addColorStop(1, "#161226");
+  cielo.addColorStop(1, "#1b1730");
   ctx.fillStyle = cielo;
   ctx.fillRect(0, 0, CABEZONES_ANCHO, 95);
-  ctx.fillStyle = "rgba(255,255,255,0.05)";
-  for (let x = 0; x < CABEZONES_ANCHO; x += 22) ctx.fillRect(x, 18, 12, 46);
+  const coloresPublico = ["#3a3a52", "#4d4d6b", "#5f5f85", "#2e2e44", "#6a6a94"];
+  for (let fila = 0; fila < 3; fila++) {
+    const y = 18 + fila * 21;
+    const paso = 20;
+    const offset = (fila % 2) * (paso / 2);
+    for (let x = offset; x < CABEZONES_ANCHO; x += paso) {
+      const semilla = Math.floor(x * 0.37 + fila * 5) % coloresPublico.length;
+      ctx.fillStyle = coloresPublico[semilla];
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.fillRect(0, 90, CABEZONES_ANCHO, 5);
 
   // cancha
   const pasto = ctx.createLinearGradient(0, 95, 0, CABEZONES_ALTO);
-  pasto.addColorStop(0, "#123a1f");
+  pasto.addColorStop(0, "#153f22");
   pasto.addColorStop(1, "#0c2716");
   ctx.fillStyle = pasto;
   ctx.fillRect(0, 95, CABEZONES_ANCHO, CABEZONES_ALTO - 95);
+  // franjas de pasto cortado (solo visual)
+  ctx.fillStyle = "rgba(255,255,255,0.025)";
+  for (let x = 0; x < CABEZONES_ANCHO; x += 48) ctx.fillRect(x, 95, 24, CABEZONES_ALTO - 95);
   ctx.strokeStyle = "rgba(255,255,255,0.28)";
   ctx.lineWidth = 3;
   ctx.beginPath();
@@ -3504,11 +3700,12 @@ function dibujarCanchaCabezones(ctx, estado, opts) {
   ctx.lineTo(CABEZONES_ANCHO, CABEZONES_SUELO_Y);
   ctx.stroke();
 
-  // arcos
+  // arcos (el travesano de arriba ahora también es colisionador en la física)
   [{ enBorde: 0, signo: 1 }, { enBorde: CABEZONES_ANCHO, signo: -1 }].forEach(({ enBorde, signo }) => {
     const xPoste = enBorde + signo * CABEZONES_ARCO_ANCHO;
-    ctx.strokeStyle = "rgba(255,255,255,0.85)";
-    ctx.lineWidth = 5;
+    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    ctx.lineWidth = 6;
+    ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(enBorde, CABEZONES_SUELO_Y);
     ctx.lineTo(enBorde, CABEZONES_SUELO_Y - CABEZONES_ARCO_ALTO);
@@ -3521,43 +3718,39 @@ function dibujarCanchaCabezones(ctx, estado, opts) {
       const yy = CABEZONES_SUELO_Y - (CABEZONES_ARCO_ALTO / 5) * i;
       ctx.beginPath(); ctx.moveTo(enBorde, yy); ctx.lineTo(xPoste, yy); ctx.stroke();
     }
+    for (let i = 1; i < 3; i++) {
+      const xx = enBorde + signo * (CABEZONES_ARCO_ANCHO / 3) * i;
+      ctx.beginPath(); ctx.moveTo(xx, CABEZONES_SUELO_Y); ctx.lineTo(xx, CABEZONES_SUELO_Y - CABEZONES_ARCO_ALTO); ctx.stroke();
+    }
   });
 
-  // power-up flotante
+  // power-up flotante (con brillo del color de su efecto)
   if (estado.powerup) {
     const def = CABEZONES_POWERUPS.find((p) => p.tipo === estado.powerup.tipo) || CABEZONES_POWERUPS[0];
     const y = CABEZONES_SUELO_Y - estado.powerup.altura;
     ctx.save();
-    ctx.globalAlpha = 0.9;
-    ctx.beginPath();
-    ctx.arc(estado.powerup.x, y, 20, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255,255,255,0.12)";
-    ctx.fill();
-    ctx.font = "26px sans-serif";
+    const glow = ctx.createRadialGradient(estado.powerup.x, y, 2, estado.powerup.x, y, 24);
+    glow.addColorStop(0, `${def.color}77`);
+    glow.addColorStop(1, `${def.color}00`);
+    ctx.beginPath(); ctx.arc(estado.powerup.x, y, 24, 0, Math.PI * 2); ctx.fillStyle = glow; ctx.fill();
+    ctx.beginPath(); ctx.arc(estado.powerup.x, y, 16, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(10,10,16,0.55)"; ctx.fill();
+    ctx.strokeStyle = def.color; ctx.lineWidth = 2; ctx.stroke();
+    ctx.font = "22px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(def.icono, estado.powerup.x, y + 1);
     ctx.restore();
+    ctx.textBaseline = "alphabetic";
   }
 
-  dibujarJugadorCabezones(ctx, estado.jugadorIzq, colorIzq, true);
-  dibujarJugadorCabezones(ctx, estado.jugadorDer, colorDer, false);
+  dibujarJugadorCabezones(ctx, estado.jugadorIzq, colorIzq, true, estado.equipoIzq);
+  dibujarJugadorCabezones(ctx, estado.jugadorDer, colorDer, false, estado.equipoDer);
 
   // balón
   const balonY = CABEZONES_SUELO_Y - estado.balon.altura;
   const radioBalon = estado.balon.efecto === "gigante" ? CABEZONES_RADIO_BALON * 1.8 : CABEZONES_RADIO_BALON;
-  ctx.beginPath();
-  ctx.arc(estado.balon.x, balonY, radioBalon, 0, Math.PI * 2);
-  ctx.fillStyle = estado.balon.efecto === "fuego" ? "#FF7A1A" : "#f4f4f4";
-  ctx.fill();
-  ctx.strokeStyle = "rgba(0,0,0,0.35)";
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-  if (estado.balon.efecto === "fuego") {
-    ctx.font = "16px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("🔥", estado.balon.x, balonY - radioBalon - 8);
-  }
+  dibujarBalonCabezones(ctx, estado.balon.x, balonY, radioBalon, estado.balon.efecto);
 
   // nombres bajo cada jugador
   ctx.font = "700 13px 'Courier New', monospace";
@@ -3578,18 +3771,24 @@ function dibujarCanchaCabezones(ctx, estado, opts) {
   }
 }
 
-// ── Botón de control (mover, saltar, patear) — mismo estilo press-and-hold para mouse y táctil ──
-function BotonAccionCabezones({ onPress, onRelease, children, ancho = 58, color }) {
-  const activar = (e) => { e.preventDefault(); onPress(); };
-  const desactivar = (e) => { e.preventDefault(); onRelease(); };
+// ── Botón de control (mover, saltar, patear) — mismo estilo press-and-hold para mouse y táctil,
+// con una respuesta visual clara al presionarlo (más fácil de ubicar sin mirar en celular) ──
+function BotonAccionCabezones({ onPress, onRelease, children, ancho = 62, color }) {
+  const [activo, setActivo] = useState(false);
+  const activar = (e) => { e.preventDefault(); setActivo(true); onPress(); };
+  const desactivar = (e) => { e.preventDefault(); setActivo(false); onRelease(); };
+  const c = color || COLORS.neonBlue;
   return (
     <button
       onMouseDown={activar} onMouseUp={desactivar} onMouseLeave={desactivar}
       onTouchStart={activar} onTouchEnd={desactivar} onTouchCancel={desactivar}
       style={{
-        width: ancho, height: 52, borderRadius: 10, background: COLORS.bgBase,
-        border: `2px solid ${color || COLORS.neonBlue}`, color: COLORS.white, fontSize: 20,
+        width: ancho, height: 56, borderRadius: 14,
+        background: activo ? `${c}33` : "rgba(10,10,16,0.85)",
+        border: `2px solid ${c}`, color: COLORS.white, fontSize: 22, fontWeight: 700,
         cursor: "pointer", userSelect: "none", touchAction: "none", flexShrink: 0,
+        boxShadow: activo ? `0 0 16px ${c}88, inset 0 0 10px ${c}55` : `0 0 8px ${c}33`,
+        transition: "background 0.08s, box-shadow 0.08s",
       }}
     >{children}</button>
   );
