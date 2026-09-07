@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import * as THREE from "three";
 
 // ── Conexión real y compartida a Firebase Realtime Database ──
 const FIREBASE_DB_URL = "https://the-cupule-7cd07-default-rtdb.firebaseio.com";
@@ -3103,1174 +3102,957 @@ function FeriaTiroView({ user, onVolver }) {
 }
 
 
-// ---- 4) Llegaron los Feos (multijugador 3D en primera persona: Among Us + Garry's Mod + camuflaje) ----
-// Los 5 comparten una sola sala guardada en Firebase (clave feos_sala_<DATA_VERSION>).
-// Cada quien camina en primera persona (WASD + mouse en computador, joystick + arrastre en
-// celular) por un mapa 3D, hace misiones, se puede camuflar como un objeto del escenario para
-// esconderse, y hay un infiltrado en secreto que elimina y sabotea. Reuniones + votación para
-// expulsar a quien sospechen, igual que en Among Us. Las posiciones siguen guardándose como
-// campos x/y en Firebase (y = profundidad en el mundo 3D, no "arriba"), así toda la lógica de
-// distancias, zonas y sincronización del resto de la sala funciona igual que antes.
+// ---- 4) No haga sino Jogar (fútbol de cabezones — 1 vs bot o en línea 1v1 con los de la cúpula) ----
+// Vista lateral estilo "Head Soccer" / "Big Head Football": cada quien mueve a su cabezón,
+// salta y patea/cabecea el balón hacia el arco rival. Se puede jugar solo contra un bot, o en
+// línea contra otro de los 5 de la cúpula. La física (gravedad, saltos, patadas, rebotes, goles
+// y power-ups) vive en funciones puras (probadas manualmente frame a frame antes de integrarlas
+// aquí) para que el resultado sea siempre el mismo sin importar quién la ejecute. En línea, quien
+// entra primero a la sala es el "anfitrión": es el único que corre esa física y la transmite; el
+// otro solo envía sus botones y dibuja lo que el anfitrión transmite — así el balón nunca se
+// desincroniza entre las dos pantallas.
 
-// ── Personalización del Feo ──
-const PALETA_FEOS = [
+// ── Cancha y física (unidades "de mundo" fijas: 960x400, así el tamaño relativo de todo —
+// balón, arcos, jugadores, grada— es siempre el mismo sin importar el tamaño real de pantalla) ──
+const CABEZONES_ANCHO = 960;
+const CABEZONES_ALTO = 400;
+const CABEZONES_SUELO_Y = 340;
+const CABEZONES_ARCO_ALTO = 130;
+const CABEZONES_ARCO_ANCHO = 26;
+const CABEZONES_RADIO_CABEZA = 30;
+const CABEZONES_RADIO_BALON = 14;
+const CABEZONES_CUERPO_RADIO = 34;
+const CABEZONES_CUERPO_CENTRO_Y = 48;
+const CABEZONES_GRAVEDAD = 1500;
+const CABEZONES_GRAVEDAD_BALON = 1050;
+const CABEZONES_SALTO_V = 640;
+const CABEZONES_VELOCIDAD = 300;
+const CABEZONES_RESTITUCION = 0.72;
+const CABEZONES_FRICCION_SUELO = 0.985;
+const CABEZONES_ALCANCE_GOLPE = 74;
+const CABEZONES_COOLDOWN_GOLPE = 0.32;
+const CABEZONES_DURACION_PARTIDO_S = 120;
+const CABEZONES_GOLES_PARA_GANAR = 5;
+const CABEZONES_POWERUP_INTERVALO_S = 16;
+const CABEZONES_POWERUP_DURACION_S = 9;
+const CABEZONES_POWERUPS = [
+  { tipo: "velocidad", icono: "⚡", nombre: "Velocidad" },
+  { tipo: "cabezon", icono: "🎈", nombre: "Cabezón" },
+  { tipo: "fuego", icono: "🔥", nombre: "Balón de fuego" },
+  { tipo: "congelar", icono: "🧊", nombre: "Congela al rival" },
+];
+
+function crearJugadorCabezones(lado) {
+  const x = lado === "izquierda" ? CABEZONES_ANCHO * 0.22 : CABEZONES_ANCHO * 0.78;
+  return { lado, x, vx: 0, altura: 0, vAltura: 0, pateando: false, cooldownPatada: 0, efecto: null, efectoVenceEn: 0 };
+}
+function crearBalonCabezones() {
+  return { x: CABEZONES_ANCHO / 2, altura: 140, vAltura: 0, vx: 0, efecto: null, efectoVenceEn: 0 };
+}
+function crearEstadoPartidoCabezones() {
+  return {
+    jugadorIzq: crearJugadorCabezones("izquierda"),
+    jugadorDer: crearJugadorCabezones("derecha"),
+    balon: crearBalonCabezones(),
+    golesIzq: 0, golesDer: 0,
+    tiempoRestante: CABEZONES_DURACION_PARTIDO_S,
+    fase: "jugando",
+    ultimoGol: null,
+    ultimoGolTs: 0,
+    ultimoToque: null,
+    powerup: null,
+    powerupProximoEn: CABEZONES_POWERUP_INTERVALO_S,
+    ganador: null,
+  };
+}
+function clonarEstadoCabezones(estado) {
+  return {
+    ...estado,
+    jugadorIzq: { ...estado.jugadorIzq },
+    jugadorDer: { ...estado.jugadorDer },
+    balon: { ...estado.balon },
+    powerup: estado.powerup ? { ...estado.powerup } : null,
+  };
+}
+
+function moverJugadorCabezones(jugador, entrada, dt) {
+  const congelado = jugador.efecto === "congelado";
+  const velocidadBase = jugador.efecto === "velocidad" ? CABEZONES_VELOCIDAD * 1.55 : CABEZONES_VELOCIDAD;
+  let vx = 0;
+  if (!congelado) {
+    if (entrada.izq) vx -= velocidadBase;
+    if (entrada.der) vx += velocidadBase;
+  }
+  jugador.x += vx * dt;
+  jugador.vx = vx;
+  const mitad = CABEZONES_ANCHO / 2;
+  const margenArco = CABEZONES_ARCO_ANCHO + CABEZONES_RADIO_CABEZA;
+  if (jugador.lado === "izquierda") {
+    jugador.x = Math.max(margenArco, Math.min(mitad - CABEZONES_RADIO_CABEZA, jugador.x));
+  } else {
+    jugador.x = Math.max(mitad + CABEZONES_RADIO_CABEZA, Math.min(CABEZONES_ANCHO - margenArco, jugador.x));
+  }
+  if (entrada.saltar && jugador.altura === 0 && jugador.vAltura === 0 && !congelado) {
+    jugador.vAltura = jugador.efecto === "cabezon" ? CABEZONES_SALTO_V * 1.08 : CABEZONES_SALTO_V;
+  }
+  jugador.vAltura -= CABEZONES_GRAVEDAD * dt;
+  jugador.altura += jugador.vAltura * dt;
+  if (jugador.altura <= 0) { jugador.altura = 0; jugador.vAltura = 0; }
+  if (jugador.cooldownPatada > 0) jugador.cooldownPatada = Math.max(0, jugador.cooldownPatada - dt);
+  jugador.pateando = !!(entrada.patear && jugador.cooldownPatada <= 0 && !congelado);
+}
+
+function avanzarBalonCabezones(balon, dt) {
+  balon.vAltura -= CABEZONES_GRAVEDAD_BALON * dt;
+  balon.altura += balon.vAltura * dt;
+  balon.x += balon.vx * dt;
+  if (balon.altura <= 0) {
+    balon.altura = 0;
+    balon.vAltura = Math.abs(balon.vAltura) > 40 ? -balon.vAltura * CABEZONES_RESTITUCION : 0;
+    balon.vx *= CABEZONES_FRICCION_SUELO;
+  }
+  const alturaMax = CABEZONES_SUELO_Y - 20;
+  if (balon.altura > alturaMax) { balon.altura = alturaMax; balon.vAltura = -Math.abs(balon.vAltura) * 0.5; }
+}
+
+function revisarGolYParedes(balon) {
+  const radio = balon.efecto === "gigante" ? CABEZONES_RADIO_BALON * 1.8 : CABEZONES_RADIO_BALON;
+  const enVentanaGol = balon.altura < CABEZONES_ARCO_ALTO;
+  if (balon.x - radio < 0) {
+    if (enVentanaGol) return "derecha";
+    balon.x = radio; balon.vx = Math.abs(balon.vx) * CABEZONES_RESTITUCION;
+  }
+  if (balon.x + radio > CABEZONES_ANCHO) {
+    if (enVentanaGol) return "izquierda";
+    balon.x = CABEZONES_ANCHO - radio; balon.vx = -Math.abs(balon.vx) * CABEZONES_RESTITUCION;
+  }
+  return null;
+}
+
+function resolverColisionJugadorBalon(jugador, balon) {
+  const centroJugadorY = CABEZONES_SUELO_Y - jugador.altura - CABEZONES_CUERPO_CENTRO_Y;
+  const centroBalonY = CABEZONES_SUELO_Y - balon.altura;
+  const radioBalon = balon.efecto === "gigante" ? CABEZONES_RADIO_BALON * 1.8 : CABEZONES_RADIO_BALON;
+  const dx = balon.x - jugador.x;
+  const dy = centroBalonY - centroJugadorY;
+  const distancia = Math.hypot(dx, dy) || 0.001;
+  const radios = CABEZONES_CUERPO_RADIO + radioBalon;
+  if (distancia >= radios) return false;
+  const nx = dx / distancia, ny = dy / distancia;
+  const solape = radios - distancia;
+  balon.x += nx * solape;
+  const nuevoCentroBalonY = centroBalonY + ny * solape;
+  balon.altura = CABEZONES_SUELO_Y - nuevoCentroBalonY;
+  const impulso = 260;
+  balon.vx = nx * impulso + jugador.vx * 0.5;
+  balon.vAltura = Math.max(balon.vAltura, -ny * impulso * 0.6);
+  return true;
+}
+
+function intentarGolpe(jugador, balon) {
+  if (!jugador.pateando || jugador.cooldownPatada > 0) return false;
+  const centroJugadorY = CABEZONES_SUELO_Y - jugador.altura - CABEZONES_CUERPO_CENTRO_Y;
+  const centroBalonY = CABEZONES_SUELO_Y - balon.altura;
+  const dx = balon.x - jugador.x;
+  const dy = centroBalonY - centroJugadorY;
+  const distancia = Math.hypot(dx, dy);
+  if (distancia > CABEZONES_ALCANCE_GOLPE) return false;
+  const haciaArco = jugador.lado === "izquierda" ? 1 : -1;
+  const esCabezazo = dy < -20;
+  const fuerzaX = (jugador.efecto === "fuego" || balon.efecto === "fuego") ? 900 : 760;
+  balon.vx = haciaArco * fuerzaX + jugador.vx * 0.3;
+  balon.vAltura = esCabezazo ? 260 : 480;
+  jugador.cooldownPatada = CABEZONES_COOLDOWN_GOLPE;
+  return true;
+}
+
+function aplicarPowerupCabezones(estado, tipo) {
+  if (tipo === "fuego") { estado.balon.efecto = "fuego"; estado.balon.efectoVenceEn = CABEZONES_POWERUP_DURACION_S; return; }
+  const jugador = estado.ultimoToque === "derecha" ? estado.jugadorDer : estado.jugadorIzq;
+  if (tipo === "congelar") {
+    const rival = jugador === estado.jugadorIzq ? estado.jugadorDer : estado.jugadorIzq;
+    rival.efecto = "congelado"; rival.efectoVenceEn = 2.2;
+  } else {
+    jugador.efecto = tipo; jugador.efectoVenceEn = CABEZONES_POWERUP_DURACION_S;
+  }
+}
+function actualizarPowerupsCabezones(estado, dt) {
+  if (!estado.powerup) {
+    estado.powerupProximoEn -= dt;
+    if (estado.powerupProximoEn <= 0) {
+      const def = CABEZONES_POWERUPS[Math.floor(Math.random() * CABEZONES_POWERUPS.length)];
+      estado.powerup = { tipo: def.tipo, x: CABEZONES_ANCHO / 2 + (Math.random() * 260 - 130), altura: CABEZONES_SUELO_Y - 40, vAltura: 0 };
+      estado.powerupProximoEn = CABEZONES_POWERUP_INTERVALO_S;
+    }
+    return;
+  }
+  estado.powerup.vAltura -= 260 * dt;
+  estado.powerup.altura = Math.max(0, estado.powerup.altura + estado.powerup.vAltura * dt);
+  if (estado.powerup.altura === 0) estado.powerup.vAltura = 0;
+  const dx = estado.balon.x - estado.powerup.x;
+  const dy = (CABEZONES_SUELO_Y - estado.balon.altura) - (CABEZONES_SUELO_Y - estado.powerup.altura);
+  if (Math.hypot(dx, dy) < CABEZONES_RADIO_BALON + 22) {
+    aplicarPowerupCabezones(estado, estado.powerup.tipo);
+    estado.powerup = null;
+  }
+}
+function expirarEfectosCabezones(estado, dt) {
+  [estado.jugadorIzq, estado.jugadorDer].forEach((j) => {
+    if (j.efecto) { j.efectoVenceEn -= dt; if (j.efectoVenceEn <= 0) { j.efecto = null; j.efectoVenceEn = 0; } }
+  });
+  if (estado.balon.efecto) { estado.balon.efectoVenceEn -= dt; if (estado.balon.efectoVenceEn <= 0) { estado.balon.efecto = null; estado.balon.efectoVenceEn = 0; } }
+}
+
+// Motor principal: función pura, siempre da el mismo resultado para el mismo estado+entradas.
+// Probado frame a frame por fuera (reposo, patadas, gol forzado, rebote sobre el arco, tiempo
+// agotado, empate, recogida de cada power-up, jugador congelado, reinicio tras gol) antes de
+// integrarlo aquí.
+function avanzarPartidoCabezones(estado, dt, entradaIzq, entradaDer) {
+  if (estado.fase !== "jugando") return estado;
+  const nuevo = clonarEstadoCabezones(estado);
+  moverJugadorCabezones(nuevo.jugadorIzq, entradaIzq, dt);
+  moverJugadorCabezones(nuevo.jugadorDer, entradaDer, dt);
+  avanzarBalonCabezones(nuevo.balon, dt);
+  if (resolverColisionJugadorBalon(nuevo.jugadorIzq, nuevo.balon)) nuevo.ultimoToque = "izquierda";
+  if (resolverColisionJugadorBalon(nuevo.jugadorDer, nuevo.balon)) nuevo.ultimoToque = "derecha";
+  if (intentarGolpe(nuevo.jugadorIzq, nuevo.balon)) nuevo.ultimoToque = "izquierda";
+  if (intentarGolpe(nuevo.jugadorDer, nuevo.balon)) nuevo.ultimoToque = "derecha";
+  const gol = revisarGolYParedes(nuevo.balon);
+  actualizarPowerupsCabezones(nuevo, dt);
+  expirarEfectosCabezones(nuevo, dt);
+  nuevo.tiempoRestante = Math.max(0, nuevo.tiempoRestante - dt);
+  if (gol) {
+    if (gol === "derecha") nuevo.golesDer += 1; else nuevo.golesIzq += 1;
+    nuevo.ultimoGol = gol;
+    nuevo.ultimoGolTs = Date.now();
+    nuevo.jugadorIzq = crearJugadorCabezones("izquierda");
+    nuevo.jugadorDer = crearJugadorCabezones("derecha");
+    nuevo.balon = crearBalonCabezones();
+    nuevo.powerup = null;
+  }
+  if (nuevo.tiempoRestante <= 0 || nuevo.golesIzq >= CABEZONES_GOLES_PARA_GANAR || nuevo.golesDer >= CABEZONES_GOLES_PARA_GANAR) {
+    nuevo.fase = "terminado";
+    nuevo.ganador = nuevo.golesIzq === nuevo.golesDer ? "empate" : (nuevo.golesIzq > nuevo.golesDer ? "izquierda" : "derecha");
+  }
+  return nuevo;
+}
+
+// IA sencilla del bot (siempre juega en el lado derecho): persigue el balón en X, patea/cabecea
+// cuando está a su alcance y a veces salta si el balón le viene por el aire. Se llama unas 10
+// veces por segundo (no cada cuadro) para que no reaccione de forma sobrehumana.
+function decidirEntradaBotCabezones(estado) {
+  const jugador = estado.jugadorDer;
+  const balon = estado.balon;
+  const distX = balon.x - jugador.x;
+  const zonaMuerta = 16;
+  const entrada = { izq: false, der: false, saltar: false, patear: false };
+  if (distX > zonaMuerta) entrada.der = true;
+  else if (distX < -zonaMuerta) entrada.izq = true;
+  const centroJugadorY = CABEZONES_SUELO_Y - jugador.altura - CABEZONES_CUERPO_CENTRO_Y;
+  const centroBalonY = CABEZONES_SUELO_Y - balon.altura;
+  const distancia = Math.hypot(distX, centroBalonY - centroJugadorY);
+  if (distancia < CABEZONES_ALCANCE_GOLPE * 1.5) {
+    entrada.patear = true;
+    if (centroBalonY < centroJugadorY - 15 && jugador.altura === 0) entrada.saltar = true;
+  } else if (balon.vx < 0 && Math.abs(distX) < 230 && centroBalonY < centroJugadorY && jugador.altura === 0 && Math.random() < 0.5) {
+    entrada.saltar = true;
+  }
+  return entrada;
+}
+
+// ── Personalización simple: solo el color del cabezón (se guarda local por usuario) ──
+const PALETA_CABEZONES = [
   { id: "rojo", hex: "#FF1E3C" }, { id: "azul", hex: "#2FA8FF" }, { id: "verde", hex: "#3DFFA0" },
   { id: "amarillo", hex: "#FFB020" }, { id: "magenta", hex: "#FF2FD6" }, { id: "naranja", hex: "#FF7A1A" },
   { id: "morado", hex: "#9B5CFF" }, { id: "cyan", hex: "#2FE0D0" },
 ];
-const SOMBREROS_FEOS = [
-  { id: "ninguno", emoji: null, label: "Sin sombrero" },
-  { id: "gorra", emoji: "🧢", label: "Gorra" },
-  { id: "copa", emoji: "🎩", label: "Copa" },
-  { id: "corona", emoji: "👑", label: "Corona" },
-  { id: "graduacion", emoji: "🎓", label: "Birrete" },
-  { id: "casco", emoji: "🪖", label: "Casco" },
-  { id: "helado", emoji: "🍦", label: "Cono" },
-];
-const CARAS_FEOS = [
-  { id: "feliz", emoji: "😀" }, { id: "cool", emoji: "😎" }, { id: "loco", emoji: "🤪" },
-  { id: "asustado", emoji: "😱" }, { id: "picaro", emoji: "😏" }, { id: "monstruo", emoji: "👹" },
-];
-function hashCadenaFeos(str) { let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return Math.abs(h); }
-function personajeAleatorioFeos(seedId) {
-  const idx = hashCadenaFeos(String(seedId));
-  return { color: PALETA_FEOS[idx % PALETA_FEOS.length].id, sombrero: "ninguno", cara: CARAS_FEOS[Math.floor(idx / 7) % CARAS_FEOS.length].id };
-}
-function cargarPersonajeFeosGuardado(userId) {
+function colorCabezonesGuardado(userId) {
   try {
-    const raw = localStorage.getItem(`cupula_feo_personaje_${userId}`);
-    if (raw) { const p = JSON.parse(raw); if (p && p.color) return p; }
+    const raw = localStorage.getItem(`cupula_cabezones_color_${userId}`);
+    if (raw && PALETA_CABEZONES.some((c) => c.id === raw)) return raw;
   } catch (e) {}
-  return personajeAleatorioFeos(userId);
+  const idx = Math.abs(String(userId).split("").reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0));
+  return PALETA_CABEZONES[idx % PALETA_CABEZONES.length].id;
 }
-function guardarPersonajeFeosLocal(userId, personaje) {
-  try { localStorage.setItem(`cupula_feo_personaje_${userId}`, JSON.stringify(personaje)); } catch (e) {}
+function guardarColorCabezonesLocal(userId, colorId) {
+  try { localStorage.setItem(`cupula_cabezones_color_${userId}`, colorId); } catch (e) {}
 }
-
-function PersonajeFeo({ personaje, size = 46, oculto, etiqueta }) {
-  const p = personaje || personajeAleatorioFeos("x");
-  const color = (PALETA_FEOS.find((c) => c.id === p.color) || PALETA_FEOS[0]).hex;
-  const sombrero = SOMBREROS_FEOS.find((s) => s.id === p.sombrero) || SOMBREROS_FEOS[0];
-  const cara = CARAS_FEOS.find((c) => c.id === p.cara) || CARAS_FEOS[0];
-  return (
-    <div style={{ position: "relative", width: size, height: size, opacity: oculto ? 0.35 : 1 }}>
-      <div style={{
-        width: size, height: size, borderRadius: "45% 45% 50% 50% / 55% 55% 60% 60%",
-        background: `radial-gradient(circle at 35% 30%, ${color}ee, ${color}99 75%)`,
-        border: `2px solid ${color}`, boxShadow: `0 0 10px ${color}88`,
-        display: "flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box",
-      }}>
-        <span style={{ fontSize: size * 0.5, lineHeight: 1 }}>{cara.emoji}</span>
-      </div>
-      {sombrero.emoji && (
-        <span style={{ position: "absolute", top: -size * 0.34, left: "50%", transform: "translateX(-50%)", fontSize: size * 0.42 }}>{sombrero.emoji}</span>
-      )}
-      {etiqueta && (
-        <div style={{ position: "absolute", top: size + 2, left: "50%", transform: "translateX(-50%)", whiteSpace: "nowrap", fontFamily: FONT_MONO, fontSize: 9, color: COLORS.white, background: "rgba(0,0,0,0.65)", padding: "1px 5px", borderRadius: 3, pointerEvents: "none" }}>{etiqueta}</div>
-      )}
-    </div>
-  );
+function hexColorCabezones(colorId) {
+  return (PALETA_CABEZONES.find((c) => c.id === colorId) || PALETA_CABEZONES[0]).hex;
 }
 
-// ── Mundo 3D: constantes físicas ──
-const FEOS_EYE_ALTURA = 1.65;
-const FEOS_RADIO_JUGADOR = 0.42;
-const FEOS_VELOCIDAD = 5.2; // unidades del mundo por segundo
-const FEOS_ALTURA_MURO = 3.2;
+// ── Dibujo de la cancha en <canvas> 2D (sin texturas ni imágenes — todo con formas y emoji nativo) ──
+function dibujarJugadorCabezones(ctx, jugador, colorHex, mirarDerecha) {
+  const pies = CABEZONES_SUELO_Y - jugador.altura;
+  const altoCuerpo = 58;
+  const anchoCuerpo = 34;
+  const cuerpoTopY = pies - altoCuerpo;
+  const centroCabezaY = cuerpoTopY - CABEZONES_RADIO_CABEZA * 0.55;
+  const radioCabeza = jugador.efecto === "cabezon" ? CABEZONES_RADIO_CABEZA * 1.35 : CABEZONES_RADIO_CABEZA;
 
-// ── Colisión (funciones puras, círculo del jugador contra cajas AABB) ──
-function circuloChocaConRectFeos(cx, cy, radio, rect) {
-  const rx0 = rect.x, ry0 = rect.y, rx1 = rect.x + rect.w, ry1 = rect.y + rect.h;
-  const cercaX = Math.max(rx0, Math.min(cx, rx1));
-  const cercaY = Math.max(ry0, Math.min(cy, ry1));
-  const dx = cx - cercaX, dy = cy - cercaY;
-  return dx * dx + dy * dy < radio * radio;
-}
-function colisionaConMurosFeos(muros, x, y, radio) {
-  for (let i = 0; i < muros.length; i++) if (circuloChocaConRectFeos(x, y, radio, muros[i])) return true;
-  return false;
-}
-// Movimiento separado por eje para poder "deslizarse" a lo largo de un muro en vez de trabarse.
-function resolverMovimientoFeos(muros, actual, dx, dy, radio, limiteX, limiteY) {
-  let nx = actual.x, ny = actual.y;
-  const intentoX = nx + dx;
-  if (!colisionaConMurosFeos(muros, intentoX, ny, radio)) nx = intentoX;
-  const intentoY = ny + dy;
-  if (!colisionaConMurosFeos(muros, nx, intentoY, radio)) ny = intentoY;
-  nx = Math.max(radio, Math.min(limiteX - radio, nx));
-  ny = Math.max(radio, Math.min(limiteY - radio, ny));
-  return { x: nx, y: ny };
-}
+  if (jugador.efecto === "congelado") {
+    ctx.save();
+    ctx.globalAlpha = 0.4;
+    ctx.fillStyle = "#bfe9ff";
+    ctx.beginPath();
+    ctx.ellipse(jugador.x, (pies + centroCabezaY) / 2, anchoCuerpo * 0.9, altoCuerpo * 0.9, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  if (jugador.efecto === "velocidad") {
+    ctx.save();
+    ctx.strokeStyle = `${colorHex}99`;
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      const dir = mirarDerecha ? -1 : 1;
+      ctx.moveTo(jugador.x + dir * (18 + i * 10), pies - 10 - i * 14);
+      ctx.lineTo(jugador.x + dir * (34 + i * 10), pies - 10 - i * 14);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 
-// ── Mapas 3D ── (mismo "molde" de muros para los dos: perímetro + 6 obstáculos, un mapa por zona)
-const MUROS_FEOS_ESTANDAR = [
-  { x: 0, y: 0, w: 46, h: 1 }, { x: 0, y: 29, w: 46, h: 1 },
-  { x: 0, y: 0, w: 1, h: 30 }, { x: 45, y: 0, w: 1, h: 30 },
-  { x: 3, y: 3, w: 2, h: 2 }, { x: 21, y: 3, w: 2, h: 2 }, { x: 37, y: 3, w: 2, h: 2 },
-  { x: 3, y: 24, w: 2, h: 2 }, { x: 21, y: 24, w: 2, h: 2 }, { x: 37, y: 24, w: 2, h: 2 },
-];
-const MAPS_FEOS = {
-  base: {
-    id: "base", nombre: "La Base Feota", icono: "🛰", ancho: 46, alto: 30, colorAcento: COLORS.neonBlue,
-    spawn: { x: 23, y: 15 },
-    zonas: [
-      { id: "comunicaciones", nombre: "Comunicaciones", color: COLORS.neonBlue, rect: { x: 1, y: 1, w: 13, h: 13 } },
-      { id: "cafeteria", nombre: "Cafetería", color: COLORS.neonAmber, rect: { x: 16, y: 1, w: 14, h: 13 } },
-      { id: "armeria", nombre: "Armería", color: COLORS.neonMagenta, rect: { x: 32, y: 1, w: 13, h: 13 } },
-      { id: "electrico", nombre: "Eléctrico", color: COLORS.neonSuccess, rect: { x: 1, y: 16, w: 13, h: 13 } },
-      { id: "reactor", nombre: "Reactor", color: COLORS.neonRed, rect: { x: 16, y: 16, w: 14, h: 13 } },
-      { id: "navegacion", nombre: "Navegación", color: COLORS.neonBlue, rect: { x: 32, y: 16, w: 13, h: 13 } },
-    ],
-    muros: MUROS_FEOS_ESTANDAR,
-    props: [
-      { id: "p1", x: 7, y: 10, icono: "🖥" }, { id: "p2", x: 23, y: 5, icono: "☕" },
-      { id: "p3", x: 39, y: 10, icono: "🔫" }, { id: "p4", x: 7, y: 20, icono: "🧯" },
-      { id: "p5", x: 23, y: 25, icono: "🛢" }, { id: "p6", x: 39, y: 20, icono: "🧭" },
-      { id: "p7", x: 14.5, y: 15, icono: "🪴" }, { id: "p8", x: 31.5, y: 15, icono: "📦" },
-    ],
-    tareas: [
-      { id: "tk1", tipo: "cables", nombre: "Sintonizar la antena", x: 10, y: 5 },
-      { id: "tk2", tipo: "codigo", nombre: "Activar el percolador", x: 23, y: 9 },
-      { id: "tk3", tipo: "codigo", nombre: "Cargar munición", x: 39, y: 5 },
-      { id: "tk4", tipo: "cables", nombre: "Revisar fusibles", x: 5, y: 25 },
-      { id: "tk5", tipo: "escaneo", nombre: "Estabilizar el reactor", x: 23, y: 20 },
-      { id: "tk6", tipo: "escaneo", nombre: "Calibrar el rumbo", x: 39, y: 25 },
-      { id: "tk7", tipo: "cables", nombre: "Revisar el cableado", x: 11, y: 20 },
-    ],
-    puntoEmergencia: { x: 23, y: 15 },
-    puntosSabotaje: { luces: { x: 5, y: 22 }, reactor: { x: 28, y: 20 } },
-    sabotajeNombres: { luces: "Cortan la luz", reactor: "Reactor crítico" },
-  },
-  mall: {
-    id: "mall", nombre: "El Centro Comercial Feota", icono: "🛍", ancho: 46, alto: 30, colorAcento: COLORS.neonMagenta,
-    spawn: { x: 12, y: 15 },
-    zonas: [
-      { id: "comida", nombre: "Zona de Comida", color: COLORS.neonAmber, rect: { x: 1, y: 1, w: 13, h: 13 } },
-      { id: "ropa", nombre: "Tienda de Ropa", color: COLORS.neonMagenta, rect: { x: 16, y: 1, w: 14, h: 13 } },
-      { id: "juegos", nombre: "Sala de Juegos", color: COLORS.neonBlue, rect: { x: 32, y: 1, w: 13, h: 13 } },
-      { id: "seguridad", nombre: "Cuarto de Seguridad", color: COLORS.neonRed, rect: { x: 1, y: 16, w: 13, h: 13 } },
-      { id: "fuente", nombre: "Fuente Central", color: COLORS.neonSuccess, rect: { x: 16, y: 16, w: 14, h: 13 } },
-      { id: "bodega", nombre: "Bodega", color: COLORS.neonAmber, rect: { x: 32, y: 16, w: 13, h: 13 } },
-    ],
-    muros: MUROS_FEOS_ESTANDAR,
-    props: [
-      { id: "p1", x: 7, y: 10, icono: "🍿" }, { id: "p2", x: 23, y: 5, icono: "👗" },
-      { id: "p3", x: 39, y: 10, icono: "🕹" }, { id: "p4", x: 7, y: 20, icono: "🎥" },
-      { id: "p5", x: 23, y: 25, icono: "⛲" }, { id: "p6", x: 39, y: 20, icono: "📦" },
-      { id: "p7", x: 14.5, y: 15, icono: "🧸" }, { id: "p8", x: 31.5, y: 15, icono: "🛍" },
-    ],
-    tareas: [
-      { id: "tk1", tipo: "codigo", nombre: "Freír las papas sin quemarlas", x: 10, y: 5 },
-      { id: "tk2", tipo: "cables", nombre: "Desenredar las luces navideñas", x: 23, y: 9 },
-      { id: "tk3", tipo: "escaneo", nombre: "Ganarle a la máquina de garra", x: 39, y: 5 },
-      { id: "tk4", tipo: "cables", nombre: "Reconectar las cámaras", x: 5, y: 25 },
-      { id: "tk5", tipo: "codigo", nombre: "Arreglar la caja registradora", x: 23, y: 20 },
-      { id: "tk6", tipo: "escaneo", nombre: "Contar las cajas de bodega", x: 39, y: 25 },
-      { id: "tk7", tipo: "codigo", nombre: "Resetear la alarma", x: 11, y: 20 },
-    ],
-    puntoEmergencia: { x: 23, y: 15 },
-    puntosSabotaje: { luces: { x: 5, y: 22 }, reactor: { x: 39, y: 22 } },
-    sabotajeNombres: { luces: "Apagón general", reactor: "Fuga de gas en la Bodega" },
-  },
-};
-const MAPS_FEOS_LISTA = [MAPS_FEOS.base, MAPS_FEOS.mall];
+  // piernas simples (dos trazos)
+  ctx.strokeStyle = colorHex;
+  ctx.lineWidth = 8;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(jugador.x - 9, pies - 16);
+  ctx.lineTo(jugador.x - 9, pies);
+  ctx.moveTo(jugador.x + (jugador.pateando ? 16 : 9), pies - 16);
+  ctx.lineTo(jugador.x + (jugador.pateando ? 22 : 9), pies);
+  ctx.stroke();
 
-function distanciaFeos(a, b) { const dx = a.x - b.x, dy = a.y - b.y; return Math.sqrt(dx * dx + dy * dy); }
+  // cuerpo
+  ctx.fillStyle = colorHex;
+  const rr = 12;
+  ctx.beginPath();
+  ctx.moveTo(jugador.x - anchoCuerpo / 2 + rr, cuerpoTopY);
+  ctx.arcTo(jugador.x + anchoCuerpo / 2, cuerpoTopY, jugador.x + anchoCuerpo / 2, pies - 16, rr);
+  ctx.arcTo(jugador.x + anchoCuerpo / 2, pies - 16, jugador.x - anchoCuerpo / 2, pies - 16, rr);
+  ctx.arcTo(jugador.x - anchoCuerpo / 2, pies - 16, jugador.x - anchoCuerpo / 2, cuerpoTopY, rr);
+  ctx.closePath();
+  ctx.fill();
 
-const FEOS_INTERACT_RADIO = 3.4;
-const FEOS_KILL_COOLDOWN_MS = 18000;
-const FEOS_SABOTAJE_COOLDOWN_MS = 28000;
-const FEOS_SABOTAJE_LUCES_MS = 22000;
-const FEOS_SABOTAJE_REACTOR_MS = 38000;
-const FEOS_REUNION_MS = 35000;
-const FEOS_CAMUFLAJE_COOLDOWN_MS = 15000;
-const FEOS_CAMUFLAJE_DURACION_MS = 14000;
-const FEOS_TECLAS = { w: "up", arrowup: "up", s: "down", arrowdown: "down", a: "left", arrowleft: "left", d: "right", arrowright: "right" };
+  // cabeza
+  ctx.beginPath();
+  ctx.arc(jugador.x, centroCabezaY, radioCabeza, 0, Math.PI * 2);
+  ctx.fillStyle = colorHex;
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(0,0,0,0.25)";
+  ctx.stroke();
 
-function jugadorFeosVacio(mapa, personaje) {
-  return {
-    vivo: true, expulsado: false, x: mapa.spawn.x, y: mapa.spawn.y, personaje,
-    usoEmergencia: false, ultimoKillTs: 0, ultimoSabotajeTs: 0,
-    camuflado: false, camuflajeIcono: null, camuflajeVenceEn: 0, ultimoCamuflajeTs: 0,
-  };
-}
-function crearSalaFeosVacia() {
-  return {
-    fase: "lobby", mapaId: "base", jugadores: {}, impostores: [], numImpostores: 1, hostId: null,
-    tareasHechas: [], sabotaje: null, reunion: null, cuerpo: null, ganador: null, inicio: 0,
-  };
-}
-// Función pura: decide si ya hay un bando ganador a partir del estado actual de la sala.
-function evaluarGanadorFeos(sala) {
-  const mapa = MAPS_FEOS[sala.mapaId] || MAPS_FEOS.base;
-  const jugadores = sala.jugadores || {};
-  const ids = Object.keys(jugadores);
-  const vivos = ids.filter((id) => jugadores[id].vivo && !jugadores[id].expulsado);
-  const impVivos = vivos.filter((id) => sala.impostores.includes(id));
-  const tripVivos = vivos.filter((id) => !sala.impostores.includes(id));
-  if (sala.tareasHechas && sala.tareasHechas.length >= mapa.tareas.length) return "tripulantes";
-  if (impVivos.length === 0) return "tripulantes";
-  if (impVivos.length >= tripVivos.length) return "impostores";
-  if (sala.sabotaje && sala.sabotaje.tipo === "reactor" && Date.now() > sala.sabotaje.venceEn) return "impostores";
-  return null;
+  // cara
+  const dirCara = mirarDerecha ? 1 : -1;
+  ctx.fillStyle = "#101018";
+  ctx.beginPath();
+  ctx.arc(jugador.x + dirCara * radioCabeza * 0.32, centroCabezaY - radioCabeza * 0.08, radioCabeza * 0.11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(jugador.x - dirCara * radioCabeza * 0.05, centroCabezaY - radioCabeza * 0.1, radioCabeza * 0.11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(jugador.x + dirCara * radioCabeza * 0.15, centroCabezaY + radioCabeza * 0.32, radioCabeza * 0.22, 0, Math.PI);
+  ctx.strokeStyle = "#101018";
+  ctx.lineWidth = 2.4;
+  ctx.stroke();
+
+  if (jugador.efecto === "cabezon") {
+    ctx.font = "18px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("🎈", jugador.x, centroCabezaY - radioCabeza - 10);
+  }
+  if (jugador.efecto === "congelado") {
+    ctx.font = "18px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("🧊", jugador.x, centroCabezaY - radioCabeza - 10);
+  }
 }
 
-// ── Helpers 3D: texturas dibujadas en un <canvas> para íconos y letreros que siempre miran a la cámara ──
-function crearTexturaEmoji(emoji) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 128; canvas.height = 128;
-  const ctx = canvas.getContext("2d");
-  ctx.font = "92px sans-serif";
+function dibujarCanchaCabezones(ctx, estado, opts) {
+  const { colorIzq, colorDer, nombreIzq, nombreDer } = opts;
+  ctx.clearRect(0, 0, CABEZONES_ANCHO, CABEZONES_ALTO);
+
+  // cielo/grada
+  const cielo = ctx.createLinearGradient(0, 0, 0, 95);
+  cielo.addColorStop(0, "#0a0a16");
+  cielo.addColorStop(1, "#161226");
+  ctx.fillStyle = cielo;
+  ctx.fillRect(0, 0, CABEZONES_ANCHO, 95);
+  ctx.fillStyle = "rgba(255,255,255,0.05)";
+  for (let x = 0; x < CABEZONES_ANCHO; x += 22) ctx.fillRect(x, 18, 12, 46);
+
+  // cancha
+  const pasto = ctx.createLinearGradient(0, 95, 0, CABEZONES_ALTO);
+  pasto.addColorStop(0, "#123a1f");
+  pasto.addColorStop(1, "#0c2716");
+  ctx.fillStyle = pasto;
+  ctx.fillRect(0, 95, CABEZONES_ANCHO, CABEZONES_ALTO - 95);
+  ctx.strokeStyle = "rgba(255,255,255,0.28)";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(CABEZONES_ANCHO / 2, 95);
+  ctx.lineTo(CABEZONES_ANCHO / 2, CABEZONES_SUELO_Y);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(CABEZONES_ANCHO / 2, CABEZONES_SUELO_Y, 55, Math.PI, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, CABEZONES_SUELO_Y);
+  ctx.lineTo(CABEZONES_ANCHO, CABEZONES_SUELO_Y);
+  ctx.stroke();
+
+  // arcos
+  [{ enBorde: 0, signo: 1 }, { enBorde: CABEZONES_ANCHO, signo: -1 }].forEach(({ enBorde, signo }) => {
+    const xPoste = enBorde + signo * CABEZONES_ARCO_ANCHO;
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(enBorde, CABEZONES_SUELO_Y);
+    ctx.lineTo(enBorde, CABEZONES_SUELO_Y - CABEZONES_ARCO_ALTO);
+    ctx.lineTo(xPoste, CABEZONES_SUELO_Y - CABEZONES_ARCO_ALTO);
+    ctx.lineTo(xPoste, CABEZONES_SUELO_Y);
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 5; i++) {
+      const yy = CABEZONES_SUELO_Y - (CABEZONES_ARCO_ALTO / 5) * i;
+      ctx.beginPath(); ctx.moveTo(enBorde, yy); ctx.lineTo(xPoste, yy); ctx.stroke();
+    }
+  });
+
+  // power-up flotante
+  if (estado.powerup) {
+    const def = CABEZONES_POWERUPS.find((p) => p.tipo === estado.powerup.tipo) || CABEZONES_POWERUPS[0];
+    const y = CABEZONES_SUELO_Y - estado.powerup.altura;
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.arc(estado.powerup.x, y, 20, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.fill();
+    ctx.font = "26px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(def.icono, estado.powerup.x, y + 1);
+    ctx.restore();
+  }
+
+  dibujarJugadorCabezones(ctx, estado.jugadorIzq, colorIzq, true);
+  dibujarJugadorCabezones(ctx, estado.jugadorDer, colorDer, false);
+
+  // balón
+  const balonY = CABEZONES_SUELO_Y - estado.balon.altura;
+  const radioBalon = estado.balon.efecto === "gigante" ? CABEZONES_RADIO_BALON * 1.8 : CABEZONES_RADIO_BALON;
+  ctx.beginPath();
+  ctx.arc(estado.balon.x, balonY, radioBalon, 0, Math.PI * 2);
+  ctx.fillStyle = estado.balon.efecto === "fuego" ? "#FF7A1A" : "#f4f4f4";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.35)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  if (estado.balon.efecto === "fuego") {
+    ctx.font = "16px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("🔥", estado.balon.x, balonY - radioBalon - 8);
+  }
+
+  // nombres bajo cada jugador
+  ctx.font = "700 13px 'Courier New', monospace";
   ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(emoji || "❓", 64, 68);
-  return new THREE.CanvasTexture(canvas);
-}
-function crearSpriteEmoji(emoji, tam = 1) {
-  const mat = new THREE.SpriteMaterial({ map: crearTexturaEmoji(emoji), transparent: true, depthWrite: false });
-  const spr = new THREE.Sprite(mat);
-  spr.scale.set(tam, tam, 1);
-  return spr;
-}
-function crearSpriteEtiqueta(texto, color) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 512; canvas.height = 128;
-  const ctx = canvas.getContext("2d");
-  ctx.font = "700 52px 'Courier New', monospace";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.fillRect(16, 28, canvas.width - 32, 72);
-  ctx.fillStyle = typeof color === "string" ? color : "#ffffff";
-  ctx.fillText(texto, canvas.width / 2, 64);
-  const tex = new THREE.CanvasTexture(canvas);
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
-  const spr = new THREE.Sprite(mat);
-  spr.scale.set(2.6, 0.65, 1);
-  return spr;
+  ctx.fillStyle = "rgba(255,255,255,0.8)";
+  ctx.fillText((nombreIzq || "").toUpperCase(), estado.jugadorIzq.x, CABEZONES_SUELO_Y + 22);
+  ctx.fillText((nombreDer || "").toUpperCase(), estado.jugadorDer.x, CABEZONES_SUELO_Y + 22);
+
+  // "¡GOL!" reciente
+  if (estado.ultimoGolTs && Date.now() - estado.ultimoGolTs < 1400) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, 1 - (Date.now() - estado.ultimoGolTs) / 1400);
+    ctx.font = "900 46px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#FF2FD6";
+    ctx.fillText("¡GOL!", CABEZONES_ANCHO / 2, 160);
+    ctx.restore();
+  }
 }
 
-// ── Joystick virtual (solo celular): un círculo fijo abajo a la izquierda que reporta -1..1 en x/y ──
-function VirtualJoystickFeos({ onCambio }) {
-  const baseRef = useRef(null);
-  const [activo, setActivo] = useState(false);
-  const [pos, setPos] = useState({ x: 0, y: 0 });
-  const origenRef = useRef({ x: 0, y: 0 });
-  const idToqueRef = useRef(null);
-  const RADIO = 46;
-
-  const empezar = (e) => {
-    e.preventDefault();
-    const t = e.changedTouches ? e.changedTouches[0] : e;
-    idToqueRef.current = e.changedTouches ? t.identifier : "mouse";
-    const base = baseRef.current;
-    if (!base) return;
-    const rect = base.getBoundingClientRect();
-    origenRef.current = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    setActivo(true);
-  };
-  const mover = (e) => {
-    if (!activo) return;
-    e.preventDefault();
-    let t = null;
-    if (e.changedTouches) {
-      for (let i = 0; i < e.changedTouches.length; i++) if (e.changedTouches[i].identifier === idToqueRef.current) t = e.changedTouches[i];
-      if (!t) return;
-    } else t = e;
-    let dx = t.clientX - origenRef.current.x;
-    let dy = t.clientY - origenRef.current.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist > RADIO) { dx = (dx / dist) * RADIO; dy = (dy / dist) * RADIO; }
-    setPos({ x: dx, y: dy });
-    onCambio({ x: dx / RADIO, y: dy / RADIO });
-  };
-  const soltar = (e) => {
-    if (e && e.preventDefault) e.preventDefault();
-    setActivo(false);
-    setPos({ x: 0, y: 0 });
-    onCambio({ x: 0, y: 0 });
-    idToqueRef.current = null;
-  };
-
+// ── Botón de control (mover, saltar, patear) — mismo estilo press-and-hold para mouse y táctil ──
+function BotonAccionCabezones({ onPress, onRelease, children, ancho = 58, color }) {
+  const activar = (e) => { e.preventDefault(); onPress(); };
+  const desactivar = (e) => { e.preventDefault(); onRelease(); };
   return (
-    <div
-      ref={baseRef}
-      onTouchStart={empezar} onTouchMove={mover} onTouchEnd={soltar} onTouchCancel={soltar}
-      onMouseDown={empezar} onMouseMove={mover} onMouseUp={soltar} onMouseLeave={soltar}
+    <button
+      onMouseDown={activar} onMouseUp={desactivar} onMouseLeave={desactivar}
+      onTouchStart={activar} onTouchEnd={desactivar} onTouchCancel={desactivar}
       style={{
-        position: "absolute", left: 18, bottom: 18, width: RADIO * 2, height: RADIO * 2, borderRadius: "50%",
-        background: "rgba(10,10,20,0.45)", border: `2px solid ${COLORS.neonMagenta}66`, touchAction: "none", zIndex: 40,
+        width: ancho, height: 52, borderRadius: 10, background: COLORS.bgBase,
+        border: `2px solid ${color || COLORS.neonBlue}`, color: COLORS.white, fontSize: 20,
+        cursor: "pointer", userSelect: "none", touchAction: "none", flexShrink: 0,
       }}
-    >
-      <div style={{
-        position: "absolute", left: "50%", top: "50%", width: 40, height: 40, borderRadius: "50%",
-        background: `${COLORS.neonMagenta}55`, border: `2px solid ${COLORS.neonMagenta}`,
-        transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))`, pointerEvents: "none",
-      }} />
-    </div>
+    >{children}</button>
   );
 }
 
-function TareaEscaneo({ onCompletar, onCancelar }) {
-  const [progreso, setProgreso] = useState(0);
-  const rafRef = useRef(null);
-  const sostenerRef = useRef(false);
-  const inicioRef = useRef(0);
-  const DURACION = 2500;
-
-  const tick = () => {
-    if (!sostenerRef.current) return;
-    const p = Math.min(1, (Date.now() - inicioRef.current) / DURACION);
-    setProgreso(p);
-    if (p >= 1) { onCompletar(); return; }
-    rafRef.current = requestAnimationFrame(tick);
-  };
-  const empezar = () => {
-    sostenerRef.current = true;
-    inicioRef.current = Date.now() - progreso * DURACION;
-    rafRef.current = requestAnimationFrame(tick);
-  };
-  const soltar = () => {
-    sostenerRef.current = false;
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    setProgreso((p) => Math.max(0, p - 0.15));
-  };
-  useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
-
-  return (
-    <div style={{ textAlign: "center" }}>
-      <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 16, letterSpacing: 1 }}>MANTÉN PRESIONADO PARA ESCANEAR</div>
-      <div style={{ width: "100%", height: 14, background: COLORS.bgBase, border: `1px solid ${COLORS.steel}`, borderRadius: 8, overflow: "hidden", marginBottom: 20 }}>
-        <div style={{ width: `${progreso * 100}%`, height: "100%", background: COLORS.neonSuccess, boxShadow: `0 0 10px ${COLORS.neonSuccess}` }} />
-      </div>
-      <button
-        onMouseDown={empezar} onMouseUp={soltar} onMouseLeave={soltar}
-        onTouchStart={(e) => { e.preventDefault(); empezar(); }} onTouchEnd={(e) => { e.preventDefault(); soltar(); }}
-        style={{
-          width: 120, height: 120, borderRadius: "50%", background: `${COLORS.neonSuccess}22`,
-          border: `3px solid ${COLORS.neonSuccess}`, color: COLORS.white, fontFamily: FONT_DISPLAY, fontSize: 16,
-          letterSpacing: 1, cursor: "pointer", boxShadow: `0 0 24px ${COLORS.neonSuccess}55`, userSelect: "none",
-        }}
-      >ESCANEAR</button>
-      <div style={{ marginTop: 20 }}><NeonButton small onClick={onCancelar}>Cancelar</NeonButton></div>
-    </div>
-  );
-}
-
-function TareaCodigo({ onCompletar, onCancelar }) {
-  const [codigo] = useState(() => Array.from({ length: 4 }, () => Math.floor(Math.random() * 10)));
-  const [mostrar, setMostrar] = useState(true);
-  const [ingresado, setIngresado] = useState([]);
-  const [error, setError] = useState(false);
-
-  useEffect(() => { const t = setTimeout(() => setMostrar(false), 2200); return () => clearTimeout(t); }, []);
-
-  const tocar = (n) => {
-    const siguiente = [...ingresado, n];
-    setIngresado(siguiente);
-    if (siguiente.length === codigo.length) {
-      if (siguiente.every((d, i) => d === codigo[i])) {
-        setTimeout(onCompletar, 250);
-      } else {
-        setError(true);
-        setTimeout(() => { setIngresado([]); setError(false); }, 700);
-      }
-    }
-  };
-
-  return (
-    <div style={{ textAlign: "center" }}>
-      <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 12, letterSpacing: 1 }}>
-        {mostrar ? "MEMORIZA EL CÓDIGO" : "ESCRIBE EL CÓDIGO"}
-      </div>
-      <div style={{ display: "flex", justifyContent: "center", gap: 10, marginBottom: 22 }}>
-        {codigo.map((d, i) => (
-          <div key={i} style={{
-            width: 44, height: 54, display: "flex", alignItems: "center", justifyContent: "center",
-            fontFamily: FONT_DISPLAY, fontSize: 26, borderRadius: 6, color: error ? COLORS.neonRed : COLORS.white,
-            background: COLORS.bgBase, border: `2px solid ${error ? COLORS.neonRed : COLORS.neonBlue}`,
-          }}>
-            {mostrar ? d : (ingresado[i] !== undefined ? ingresado[i] : "")}
-          </div>
-        ))}
-      </div>
-      {!mostrar && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, maxWidth: 220, margin: "0 auto" }}>
-          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
-            <NeonButton key={n} onClick={() => tocar(n)}>{n}</NeonButton>
-          ))}
-          <div />
-          <NeonButton onClick={() => tocar(0)}>0</NeonButton>
-          <NeonButton small onClick={() => setIngresado([])}>⌫</NeonButton>
-        </div>
-      )}
-      <div style={{ marginTop: 20 }}><NeonButton small onClick={onCancelar}>Cancelar</NeonButton></div>
-    </div>
-  );
-}
-
-function TareaCables({ onCompletar, onCancelar }) {
-  const COLORES_CABLE = [COLORS.neonRed, COLORS.neonBlue, COLORS.neonSuccess, COLORS.neonAmber];
-  const [derecha] = useState(() => [...COLORES_CABLE].sort(() => Math.random() - 0.5));
-  const [conectados, setConectados] = useState({});
-  const [seleccion, setSeleccion] = useState(null);
-
-  const tocarIzquierda = (color) => { if (!conectados[color]) setSeleccion(color); };
-  const tocarDerecha = (color) => {
-    if (!seleccion || conectados[color]) return;
-    if (seleccion === color) {
-      const next = { ...conectados, [color]: true };
-      setConectados(next);
-      setSeleccion(null);
-      if (Object.keys(next).length === COLORES_CABLE.length) setTimeout(onCompletar, 300);
-    } else {
-      setSeleccion(null);
-    }
-  };
-
-  return (
-    <div>
-      <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 16, textAlign: "center", letterSpacing: 1 }}>CONECTA LOS CABLES DEL MISMO COLOR</div>
-      <div style={{ display: "flex", justifyContent: "space-between", maxWidth: 260, margin: "0 auto" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {COLORES_CABLE.map((c) => (
-            <button key={c} onClick={() => tocarIzquierda(c)} disabled={!!conectados[c]} style={{
-              width: 46, height: 30, borderRadius: 4, background: conectados[c] ? COLORS.steel : c,
-              border: seleccion === c ? `2px solid ${COLORS.white}` : "2px solid transparent",
-              opacity: conectados[c] ? 0.35 : 1, cursor: conectados[c] ? "default" : "pointer",
-            }} />
-          ))}
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {derecha.map((c, i) => (
-            <button key={c + i} onClick={() => tocarDerecha(c)} disabled={!!conectados[c]} style={{
-              width: 46, height: 30, borderRadius: 4, background: conectados[c] ? COLORS.steel : c,
-              opacity: conectados[c] ? 0.35 : 1, cursor: conectados[c] ? "default" : "pointer", border: "2px solid transparent",
-            }} />
-          ))}
-        </div>
-      </div>
-      <div style={{ marginTop: 20, textAlign: "center" }}><NeonButton small onClick={onCancelar}>Cancelar</NeonButton></div>
-    </div>
-  );
-}
-
-// ── Escena 3D en primera persona (Three.js). Recibe refs compartidos con el componente padre
-// para no duplicar el "estado de verdad": miPosRef es la posición local autoritativa (el padre
-// la sigue transmitiendo a Firebase igual que antes), keysRef son las teclas WASD/flechas ya
-// mapeadas a up/down/left/right por el padre. Esta escena solo decide QUÉ significa "adelante"
-// (según hacia dónde mira la cámara) y resuelve colisiones contra los muros del mapa. ──
-function EscenaFeos3D({
-  mapa, miPosRef, keysRef, activo, jugadoresRemotos, cuerpo, tareas, tareasHechas,
-  props: propsMapa, puntoEmergencia, puntosSabotaje, sabotaje,
+// ── Motor: corre el bucle de física/render en un <canvas> 2D. En modo "host" (bot u anfitrión en
+// línea) simula todo localmente cada cuadro; en modo "invitado" solo dibuja lo último que recibió
+// del anfitrión (más una predicción local de su propio cabezón para que se sienta responsivo). ──
+function MotorCabezones({
+  esHost, entradaLocalRef, entradaOponenteRef, estadoRemotoRef, estadoLocalRef,
+  colorIzq, colorDer, nombreIzq, nombreDer, ladoLocal, onEstadoActualizado,
 }) {
-  const isMobile = useIsMobile();
   const contenedorRef = useRef(null);
-  const canvasElRef = useRef(null);
-  const escenaObjRef = useRef(null);
-  const eulerRef = useRef(new THREE.Euler(0, 0, 0, "YXZ"));
-  const [bloqueadoUI, setBloqueadoUI] = useState(false);
-  const joyRef = useRef({ x: 0, y: 0 });
-  const activoRef = useRef(activo);
-  const jugadoresRemotosRef = useRef(jugadoresRemotos);
-  const cuerpoRef = useRef(cuerpo);
-
-  useEffect(() => { activoRef.current = activo; }, [activo]);
-  useEffect(() => { jugadoresRemotosRef.current = jugadoresRemotos; }, [jugadoresRemotos]);
-  useEffect(() => { cuerpoRef.current = cuerpo; }, [cuerpo]);
+  const canvasRef = useRef(null);
+  const posLocalPredichaRef = useRef({ x: null, altura: 0, vAltura: 0 });
 
   useEffect(() => {
     const contenedor = contenedorRef.current;
-    if (!contenedor) return;
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color("#05060a");
-    scene.fog = new THREE.Fog("#05060a", 16, Math.max(mapa.ancho, mapa.alto) * 1.2);
-
-    const camera = new THREE.PerspectiveCamera(72, 1, 0.1, 200);
-    camera.position.set(mapa.spawn.x, FEOS_EYE_ALTURA, mapa.spawn.y);
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.domElement.style.display = "block";
-    renderer.domElement.style.width = "100%";
-    renderer.domElement.style.height = "100%";
-    contenedor.innerHTML = "";
-    contenedor.appendChild(renderer.domElement);
-    canvasElRef.current = renderer.domElement;
-
-    scene.add(new THREE.HemisphereLight("#8fb8ff", "#0a0510", 0.85));
-    const dirLuz = new THREE.DirectionalLight("#ffffff", 0.5);
-    dirLuz.position.set(mapa.ancho * 0.3, 20, mapa.alto * 0.2);
-    scene.add(dirLuz);
-
-    const piso = new THREE.Mesh(
-      new THREE.PlaneGeometry(mapa.ancho + 6, mapa.alto + 6),
-      new THREE.MeshStandardMaterial({ color: "#101018", roughness: 0.95 })
-    );
-    piso.rotation.x = -Math.PI / 2;
-    piso.position.set(mapa.ancho / 2, 0, mapa.alto / 2);
-    scene.add(piso);
-
-    const techo = new THREE.Mesh(
-      new THREE.PlaneGeometry(mapa.ancho + 6, mapa.alto + 6),
-      new THREE.MeshBasicMaterial({ color: "#05060a", side: THREE.BackSide })
-    );
-    techo.rotation.x = -Math.PI / 2;
-    techo.position.set(mapa.ancho / 2, FEOS_ALTURA_MURO + 1.5, mapa.alto / 2);
-    scene.add(techo);
-
-    (mapa.zonas || []).forEach((z) => {
-      const tinte = new THREE.Mesh(
-        new THREE.PlaneGeometry(z.rect.w, z.rect.h),
-        new THREE.MeshBasicMaterial({ color: z.color, transparent: true, opacity: 0.1 })
-      );
-      tinte.rotation.x = -Math.PI / 2;
-      tinte.position.set(z.rect.x + z.rect.w / 2, 0.02, z.rect.y + z.rect.h / 2);
-      scene.add(tinte);
-
-      const luz = new THREE.PointLight(z.color, 3.2, Math.max(z.rect.w, z.rect.h) * 1.3, 2);
-      luz.position.set(z.rect.x + z.rect.w / 2, FEOS_ALTURA_MURO * 0.8, z.rect.y + z.rect.h / 2);
-      scene.add(luz);
-
-      const letrero = crearSpriteEtiqueta(z.nombre.toUpperCase(), z.color);
-      letrero.position.set(z.rect.x + z.rect.w / 2, FEOS_ALTURA_MURO - 0.3, z.rect.y + 0.4);
-      scene.add(letrero);
-    });
-
-    (mapa.muros || []).forEach((m) => {
-      const muro = new THREE.Mesh(
-        new THREE.BoxGeometry(m.w, FEOS_ALTURA_MURO, m.h),
-        new THREE.MeshStandardMaterial({ color: "#232338", roughness: 0.8, emissive: mapa.colorAcento || "#ff2fd6", emissiveIntensity: 0.06 })
-      );
-      muro.position.set(m.x + m.w / 2, FEOS_ALTURA_MURO / 2, m.y + m.h / 2);
-      scene.add(muro);
-      const borde = new THREE.LineSegments(
-        new THREE.EdgesGeometry(muro.geometry),
-        new THREE.LineBasicMaterial({ color: mapa.colorAcento || "#ff2fd6", transparent: true, opacity: 0.35 })
-      );
-      borde.position.copy(muro.position);
-      scene.add(borde);
-    });
-
-    (propsMapa || []).forEach((p) => {
-      const spr = crearSpriteEmoji(p.icono, 1.3);
-      spr.position.set(p.x, 1.3, p.y);
-      scene.add(spr);
-    });
-
-    const spritesTarea = {};
-    (tareas || []).forEach((t) => {
-      const spr = crearSpriteEmoji(tareasHechas.includes(t.id) ? "✅" : "📋", 1.1);
-      spr.userData.hecha = tareasHechas.includes(t.id);
-      spr.position.set(t.x, 1.5, t.y);
-      scene.add(spr);
-      spritesTarea[t.id] = spr;
-    });
-
-    const spriteEmergencia = crearSpriteEmoji("🔴", 1.4);
-    spriteEmergencia.position.set(puntoEmergencia.x, 1.4, puntoEmergencia.y);
-    scene.add(spriteEmergencia);
-
-    const spritesSabotaje = {};
-    Object.entries(puntosSabotaje || {}).forEach(([tipo, pt]) => {
-      const spr = crearSpriteEmoji("🔧", 1.3);
-      spr.position.set(pt.x, 1.3, pt.y);
-      spr.visible = !!(sabotaje && sabotaje.tipo === tipo);
-      scene.add(spr);
-      spritesSabotaje[tipo] = spr;
-    });
-
-    let spriteCuerpo = null;
-    const remotos = new Map();
-
-    function asegurarJugadorRemoto(j) {
-      if (remotos.has(j.id)) return remotos.get(j.id);
-      const per = j.personaje || {};
-      const color = (PALETA_FEOS.find((c) => c.id === per.color) || PALETA_FEOS[0]).hex;
-      const cara = CARAS_FEOS.find((c) => c.id === per.cara) || CARAS_FEOS[0];
-      const sombrero = SOMBREROS_FEOS.find((s) => s.id === per.sombrero) || SOMBREROS_FEOS[0];
-      const grupo = new THREE.Group();
-      const cuerpo3d = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.42, 1.1, 4, 8),
-        new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.35, roughness: 0.5 })
-      );
-      cuerpo3d.position.y = 0.95;
-      grupo.add(cuerpo3d);
-      const cara3d = crearSpriteEmoji(cara.emoji, 0.8);
-      cara3d.position.y = 1.9;
-      grupo.add(cara3d);
-      if (sombrero.emoji) {
-        const s3d = crearSpriteEmoji(sombrero.emoji, 0.6);
-        s3d.position.y = 2.2;
-        grupo.add(s3d);
-      }
-      const nombreSprite = crearSpriteEtiqueta(j.nombre || "?", "#ffffff");
-      nombreSprite.position.y = 2.55;
-      grupo.add(nombreSprite);
-      grupo.position.set(j.x, 0, j.y);
-      scene.add(grupo);
-      const entrada = { grupo, actual: { x: j.x, y: j.y }, destino: { x: j.x, y: j.y } };
-      remotos.set(j.id, entrada);
-      return entrada;
-    }
-
-    const clock = new THREE.Clock();
+    const canvas = canvasRef.current;
+    if (!contenedor || !canvas) return;
+    const ctx = canvas.getContext("2d");
     let vivo = true;
+    let ultimo = performance.now();
+    let acumuladorHud = 0;
 
     function ajustarTamano() {
-      const w = contenedor.clientWidth || 1;
-      const h = contenedor.clientHeight || 1;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = CABEZONES_ANCHO * dpr;
+      canvas.height = CABEZONES_ALTO * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
     ajustarTamano();
-    const resizeObs = typeof ResizeObserver !== "undefined" ? new ResizeObserver(ajustarTamano) : null;
-    if (resizeObs) resizeObs.observe(contenedor);
-    else window.addEventListener("resize", ajustarTamano);
+    window.addEventListener("resize", ajustarTamano);
 
-    const LIMITE_PITCH = Math.PI / 2 - 0.06;
-    function alPuntero(e) {
-      if (document.pointerLockElement !== renderer.domElement) return;
-      const SENS = 0.0022;
-      eulerRef.current.y -= e.movementX * SENS;
-      eulerRef.current.x -= e.movementY * SENS;
-      eulerRef.current.x = Math.max(-LIMITE_PITCH, Math.min(LIMITE_PITCH, eulerRef.current.x));
-    }
-    function alCambiarBloqueo() {
-      setBloqueadoUI(document.pointerLockElement === renderer.domElement);
-    }
-    document.addEventListener("mousemove", alPuntero);
-    document.addEventListener("pointerlockchange", alCambiarBloqueo);
-
-    let toqueMirarPrev = null;
-    function alTocarMirar(e) {
-      if (!e.touches || e.touches.length === 0) return;
-      const t = e.touches[0];
-      if (t.clientX < contenedor.clientWidth * 0.42) return;
-      if (toqueMirarPrev && toqueMirarPrev.id === t.identifier) {
-        const SENS = 0.0055;
-        eulerRef.current.y -= (t.clientX - toqueMirarPrev.x) * SENS;
-        eulerRef.current.x -= (t.clientY - toqueMirarPrev.y) * SENS;
-        eulerRef.current.x = Math.max(-LIMITE_PITCH, Math.min(LIMITE_PITCH, eulerRef.current.x));
-      }
-      toqueMirarPrev = { id: t.identifier, x: t.clientX, y: t.clientY };
-    }
-    function alSoltarMirar(e) {
-      if (!e.changedTouches || !e.changedTouches[0]) return;
-      if (toqueMirarPrev && toqueMirarPrev.id === e.changedTouches[0].identifier) toqueMirarPrev = null;
-    }
-    renderer.domElement.addEventListener("touchstart", alTocarMirar, { passive: true });
-    renderer.domElement.addEventListener("touchmove", alTocarMirar, { passive: true });
-    renderer.domElement.addEventListener("touchend", alSoltarMirar, { passive: true });
-    renderer.domElement.addEventListener("touchcancel", alSoltarMirar, { passive: true });
-
-    function animar() {
+    function cuadro(ahoraMs) {
       if (!vivo) return;
-      const dt = Math.min(0.12, clock.getDelta());
-      camera.quaternion.setFromEuler(eulerRef.current);
+      const dt = Math.min(0.05, (ahoraMs - ultimo) / 1000);
+      ultimo = ahoraMs;
+      acumuladorHud += dt;
 
-      if (activoRef.current) {
-        const yaw = eulerRef.current.y;
-        const adelanteX = -Math.sin(yaw), adelanteZ = -Math.cos(yaw);
-        const derechaX = Math.cos(yaw), derechaZ = -Math.sin(yaw);
-        const kd = keysRef.current;
-        let entradaAdelante = (kd.up ? 1 : 0) - (kd.down ? 1 : 0) - joyRef.current.y;
-        let entradaDerecha = (kd.right ? 1 : 0) - (kd.left ? 1 : 0) + joyRef.current.x;
-        entradaAdelante = Math.max(-1, Math.min(1, entradaAdelante));
-        entradaDerecha = Math.max(-1, Math.min(1, entradaDerecha));
-        if (entradaAdelante || entradaDerecha) {
-          let mx = adelanteX * entradaAdelante + derechaX * entradaDerecha;
-          let mz = adelanteZ * entradaAdelante + derechaZ * entradaDerecha;
-          const largo = Math.hypot(mx, mz) || 1;
-          mx = (mx / largo) * FEOS_VELOCIDAD * dt;
-          mz = (mz / largo) * FEOS_VELOCIDAD * dt;
-          miPosRef.current = resolverMovimientoFeos(mapa.muros || [], miPosRef.current, mx, mz, FEOS_RADIO_JUGADOR, mapa.ancho, mapa.alto);
+      if (esHost) {
+        const entradaIzq = ladoLocal === "izquierda" ? entradaLocalRef.current : entradaOponenteRef.current;
+        const entradaDer = ladoLocal === "derecha" ? entradaLocalRef.current : entradaOponenteRef.current;
+        estadoLocalRef.current = avanzarPartidoCabezones(estadoLocalRef.current, dt, entradaIzq, entradaDer);
+        dibujarCanchaCabezones(ctx, estadoLocalRef.current, { colorIzq, colorDer, nombreIzq, nombreDer });
+      } else {
+        const remoto = estadoRemotoRef.current;
+        if (remoto) {
+          // predicción local del propio cabezón (siempre "derecha" cuando somos invitados) para que
+          // se sienta instantáneo, aunque la verdad venga del anfitrión con un poco de retraso
+          const entradaLocal = entradaLocalRef.current;
+          const propio = posLocalPredichaRef.current;
+          if (propio.x === null) propio.x = remoto.jugadorDer.x;
+          const jugadorTemp = { x: propio.x, vx: 0, altura: propio.altura, vAltura: propio.vAltura, lado: "derecha", efecto: remoto.jugadorDer.efecto, cooldownPatada: 0, pateando: false };
+          moverJugadorCabezones(jugadorTemp, entradaLocal, dt);
+          propio.x = jugadorTemp.x;
+          propio.altura = jugadorTemp.altura;
+          propio.vAltura = jugadorTemp.vAltura;
+          // reconciliación suave hacia lo que diga el anfitrión, para no divergir con el tiempo
+          propio.x += (remoto.jugadorDer.x - propio.x) * Math.min(1, dt * 3);
+
+          const estadoDibujado = {
+            ...remoto,
+            jugadorDer: { ...remoto.jugadorDer, x: propio.x, altura: propio.altura },
+          };
+          dibujarCanchaCabezones(ctx, estadoDibujado, { colorIzq, colorDer, nombreIzq, nombreDer });
+        } else {
+          ctx.clearRect(0, 0, CABEZONES_ANCHO, CABEZONES_ALTO);
         }
       }
 
-      const pos = miPosRef.current;
-      camera.position.set(pos.x, FEOS_EYE_ALTURA, pos.y);
-
-      const cRef = cuerpoRef.current;
-      if (cRef && !spriteCuerpo) {
-        spriteCuerpo = crearSpriteEmoji("💀", 1.2);
-        spriteCuerpo.position.set(cRef.x, 1, cRef.y);
-        scene.add(spriteCuerpo);
-      } else if (!cRef && spriteCuerpo) {
-        scene.remove(spriteCuerpo);
-        if (spriteCuerpo.material.map) spriteCuerpo.material.map.dispose();
-        spriteCuerpo.material.dispose();
-        spriteCuerpo = null;
+      if (acumuladorHud >= 0.12) {
+        acumuladorHud = 0;
+        onEstadoActualizado(esHost ? estadoLocalRef.current : estadoRemotoRef.current);
       }
-
-      const activos = new Set();
-      (jugadoresRemotosRef.current || []).forEach((j) => {
-        activos.add(j.id);
-        const entrada = asegurarJugadorRemoto(j);
-        entrada.destino.x = j.x;
-        entrada.destino.y = j.y;
-      });
-      remotos.forEach((entrada, id) => {
-        if (!activos.has(id)) {
-          scene.remove(entrada.grupo);
-          remotos.delete(id);
-          return;
-        }
-        const suav = Math.min(1, dt * 6);
-        entrada.actual.x += (entrada.destino.x - entrada.actual.x) * suav;
-        entrada.actual.y += (entrada.destino.y - entrada.actual.y) * suav;
-        entrada.grupo.position.set(entrada.actual.x, 0, entrada.actual.y);
-      });
-
-      renderer.render(scene, camera);
-      requestAnimationFrame(animar);
+      requestAnimationFrame(cuadro);
     }
-    const idAnim = requestAnimationFrame(animar);
-    escenaObjRef.current = { spritesTarea, spritesSabotaje };
+    const idAnim = requestAnimationFrame(cuadro);
 
     return () => {
       vivo = false;
       cancelAnimationFrame(idAnim);
-      if (resizeObs) resizeObs.disconnect();
-      else window.removeEventListener("resize", ajustarTamano);
-      document.removeEventListener("mousemove", alPuntero);
-      document.removeEventListener("pointerlockchange", alCambiarBloqueo);
-      if (document.pointerLockElement === renderer.domElement) document.exitPointerLock();
-      renderer.domElement.removeEventListener("touchstart", alTocarMirar);
-      renderer.domElement.removeEventListener("touchmove", alTocarMirar);
-      renderer.domElement.removeEventListener("touchend", alSoltarMirar);
-      renderer.domElement.removeEventListener("touchcancel", alSoltarMirar);
-      scene.traverse((obj) => {
-        if (obj.geometry) obj.geometry.dispose();
-        if (obj.material) {
-          const materiales = Array.isArray(obj.material) ? obj.material : [obj.material];
-          materiales.forEach((m) => { if (m.map) m.map.dispose(); m.dispose(); });
-        }
-      });
-      renderer.dispose();
-      if (contenedor) contenedor.innerHTML = "";
-      escenaObjRef.current = null;
+      window.removeEventListener("resize", ajustarTamano);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapa]);
-
-  // Suelta el mouse capturado en cuanto dejamos de poder movernos (tarea abierta, camuflado, reunión...).
-  useEffect(() => {
-    if (!activo && canvasElRef.current && document.pointerLockElement === canvasElRef.current) {
-      document.exitPointerLock();
-    }
-  }, [activo]);
-
-  // Actualiza los íconos de tareas cuando cambian (comparando contra lo ya dibujado, no en cada poll).
-  useEffect(() => {
-    const eo = escenaObjRef.current;
-    if (!eo) return;
-    (tareas || []).forEach((t) => {
-      const spr = eo.spritesTarea[t.id];
-      if (!spr) return;
-      const hecha = tareasHechas.includes(t.id);
-      if (spr.userData.hecha === hecha) return;
-      spr.userData.hecha = hecha;
-      const anterior = spr.material.map;
-      spr.material.map = crearTexturaEmoji(hecha ? "✅" : "📋");
-      spr.material.needsUpdate = true;
-      if (anterior) anterior.dispose();
-    });
-  }, [tareasHechas, tareas]);
-
-  useEffect(() => {
-    const eo = escenaObjRef.current;
-    if (!eo) return;
-    Object.entries(eo.spritesSabotaje).forEach(([tipo, spr]) => {
-      spr.visible = !!(sabotaje && sabotaje.tipo === tipo);
-    });
-  }, [sabotaje]);
-
-  const alClicCanvas = () => {
-    if (isMobile) return;
-    const el = canvasElRef.current;
-    if (el && document.pointerLockElement !== el && el.requestPointerLock) el.requestPointerLock();
-  };
+  }, [esHost, ladoLocal]);
 
   return (
-    <div ref={contenedorRef} onClick={alClicCanvas} style={{ position: "absolute", inset: 0, cursor: isMobile ? "default" : "pointer" }}>
-      {!isMobile && !bloqueadoUI && activo && (
-        <div style={{
-          position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
-          background: "rgba(0,0,0,0.4)", zIndex: 30, textAlign: "center", pointerEvents: "none",
-        }}>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.white, letterSpacing: 1, background: "rgba(0,0,0,0.6)", padding: "10px 16px", borderRadius: 8, border: `1px solid ${COLORS.neonMagenta}` }}>
-            Haz clic para mirar con el mouse · WASD para moverte
-          </div>
-        </div>
-      )}
-      {isMobile && activo && <VirtualJoystickFeos onCambio={(v) => { joyRef.current = v; }} />}
+    <div ref={contenedorRef} style={{ position: "absolute", inset: 0 }}>
+      <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
     </div>
   );
 }
 
-function LlegaronLosFeosView({ user, onVolver }) {
-  const miId = user.id;
-  const esMovil = useIsMobile();
-  const [pantalla, setPantalla] = useState("hub"); // hub | personalizar | reglas | sala
-  const [personajeLocal, setPersonajeLocal] = useState(() => cargarPersonajeFeosGuardado(miId));
-  const [sala, setSala] = useState(null);
-  const [cargando, setCargando] = useState(true);
-  const [tareaAbierta, setTareaAbierta] = useState(null);
-  const [mapaElegido, setMapaElegido] = useState("base");
-  const [numImpostoresElegido, setNumImpostoresElegido] = useState(1);
-  const [ahora, setAhora] = useState(Date.now());
-  const [miPos, setMiPos] = useState({ x: 23, y: 15 });
-
-  const keysRef = useRef({ up: false, down: false, left: false, right: false });
-  const miPosRef = useRef(miPos);
-  const salaRef = useRef(sala);
-  const misDatosRef = useRef(null);
-  const tareaAbiertaRef = useRef(null);
-  const primerCargaRef = useRef(true);
-  const rondaVistaRef = useRef(0);
-
-  useEffect(() => { miPosRef.current = miPos; }, [miPos]);
-  useEffect(() => { salaRef.current = sala; }, [sala]);
-  useEffect(() => { misDatosRef.current = (sala && sala.jugadores) ? sala.jugadores[miId] : null; }, [sala, miId]);
-  useEffect(() => { tareaAbiertaRef.current = tareaAbierta; }, [tareaAbierta]);
+// ── Vista de una partida contra el computador (todo local, no usa Firebase) ──
+function PartidaBotCabezones({ user, colorLocal, onVolver, onTerminar }) {
+  const estadoLocalRef = useRef(crearEstadoPartidoCabezones());
+  const entradaLocalRef = useRef({ izq: false, der: false, saltar: false, patear: false });
+  const entradaBotRef = useRef({ izq: false, der: false, saltar: false, patear: false });
+  const [marcador, setMarcador] = useState({ golesIzq: 0, golesDer: 0, tiempoRestante: CABEZONES_DURACION_PARTIDO_S, fase: "jugando", ganador: null });
+  const terminadoNotificadoRef = useRef(false);
 
   useEffect(() => {
-    const id = setInterval(() => setAhora(Date.now()), 1000);
+    const TECLAS = { a: "izq", arrowleft: "izq", d: "der", arrowright: "der", w: "saltar", arrowup: "saltar", " ": "patear", s: "patear", arrowdown: "patear" };
+    const onDown = (e) => { const a = TECLAS[e.key.toLowerCase()]; if (a) { e.preventDefault(); entradaLocalRef.current[a] = true; } };
+    const onUp = (e) => { const a = TECLAS[e.key.toLowerCase()]; if (a) entradaLocalRef.current[a] = false; };
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => { entradaBotRef.current = decidirEntradaBotCabezones(estadoLocalRef.current); }, 90);
     return () => clearInterval(id);
   }, []);
 
-  const cambiarPersonaje = async (cambios) => {
-    const siguiente = { ...personajeLocal, ...cambios };
-    setPersonajeLocal(siguiente);
-    guardarPersonajeFeosLocal(miId, siguiente);
-    const actual = salaRef.current;
-    if (actual && actual.fase === "lobby" && actual.jugadores[miId]) {
-      const fresco = await fetchData(k("feos_sala"));
-      if (fresco && fresco.fase === "lobby" && fresco.jugadores[miId]) {
-        const s = { ...fresco, jugadores: { ...fresco.jugadores, [miId]: { ...fresco.jugadores[miId], personaje: siguiente } } };
-        setSala(s);
-        await saveData(k("feos_sala"), s);
-      }
+  const alEstadoActualizado = (estado) => {
+    if (!estado) return;
+    setMarcador({ golesIzq: estado.golesIzq, golesDer: estado.golesDer, tiempoRestante: estado.tiempoRestante, fase: estado.fase, ganador: estado.ganador });
+    if (estado.fase === "terminado" && !terminadoNotificadoRef.current) {
+      terminadoNotificadoRef.current = true;
+      onTerminar({ modo: "bot", gano: estado.ganador === "empate" ? null : estado.ganador === "izquierda", golesFavor: estado.golesIzq, golesContra: estado.golesDer });
     }
   };
 
-  // ── Carga + sondeo de la sala compartida (solo mientras estamos en la pantalla "sala") ──
+  const jugarDeNuevo = () => {
+    terminadoNotificadoRef.current = false;
+    estadoLocalRef.current = crearEstadoPartidoCabezones();
+  };
+  const presionar = (accion) => { entradaLocalRef.current[accion] = true; };
+  const soltar = (accion) => { entradaLocalRef.current[accion] = false; };
+
+  return (
+    <div>
+      <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+      <SectionTitle>No haga sino Jogar — vs. Computador</SectionTitle>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <Badge color={COLORS.neonBlue}>Tú {marcador.golesIzq} - {marcador.golesDer} Computador</Badge>
+        <Badge color={COLORS.textMuted}>⏱ {Math.ceil(marcador.tiempoRestante)}s</Badge>
+      </div>
+      <Card style={{ padding: 6, marginBottom: 14 }}>
+        <div style={{ position: "relative", width: "100%", aspectRatio: `${CABEZONES_ANCHO} / ${CABEZONES_ALTO}`, borderRadius: 8, overflow: "hidden", border: `2px solid ${COLORS.neonMagenta}`, boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
+          <MotorCabezones
+            esHost
+            ladoLocal="izquierda"
+            entradaLocalRef={entradaLocalRef}
+            entradaOponenteRef={entradaBotRef}
+            estadoLocalRef={estadoLocalRef}
+            colorIzq={hexColorCabezones(colorLocal)}
+            colorDer={COLORS.textMuted}
+            nombreIzq={user.nombre}
+            nombreDer="Bot"
+            onEstadoActualizado={alEstadoActualizado}
+          />
+          {marcador.fase === "terminado" && (
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(5,6,10,0.9)" }}>
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontFamily: FONT_DISPLAY, fontSize: 22, letterSpacing: 1, color: marcador.ganador === "izquierda" ? COLORS.neonSuccess : marcador.ganador === "empate" ? COLORS.textMuted : COLORS.neonRed, marginBottom: 14 }}>
+                  {marcador.ganador === "izquierda" ? "¡GANASTE!" : marcador.ganador === "empate" ? "EMPATE" : "GANÓ EL COMPUTADOR"}
+                </div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                  <NeonButton active onClick={jugarDeNuevo}>Revancha</NeonButton>
+                  <NeonButton onClick={onVolver}>Volver</NeonButton>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </Card>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", opacity: marcador.fase === "terminado" ? 0.35 : 1, pointerEvents: marcador.fase === "terminado" ? "none" : "auto" }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <BotonAccionCabezones color={COLORS.neonBlue} onPress={() => presionar("izq")} onRelease={() => soltar("izq")}>◀</BotonAccionCabezones>
+          <BotonAccionCabezones color={COLORS.neonBlue} onPress={() => presionar("der")} onRelease={() => soltar("der")}>▶</BotonAccionCabezones>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <BotonAccionCabezones color={COLORS.neonAmber} onPress={() => presionar("saltar")} onRelease={() => soltar("saltar")}>⤴</BotonAccionCabezones>
+          <BotonAccionCabezones color={COLORS.neonMagenta} ancho={70} onPress={() => presionar("patear")} onRelease={() => soltar("patear")}>🦵</BotonAccionCabezones>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Vista de una partida en línea 1v1 contra otro de los 5 de la cúpula ──
+function PartidaOnlineCabezones({ user, colorLocal, onVolver, onTerminar }) {
+  const miId = user.id;
+  const [sala, setSala] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [marcador, setMarcador] = useState({ golesIzq: 0, golesDer: 0, tiempoRestante: CABEZONES_DURACION_PARTIDO_S, fase: "esperando", ganador: null });
+  const salaRef = useRef(null);
+  const estadoLocalRef = useRef(crearEstadoPartidoCabezones());
+  const estadoRemotoRef = useRef(null);
+  const entradaLocalRef = useRef({ izq: false, der: false, saltar: false, patear: false });
+  const entradaOponenteRef = useRef({ izq: false, der: false, saltar: false, patear: false });
+  const terminadoNotificadoRef = useRef(false);
+  const estadoSembradoRef = useRef(false);
+
+  useEffect(() => { salaRef.current = sala; }, [sala]);
+
   useEffect(() => {
-    if (pantalla !== "sala") return;
     let cancelado = false;
-    const cargar = async () => {
-      let s = await fetchData(k("feos_sala"));
-      if (!s) { s = crearSalaFeosVacia(); await saveData(k("feos_sala"), s); }
-      if (cancelado) return;
-      const esPrimeraCarga = primerCargaRef.current;
-      primerCargaRef.current = false;
-      const mapa = MAPS_FEOS[s.mapaId] || MAPS_FEOS.base;
-      if (s.fase === "jugando" && s.inicio) {
-        if (esPrimeraCarga && s.jugadores && s.jugadores[miId]) {
-          miPosRef.current = { x: s.jugadores[miId].x, y: s.jugadores[miId].y };
-          setMiPos(miPosRef.current);
-          rondaVistaRef.current = s.inicio;
-        } else if (s.inicio !== rondaVistaRef.current) {
-          rondaVistaRef.current = s.inicio;
-          miPosRef.current = { x: mapa.spawn.x, y: mapa.spawn.y };
-          setMiPos(miPosRef.current);
-        } else if (s.jugadores && s.jugadores[miId]) {
-          s.jugadores[miId] = { ...s.jugadores[miId], x: miPosRef.current.x, y: miPosRef.current.y };
-        }
+    (async () => {
+      let s = await fetchData(k("cabezones_sala"));
+      if (!s || s.fase === "terminado") s = { jugador1Id: null, jugador2Id: null, fase: "esperando", creadaEn: Date.now() };
+      if (!s.jugador1Id) {
+        s = { ...s, jugador1Id: miId, fase: s.jugador2Id && s.jugador2Id !== miId ? "jugando" : "esperando" };
+        await saveData(k("cabezones_sala"), s);
+      } else if (s.jugador1Id !== miId && !s.jugador2Id) {
+        s = { ...s, jugador2Id: miId, fase: "jugando" };
+        await saveData(k("cabezones_sala"), s);
       }
+      if (cancelado) return;
       setSala(s);
       setCargando(false);
-    };
-    cargar();
-    const id = setInterval(cargar, 1000);
-    return () => { cancelado = true; clearInterval(id); };
-  }, [pantalla, miId]);
-
-  const refrescar = async () => {
-    const s = await fetchData(k("feos_sala"));
-    if (s) return s;
-    return salaRef.current;
-  };
-  const escribir = async (siguiente) => {
-    setSala(siguiente);
-    await saveData(k("feos_sala"), siguiente);
-  };
-
-  // Unirse automáticamente a la sala mientras está en el lobby.
-  useEffect(() => {
-    if (!sala || sala.fase !== "lobby") return;
-    if (sala.jugadores[miId]) return;
-    (async () => {
-      const fresco = await refrescar();
-      if (fresco.fase !== "lobby" || fresco.jugadores[miId]) return;
-      const mapa = MAPS_FEOS[fresco.mapaId] || MAPS_FEOS.base;
-      const siguiente = { ...fresco, jugadores: { ...fresco.jugadores, [miId]: jugadorFeosVacio(mapa, personajeLocal) } };
-      await escribir(siguiente);
-      miPosRef.current = { x: mapa.spawn.x, y: mapa.spawn.y };
-      setMiPos(miPosRef.current);
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sala, miId]);
+    return () => { cancelado = true; };
+  }, [miId]);
 
-  const iniciarPartida = async () => {
-    const fresco = await refrescar();
-    const ids = Object.keys(fresco.jugadores);
-    if (ids.length < 3) return;
-    const mapa = MAPS_FEOS[mapaElegido] || MAPS_FEOS.base;
-    const maxImpostores = Math.max(1, Math.ceil(ids.length / 2) - 1);
-    const numImp = Math.min(numImpostoresElegido, maxImpostores);
-    const barajados = [...ids].sort(() => Math.random() - 0.5);
-    const impostores = barajados.slice(0, numImp);
-    const jugadores = {};
-    ids.forEach((id) => { jugadores[id] = jugadorFeosVacio(mapa, fresco.jugadores[id].personaje); });
-    const siguiente = {
-      ...fresco, fase: "jugando", mapaId: mapaElegido, jugadores, impostores, numImpostores: impostores.length,
-      hostId: miId, tareasHechas: [], sabotaje: null, reunion: null, cuerpo: null, ganador: null, inicio: Date.now(),
-    };
-    rondaVistaRef.current = siguiente.inicio;
-    miPosRef.current = { x: mapa.spawn.x, y: mapa.spawn.y };
-    setMiPos(miPosRef.current);
-    await escribir(siguiente);
-  };
-
-  // ── Captura de teclado: WASD/flechas → keysRef (la escena 3D decide adelante/atrás según la cámara) ──
   useEffect(() => {
-    if (pantalla !== "sala") return;
-    const onKeyDown = (e) => {
-      const dir = FEOS_TECLAS[e.key.toLowerCase()];
-      if (dir) { e.preventDefault(); keysRef.current[dir] = true; }
-    };
-    const onKeyUp = (e) => {
-      const dir = FEOS_TECLAS[e.key.toLowerCase()];
-      if (dir) keysRef.current[dir] = false;
-    };
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-      keysRef.current = { up: false, down: false, left: false, right: false };
-    };
-  }, [pantalla]);
-
-  // El movimiento en sí ocurre dentro de <EscenaFeos3D> (mutando miPosRef cada cuadro). Aquí solo
-  // reflejamos ese ref en el estado de React cada tanto, para que el resto de la pantalla (zona
-  // actual, tareas cercanas, etc.) se siga recalculando sin duplicar la física del movimiento.
-  useEffect(() => {
-    if (pantalla !== "sala") return;
-    const id = setInterval(() => {
-      setMiPos((prev) => {
-        const r = miPosRef.current;
-        if (Math.abs(prev.x - r.x) < 0.01 && Math.abs(prev.y - r.y) < 0.01) return prev;
-        return { x: r.x, y: r.y };
-      });
-    }, 150);
-    return () => clearInterval(id);
-  }, [pantalla]);
-
-  // Difunde mi posición a los demás cada tanto (solo si me moví).
-  useEffect(() => {
-    if (pantalla !== "sala") return;
     const id = setInterval(async () => {
-      const fresco = salaRef.current;
-      if (!fresco || fresco.fase !== "jugando") return;
-      const yo = fresco.jugadores[miId];
-      if (!yo || !yo.vivo || yo.expulsado || yo.camuflado) return;
-      const pos = miPosRef.current;
-      if (Math.abs(yo.x - pos.x) < 0.05 && Math.abs(yo.y - pos.y) < 0.05) return;
-      const siguiente = { ...fresco, jugadores: { ...fresco.jugadores, [miId]: { ...yo, x: pos.x, y: pos.y } } };
-      salaRef.current = siguiente;
-      setSala(siguiente);
-      await saveData(k("feos_sala"), siguiente);
-    }, 350);
+      const s = await fetchData(k("cabezones_sala"));
+      if (s) setSala(s);
+    }, 1000);
     return () => clearInterval(id);
-  }, [pantalla, miId]);
+  }, []);
 
-  const completarTarea = async (tareaId, esImpostorLocal) => {
-    const fresco = await refrescar();
-    if (fresco.fase !== "jugando") { setTareaAbierta(null); return; }
-    if (esImpostorLocal || fresco.tareasHechas.includes(tareaId)) { setTareaAbierta(null); return; }
-    const siguiente = { ...fresco, tareasHechas: [...fresco.tareasHechas, tareaId] };
-    const ganador = evaluarGanadorFeos(siguiente);
-    if (ganador) { siguiente.fase = "terminado"; siguiente.ganador = ganador; }
-    await escribir(siguiente);
-    setTareaAbierta(null);
-  };
-
-  const eliminarJugador = async (objetivoId) => {
-    const fresco = await refrescar();
-    const yo = fresco.jugadores[miId];
-    if (!yo || !yo.vivo || !fresco.impostores.includes(miId)) return;
-    if (Date.now() - (yo.ultimoKillTs || 0) < FEOS_KILL_COOLDOWN_MS) return;
-    const objetivo = fresco.jugadores[objetivoId];
-    if (!objetivo || !objetivo.vivo || objetivo.camuflado || fresco.impostores.includes(objetivoId)) return;
-    if (distanciaFeos(miPosRef.current, objetivo) > FEOS_INTERACT_RADIO) return;
-    const siguiente = {
-      ...fresco,
-      jugadores: { ...fresco.jugadores, [objetivoId]: { ...objetivo, vivo: false }, [miId]: { ...yo, ultimoKillTs: Date.now() } },
-      cuerpo: { x: objetivo.x, y: objetivo.y, victimaId: objetivoId },
-    };
-    const ganador = evaluarGanadorFeos(siguiente);
-    if (ganador) { siguiente.fase = "terminado"; siguiente.ganador = ganador; }
-    await escribir(siguiente);
-  };
-
-  const camuflarse = async (icono) => {
-    const fresco = await refrescar();
-    const yo = fresco.jugadores[miId];
-    if (!yo || !yo.vivo || yo.expulsado || yo.camuflado || fresco.fase !== "jugando") return;
-    if (Date.now() - (yo.ultimoCamuflajeTs || 0) < FEOS_CAMUFLAJE_COOLDOWN_MS) return;
-    const siguiente = {
-      ...fresco,
-      jugadores: { ...fresco.jugadores, [miId]: { ...yo, camuflado: true, camuflajeIcono: icono, camuflajeVenceEn: Date.now() + FEOS_CAMUFLAJE_DURACION_MS, ultimoCamuflajeTs: Date.now() } },
-    };
-    await escribir(siguiente);
-  };
-  const revelarse = async () => {
-    const fresco = await refrescar();
-    const yo = fresco.jugadores[miId];
-    if (!yo || !yo.camuflado) return;
-    await escribir({ ...fresco, jugadores: { ...fresco.jugadores, [miId]: { ...yo, camuflado: false, camuflajeIcono: null } } });
-  };
-
-  const iniciarReunion = async (motivo) => {
-    const fresco = await refrescar();
-    const yo = fresco.jugadores[miId];
-    if (!yo || !yo.vivo || yo.expulsado || fresco.fase !== "jugando") return;
-    const mapa = MAPS_FEOS[fresco.mapaId] || MAPS_FEOS.base;
-    if (motivo === "emergencia" && (yo.usoEmergencia || distanciaFeos(miPosRef.current, mapa.puntoEmergencia) > FEOS_INTERACT_RADIO)) return;
-    if (motivo === "reporte" && (!fresco.cuerpo || distanciaFeos(miPosRef.current, fresco.cuerpo) > FEOS_INTERACT_RADIO)) return;
-    const siguiente = {
-      ...fresco,
-      fase: "reunion",
-      jugadores: motivo === "emergencia" ? { ...fresco.jugadores, [miId]: { ...yo, usoEmergencia: true } } : fresco.jugadores,
-      reunion: { motivo, iniciadaPor: miId, votos: {}, venceEn: Date.now() + FEOS_REUNION_MS, resuelta: false },
-      cuerpo: null,
-    };
-    await escribir(siguiente);
-  };
-
-  const votar = async (objetivo) => {
-    const fresco = await refrescar();
-    if (!fresco.reunion || fresco.reunion.resuelta) return;
-    const yo = fresco.jugadores[miId];
-    if (!yo || !yo.vivo || yo.expulsado) return;
-    await escribir({ ...fresco, reunion: { ...fresco.reunion, votos: { ...fresco.reunion.votos, [miId]: objetivo } } });
-  };
-
-  const resolverReunion = async () => {
-    const fresco = await refrescar();
-    if (!fresco.reunion || fresco.reunion.resuelta) return;
-    const vivos = Object.keys(fresco.jugadores).filter((id) => fresco.jugadores[id].vivo && !fresco.jugadores[id].expulsado);
-    const todosVotaron = vivos.every((id) => fresco.reunion.votos[id] !== undefined);
-    if (Date.now() < fresco.reunion.venceEn && !todosVotaron) return;
-    const conteo = {};
-    vivos.forEach((id) => {
-      const voto = fresco.reunion.votos[id];
-      if (voto && voto !== "omitir") conteo[voto] = (conteo[voto] || 0) + 1;
-    });
-    let expulsadoId = null, maxVotos = 0, empate = false;
-    Object.entries(conteo).forEach(([id, n]) => {
-      if (n > maxVotos) { maxVotos = n; expulsadoId = id; empate = false; }
-      else if (n === maxVotos) { empate = true; }
-    });
-    if (empate) expulsadoId = null;
-    let jugadores = fresco.jugadores;
-    if (expulsadoId) jugadores = { ...jugadores, [expulsadoId]: { ...jugadores[expulsadoId], expulsado: true } };
-    const siguiente = {
-      ...fresco, jugadores,
-      reunion: { ...fresco.reunion, resuelta: true, expulsadoId, eraImpostor: expulsadoId ? fresco.impostores.includes(expulsadoId) : null },
-    };
-    const ganador = evaluarGanadorFeos(siguiente);
-    if (ganador) { siguiente.fase = "terminado"; siguiente.ganador = ganador; }
-    await escribir(siguiente);
-  };
-
-  const cerrarResultadoReunion = async () => {
-    const fresco = await refrescar();
-    if (!fresco.reunion || !fresco.reunion.resuelta || fresco.fase === "terminado") return;
-    await escribir({ ...fresco, fase: "jugando", reunion: null });
-  };
-
-  const activarSabotaje = async (tipo) => {
-    const fresco = await refrescar();
-    const yo = fresco.jugadores[miId];
-    if (!yo || !yo.vivo || !fresco.impostores.includes(miId) || fresco.fase !== "jugando" || fresco.sabotaje) return;
-    if (Date.now() - (yo.ultimoSabotajeTs || 0) < FEOS_SABOTAJE_COOLDOWN_MS) return;
-    const duracion = tipo === "reactor" ? FEOS_SABOTAJE_REACTOR_MS : FEOS_SABOTAJE_LUCES_MS;
-    const siguiente = {
-      ...fresco,
-      sabotaje: { tipo, venceEn: Date.now() + duracion },
-      jugadores: { ...fresco.jugadores, [miId]: { ...yo, ultimoSabotajeTs: Date.now() } },
-    };
-    await escribir(siguiente);
-  };
-
-  const repararSabotaje = async () => {
-    const fresco = await refrescar();
-    if (!fresco.sabotaje) return;
-    const yo = fresco.jugadores[miId];
-    if (!yo || !yo.vivo || yo.expulsado) return;
-    const mapa = MAPS_FEOS[fresco.mapaId] || MAPS_FEOS.base;
-    const punto = mapa.puntosSabotaje[fresco.sabotaje.tipo];
-    if (distanciaFeos(miPosRef.current, punto) > FEOS_INTERACT_RADIO) return;
-    await escribir({ ...fresco, sabotaje: null });
-  };
-
-  const volverALobby = async () => { await escribir(crearSalaFeosVacia()); };
-
-  // Relojes: resuelve la reunión sola, revisa sabotaje de reactor vencido y me revela
-  // solo (a mí) si mi camuflaje ya expiró.
-  useEffect(() => {
-    if (!sala) return;
-    if (sala.fase === "reunion" && sala.reunion && !sala.reunion.resuelta) {
-      const vivos = Object.keys(sala.jugadores).filter((id) => sala.jugadores[id].vivo && !sala.jugadores[id].expulsado);
-      const todosVotaron = vivos.every((id) => sala.reunion.votos[id] !== undefined);
-      if (Date.now() >= sala.reunion.venceEn || todosVotaron) resolverReunion();
-    }
-    if (sala.fase === "jugando" && sala.sabotaje && sala.sabotaje.tipo === "reactor" && Date.now() > sala.sabotaje.venceEn) {
-      (async () => {
-        const fresco = await refrescar();
-        if (fresco.fase === "jugando" && fresco.sabotaje && fresco.sabotaje.tipo === "reactor" && Date.now() > fresco.sabotaje.venceEn) {
-          await escribir({ ...fresco, fase: "terminado", ganador: "impostores" });
-        }
-      })();
-    }
-    const yo = sala.jugadores && sala.jugadores[miId];
-    if (sala.fase === "jugando" && yo && yo.camuflado && Date.now() > yo.camuflajeVenceEn) revelarse();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ahora, sala]);
+  const soyJugador1 = !!(sala && sala.jugador1Id === miId);
+  const soyJugador2 = !!(sala && sala.jugador2Id === miId);
+  const enPartida = soyJugador1 || soyJugador2;
 
   useEffect(() => {
-    if (!sala || sala.fase !== "reunion" || !sala.reunion || !sala.reunion.resuelta) return;
-    const t = setTimeout(() => cerrarResultadoReunion(), 6000);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sala && sala.reunion && sala.reunion.resuelta]);
+    if (!soyJugador1 || !sala || sala.fase !== "jugando" || estadoSembradoRef.current) return;
+    estadoSembradoRef.current = true;
+    terminadoNotificadoRef.current = false;
+    estadoLocalRef.current = crearEstadoPartidoCabezones();
+    saveData(k("cabezones_estado"), estadoLocalRef.current);
+  }, [soyJugador1, sala && sala.fase]);
 
-  // ══════════════════ HUB LOCAL (no toca Firebase) ══════════════════
-  if (pantalla === "hub") {
+  useEffect(() => {
+    if (!soyJugador1) return;
+    const id = setInterval(() => {
+      if (estadoLocalRef.current) saveData(k("cabezones_estado"), estadoLocalRef.current);
+    }, 110);
+    return () => clearInterval(id);
+  }, [soyJugador1]);
+
+  useEffect(() => {
+    if (!soyJugador1) return;
+    const id = setInterval(async () => {
+      const e = await fetchData(k("cabezones_entrada2"));
+      if (e) entradaOponenteRef.current = e;
+    }, 90);
+    return () => clearInterval(id);
+  }, [soyJugador1]);
+
+  useEffect(() => {
+    if (!soyJugador2) return;
+    const id = setInterval(async () => {
+      const e = await fetchData(k("cabezones_estado"));
+      if (e) estadoRemotoRef.current = e;
+    }, 110);
+    return () => clearInterval(id);
+  }, [soyJugador2]);
+
+  useEffect(() => {
+    if (!soyJugador2) return;
+    const id = setInterval(() => { saveData(k("cabezones_entrada2"), entradaLocalRef.current); }, 90);
+    return () => clearInterval(id);
+  }, [soyJugador2]);
+
+  useEffect(() => {
+    if (!enPartida) return;
+    const TECLAS = { a: "izq", arrowleft: "izq", d: "der", arrowright: "der", w: "saltar", arrowup: "saltar", " ": "patear", s: "patear", arrowdown: "patear" };
+    const onDown = (e) => { const a = TECLAS[e.key.toLowerCase()]; if (a) { e.preventDefault(); entradaLocalRef.current[a] = true; } };
+    const onUp = (e) => { const a = TECLAS[e.key.toLowerCase()]; if (a) entradaLocalRef.current[a] = false; };
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
+  }, [enPartida]);
+
+  const alEstadoActualizado = (estado) => {
+    if (!estado) return;
+    setMarcador({ golesIzq: estado.golesIzq, golesDer: estado.golesDer, tiempoRestante: estado.tiempoRestante, fase: estado.fase, ganador: estado.ganador });
+    if (estado.fase !== "terminado") { terminadoNotificadoRef.current = false; return; }
+    if (terminadoNotificadoRef.current) return;
+    terminadoNotificadoRef.current = true;
+    if (soyJugador1) {
+      saveData(k("cabezones_sala"), { ...(salaRef.current || {}), fase: "terminado" });
+      onTerminar({ modo: "online", gano: estado.ganador === "empate" ? null : estado.ganador === "izquierda", golesFavor: estado.golesIzq, golesContra: estado.golesDer });
+    } else if (soyJugador2) {
+      onTerminar({ modo: "online", gano: estado.ganador === "empate" ? null : estado.ganador === "derecha", golesFavor: estado.golesDer, golesContra: estado.golesIzq });
+    }
+  };
+
+  const jugarDeNuevo = async () => {
+    estadoSembradoRef.current = false;
+    const fresco = await fetchData(k("cabezones_sala"));
+    const siguiente = { ...(fresco || salaRef.current || {}), fase: "jugando" };
+    setSala(siguiente);
+    await saveData(k("cabezones_sala"), siguiente);
+  };
+  const salirDeLaSala = async () => {
+    await saveData(k("cabezones_sala"), { jugador1Id: null, jugador2Id: null, fase: "esperando", creadaEn: Date.now() });
+    onVolver();
+  };
+
+  const presionar = (accion) => { entradaLocalRef.current[accion] = true; };
+  const soltar = (accion) => { entradaLocalRef.current[accion] = false; };
+  const nombrePorId = (id) => (USUARIOS_REALES.find((u) => u.id === id) || {}).nombre || id;
+
+  if (cargando || !sala) {
     return (
       <div>
-        <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver a Cúpula Games</button>
-        <SectionTitle>Llegaron los Feos</SectionTitle>
-        <Card style={{ textAlign: "center", padding: "34px 20px" }}>
-          <CornerFrame color={COLORS.neonMagenta} size={16} thickness={2} />
-          <div style={{ display: "flex", justifyContent: "center", marginBottom: 18 }}>
-            <PersonajeFeo personaje={personajeLocal} size={74} />
-          </div>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 26, maxWidth: 440, marginLeft: "auto", marginRight: "auto", lineHeight: 1.6 }}>
-            Un Feo infiltrado se coló entre ustedes. Camina en primera persona por el mapa, cumple misiones, camúflate como un objeto para esconderte... y descubran quién no es de fiar antes de que sea tarde.
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 260, margin: "0 auto" }}>
-            <NeonButton active onClick={() => setPantalla("sala")}>🎮 Jugar</NeonButton>
-            <NeonButton onClick={() => setPantalla("personalizar")}>👾 Personalizar mi Feo</NeonButton>
-            <NeonButton onClick={() => setPantalla("reglas")}>📖 Cómo jugar</NeonButton>
+        <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+        <SectionTitle>No haga sino Jogar — En línea</SectionTitle>
+        <Card><div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>Conectando...</div></Card>
+      </div>
+    );
+  }
+
+  if (!enPartida) {
+    return (
+      <div>
+        <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+        <SectionTitle>No haga sino Jogar — En línea</SectionTitle>
+        <Card>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, textAlign: "center" }}>
+            Hay una partida en curso entre {nombrePorId(sala.jugador1Id)} y {nombrePorId(sala.jugador2Id)}. Espera a que termine para poder entrar.
           </div>
         </Card>
       </div>
+    );
+  }
+
+  if (sala.fase === "esperando") {
+    return (
+      <div>
+        <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+        <SectionTitle>No haga sino Jogar — En línea</SectionTitle>
+        <Card style={{ textAlign: "center" }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 8 }}>Esperando a que otro de la cúpula entre a jugar...</div>
+          <Badge color={COLORS.neonBlue}>{user.nombre} está listo</Badge>
+        </Card>
+      </div>
+    );
+  }
+
+  const ladoLocal = soyJugador1 ? "izquierda" : "derecha";
+  const nombreIzq = nombrePorId(sala.jugador1Id);
+  const nombreDer = nombrePorId(sala.jugador2Id);
+  const colorIzq = soyJugador1 ? hexColorCabezones(colorLocal) : COLORS.neonBlue;
+  const colorDer = soyJugador2 ? hexColorCabezones(colorLocal) : COLORS.neonRed;
+
+  return (
+    <div>
+      <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver</button>
+      <SectionTitle>No haga sino Jogar — En línea</SectionTitle>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <Badge color={COLORS.neonBlue}>{nombreIzq} {marcador.golesIzq} - {marcador.golesDer} {nombreDer}</Badge>
+        <Badge color={COLORS.textMuted}>⏱ {Math.ceil(marcador.tiempoRestante)}s</Badge>
+        <Badge color={COLORS.neonMagenta}>{soyJugador1 ? "Anfitrión" : "Invitado"}</Badge>
+      </div>
+      <Card style={{ padding: 6, marginBottom: 14 }}>
+        <div style={{ position: "relative", width: "100%", aspectRatio: `${CABEZONES_ANCHO} / ${CABEZONES_ALTO}`, borderRadius: 8, overflow: "hidden", border: `2px solid ${COLORS.neonMagenta}`, boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
+          <MotorCabezones
+            esHost={soyJugador1}
+            ladoLocal={ladoLocal}
+            entradaLocalRef={entradaLocalRef}
+            entradaOponenteRef={entradaOponenteRef}
+            estadoRemotoRef={estadoRemotoRef}
+            estadoLocalRef={estadoLocalRef}
+            colorIzq={colorIzq}
+            colorDer={colorDer}
+            nombreIzq={nombreIzq}
+            nombreDer={nombreDer}
+            onEstadoActualizado={alEstadoActualizado}
+          />
+          {marcador.fase === "terminado" && (
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(5,6,10,0.9)" }}>
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontFamily: FONT_DISPLAY, fontSize: 20, letterSpacing: 1, color: COLORS.white, marginBottom: 14 }}>
+                  {marcador.ganador === "empate" ? "EMPATE" : `GANÓ ${(marcador.ganador === "izquierda" ? nombreIzq : nombreDer) || ""}`.toUpperCase()}
+                </div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                  {soyJugador1 && <NeonButton active onClick={jugarDeNuevo}>Revancha</NeonButton>}
+                  <NeonButton onClick={salirDeLaSala}>Salir</NeonButton>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </Card>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", opacity: marcador.fase === "terminado" ? 0.35 : 1, pointerEvents: marcador.fase === "terminado" ? "none" : "auto" }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <BotonAccionCabezones color={COLORS.neonBlue} onPress={() => presionar("izq")} onRelease={() => soltar("izq")}>◀</BotonAccionCabezones>
+          <BotonAccionCabezones color={COLORS.neonBlue} onPress={() => presionar("der")} onRelease={() => soltar("der")}>▶</BotonAccionCabezones>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <BotonAccionCabezones color={COLORS.neonAmber} onPress={() => presionar("saltar")} onRelease={() => soltar("saltar")}>⤴</BotonAccionCabezones>
+          <BotonAccionCabezones color={COLORS.neonMagenta} ancho={70} onPress={() => presionar("patear")} onRelease={() => soltar("patear")}>🦵</BotonAccionCabezones>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Vista principal: hub / personalizar / reglas / elegir modo / partida ──
+function NoHagaSinoJogarView({ user, onVolver }) {
+  const miId = user.id;
+  const [pantalla, setPantalla] = useState("hub"); // hub | personalizar | reglas | modo | bot | online
+  const [colorLocal, setColorLocal] = useState(() => colorCabezonesGuardado(miId));
+  const [record, setRecord] = useState(null);
+
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      const r = await fetchData(k("cabezones_record"));
+      if (!cancelado) setRecord(r || {});
+    })();
+    return () => { cancelado = true; };
+  }, [pantalla]);
+
+  const cambiarColor = (colorId) => {
+    setColorLocal(colorId);
+    guardarColorCabezonesLocal(miId, colorId);
+  };
+
+  const registrarResultado = async (resultado) => {
+    const fresco = (await fetchData(k("cabezones_record"))) || {};
+    const propio = fresco[miId] || { vBot: 0, dBot: 0, vJugador: 0, dJugador: 0, empates: 0, golesFavor: 0, golesContra: 0 };
+    const actualizado = { ...propio };
+    actualizado.golesFavor = (actualizado.golesFavor || 0) + resultado.golesFavor;
+    actualizado.golesContra = (actualizado.golesContra || 0) + resultado.golesContra;
+    if (resultado.gano === null) {
+      actualizado.empates = (actualizado.empates || 0) + 1;
+    } else if (resultado.modo === "bot") {
+      if (resultado.gano) actualizado.vBot = (actualizado.vBot || 0) + 1; else actualizado.dBot = (actualizado.dBot || 0) + 1;
+    } else {
+      if (resultado.gano) actualizado.vJugador = (actualizado.vJugador || 0) + 1; else actualizado.dJugador = (actualizado.dJugador || 0) + 1;
+    }
+    const siguiente = { ...fresco, [miId]: actualizado };
+    await saveData(k("cabezones_record"), siguiente);
+    setRecord(siguiente);
+  };
+
+  if (pantalla === "bot") {
+    return (
+      <PartidaBotCabezones
+        user={user}
+        colorLocal={colorLocal}
+        onVolver={() => setPantalla("hub")}
+        onTerminar={registrarResultado}
+      />
+    );
+  }
+  if (pantalla === "online") {
+    return (
+      <PartidaOnlineCabezones
+        user={user}
+        colorLocal={colorLocal}
+        onVolver={() => setPantalla("hub")}
+        onTerminar={registrarResultado}
+      />
     );
   }
 
@@ -4278,31 +4060,19 @@ function LlegaronLosFeosView({ user, onVolver }) {
     return (
       <div>
         <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
-        <SectionTitle>Personaliza tu Feo</SectionTitle>
+        <SectionTitle>Personaliza tu cabezón</SectionTitle>
         <Card>
           <div style={{ display: "flex", justifyContent: "center", marginBottom: 24 }}>
-            <PersonajeFeo personaje={personajeLocal} size={90} />
+            <div style={{ width: 90, height: 90, borderRadius: "50%", background: hexColorCabezones(colorLocal), border: `3px solid ${COLORS.white}`, boxShadow: `0 0 20px ${hexColorCabezones(colorLocal)}88` }} />
           </div>
           <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 8 }}>COLOR</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
-            {PALETA_FEOS.map((c) => (
-              <button key={c.id} onClick={() => cambiarPersonaje({ color: c.id })} style={{
-                width: 32, height: 32, borderRadius: "50%", background: c.hex, cursor: "pointer",
-                border: personajeLocal.color === c.id ? `3px solid ${COLORS.white}` : "3px solid transparent",
-                boxShadow: personajeLocal.color === c.id ? `0 0 10px ${c.hex}` : "none",
-              }} />
-            ))}
-          </div>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 8 }}>SOMBRERO</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
-            {SOMBREROS_FEOS.map((s) => (
-              <NeonButton key={s.id} small active={personajeLocal.sombrero === s.id} onClick={() => cambiarPersonaje({ sombrero: s.id })}>{s.emoji || "🚫"} {s.label}</NeonButton>
-            ))}
-          </div>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 8 }}>CARA</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 24 }}>
-            {CARAS_FEOS.map((c) => (
-              <NeonButton key={c.id} small active={personajeLocal.cara === c.id} onClick={() => cambiarPersonaje({ cara: c.id })}>{c.emoji}</NeonButton>
+            {PALETA_CABEZONES.map((c) => (
+              <button key={c.id} onClick={() => cambiarColor(c.id)} style={{
+                width: 32, height: 32, borderRadius: "50%", background: c.hex, cursor: "pointer",
+                border: colorLocal === c.id ? `3px solid ${COLORS.white}` : "3px solid transparent",
+                boxShadow: colorLocal === c.id ? `0 0 10px ${c.hex}` : "none",
+              }} />
             ))}
           </div>
           <NeonButton active onClick={() => setPantalla("hub")}>Guardar y volver</NeonButton>
@@ -4317,272 +4087,75 @@ function LlegaronLosFeosView({ user, onVolver }) {
         <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
         <SectionTitle>Cómo jugar</SectionTitle>
         <Card style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.textMuted, lineHeight: 1.7 }}>
-          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Meta:</b> si eres tripulante, terminen todas las misiones del mapa o descubran y expulsen al infiltrado. Si eres el infiltrado, elimina hasta quedar en igualdad de número (o deja que un sabotaje sin reparar acabe con todos).</div>
-          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Moverse y mirar:</b> en computador, WASD para caminar y el mouse para mirar (haz clic sobre el mapa para activar el control del mouse; Esc lo suelta). En celular, el joystick de la izquierda mueve y arrastra el dedo en la mitad derecha de la pantalla para mirar.</div>
-          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Misiones:</b> camina hasta un ícono 📋 — cuando esté cerca aparecerá el botón para jugar el mini-juego. Solo cuentan si las hace un tripulante.</div>
-          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Camuflaje:</b> acércate a un objeto del mapa y camúflate para desaparecer del radar de los demás por un rato — útil para esconderte del infiltrado o, si lo eres, para tender una emboscada. No puedes moverte ni hacer nada más mientras estás camuflado.</div>
-          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Reuniones:</b> reporta un cuerpo 💀 o usa el punto rojo de emergencia para votar y expulsar a quien sospechen.</div>
-          <div><b style={{ color: COLORS.white }}>Sabotajes:</b> el infiltrado puede provocar un apagón o una avería crítica — repárenla a tiempo en el punto indicado del mapa o los tripulantes pierden.</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Meta:</b> mete más goles que tu rival antes de que se acabe el tiempo (2 minutos), o llega primero a 5 goles.</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Moverse:</b> ◀ ▶ para correr, ⤴ para saltar, 🦵 para patear o cabecear (si el balón está arriba, se cabecea; si está abajo, se patea). En computador también funciona el teclado: A/D o flechas, W/flecha arriba para saltar, espacio/S/flecha abajo para patear.</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Power-ups:</b> cada tanto cae un ícono a la cancha — el balón lo activa al tocarlo. ⚡ te hace más rápido, 🎈 te agranda la cabeza (más alcance de cabezazo y salto), 🔥 hace el balón más fuerte al patearlo, 🧊 congela al rival un momento.</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Contra el computador:</b> juega solo, cuando quieras, sin depender de nadie más.</div>
+          <div><b style={{ color: COLORS.white }}>En línea:</b> 1 contra 1 con otro de los 5 de la cúpula, en tiempo real. Quien entra primero a la sala arma el partido; el resto espera si ya hay dos jugando.</div>
         </Card>
       </div>
     );
   }
 
-  // ══════════════════ PANTALLA "SALA" (conectada a Firebase) ══════════════════
-  if (cargando || !sala) {
+  if (pantalla === "modo") {
     return (
       <div>
         <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
-        <SectionTitle>Llegaron los Feos</SectionTitle>
-        <Card><div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>Conectando con la sala...</div></Card>
-      </div>
-    );
-  }
-
-  if (sala.fase === "lobby") {
-    const unidos = Object.keys(sala.jugadores);
-    const puedeIniciar = user.rol === "lider" && unidos.length >= 3;
-    return (
-      <div>
-        <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
-        <SectionTitle>Llegaron los Feos</SectionTitle>
-        <Card style={{ marginBottom: 14 }}>
-          <CornerFrame color={COLORS.neonMagenta} size={12} thickness={2} />
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 20 }}>
-            {USUARIOS_REALES.map((u) => {
-              const j = sala.jugadores[u.id];
-              return (
-                <div key={u.id} style={{ display: "flex", flexDirection: "column", alignItems: "center", opacity: j ? 1 : 0.35, width: 76 }}>
-                  <PersonajeFeo personaje={j ? j.personaje : personajeAleatorioFeos(u.id)} size={48} />
-                  <div style={{ fontFamily: FONT_BODY, fontSize: 11, fontWeight: 700, color: COLORS.white, marginTop: 4, textTransform: "uppercase", textAlign: "center" }}>{u.nombre}</div>
-                  <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: j ? COLORS.neonSuccess : COLORS.textMuted }}>{j ? "Listo" : "Esperando"}</div>
-                </div>
-              );
-            })}
+        <SectionTitle>¿Contra quién juegas?</SectionTitle>
+        <Card style={{ textAlign: "center", padding: "28px 20px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 280, margin: "0 auto" }}>
+            <NeonButton active onClick={() => setPantalla("bot")}>🤖 Contra el computador</NeonButton>
+            <NeonButton onClick={() => setPantalla("online")}>🌐 En línea vs. la cúpula</NeonButton>
           </div>
-          {user.rol === "lider" ? (
-            <>
-              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 8 }}>MAPA</div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-                {MAPS_FEOS_LISTA.map((m) => (
-                  <NeonButton key={m.id} small active={mapaElegido === m.id} onClick={() => setMapaElegido(m.id)}>{m.icono} {m.nombre}</NeonButton>
-                ))}
-              </div>
-              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 8 }}>INFILTRADOS</div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
-                <NeonButton small active={numImpostoresElegido === 1} onClick={() => setNumImpostoresElegido(1)}>1</NeonButton>
-                <NeonButton small active={numImpostoresElegido === 2} onClick={() => setNumImpostoresElegido(2)}>2</NeonButton>
-              </div>
-              <NeonButton active disabled={!puedeIniciar} onClick={iniciarPartida}>{puedeIniciar ? "Iniciar partida" : "Se necesitan al menos 3 jugadores"}</NeonButton>
-            </>
-          ) : (
-            <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.neonBlue }}>Esperando a que {USUARIOS_REALES.find((u) => u.rol === "lider")?.nombre} elija mapa e inicie la partida...</div>
-          )}
         </Card>
       </div>
     );
   }
 
-  // ── En partida / reunión / terminado ──
-  const misDatos = sala.jugadores[miId] || jugadorFeosVacio(MAPS_FEOS[sala.mapaId] || MAPS_FEOS.base, personajeLocal);
-  const esImpostor = sala.impostores.includes(miId);
-  const estoyVivo = !!sala.jugadores[miId] && misDatos.vivo && !misDatos.expulsado;
-  const mapa = MAPS_FEOS[sala.mapaId] || MAPS_FEOS.base;
-
-  if (sala.fase === "terminado") {
-    const gananImpostores = sala.ganador === "impostores";
-    return (
-      <div>
-        <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
-        <SectionTitle>Llegaron los Feos</SectionTitle>
-        <Card style={{ textAlign: "center" }}>
-          <CornerFrame color={gananImpostores ? COLORS.neonRed : COLORS.neonSuccess} size={14} thickness={2} />
-          <div style={{ fontFamily: FONT_DISPLAY, fontSize: 30, letterSpacing: 2, color: gananImpostores ? COLORS.neonRed : COLORS.neonSuccess, textShadow: `0 0 16px ${gananImpostores ? COLORS.neonRed : COLORS.neonSuccess}88`, marginBottom: 14 }}>
-            {gananImpostores ? "GANÓ EL INFILTRADO" : "GANARON LOS TRIPULANTES"}
-          </div>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 6, letterSpacing: 1 }}>EL FEO INFILTRADO ERA:</div>
-          <div style={{ display: "flex", justifyContent: "center", gap: 14, marginBottom: 24, flexWrap: "wrap" }}>
-            {sala.impostores.map((id) => (
-              <div key={id} style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                <PersonajeFeo personaje={sala.jugadores[id]?.personaje} size={44} />
-                <Badge color={COLORS.neonRed}>{USUARIOS_REALES.find((u) => u.id === id)?.nombre || id}</Badge>
-              </div>
-            ))}
-          </div>
-          <NeonButton active onClick={volverALobby}>Jugar de nuevo</NeonButton>
-        </Card>
-      </div>
-    );
-  }
-
-  const miPosActual = estoyVivo ? miPos : misDatos;
-  const zonaActual = mapa.zonas.find((z) => miPosActual.x >= z.rect.x && miPosActual.x <= z.rect.x + z.rect.w && miPosActual.y >= z.rect.y && miPosActual.y <= z.rect.y + z.rect.h);
-  const tareasCercanas = mapa.tareas.filter((t) => distanciaFeos(miPosActual, t) <= FEOS_INTERACT_RADIO);
-  const propCercano = mapa.props.find((p) => distanciaFeos(miPosActual, p) <= FEOS_INTERACT_RADIO);
-  const cercanosParaMatar = Object.entries(sala.jugadores)
-    .filter(([id, j]) => id !== miId && j.vivo && !j.expulsado && !j.camuflado && !sala.impostores.includes(id) && distanciaFeos(miPosActual, j) <= FEOS_INTERACT_RADIO)
-    .map(([id]) => id);
-  const cuerpoCerca = !!(sala.cuerpo && distanciaFeos(miPosActual, sala.cuerpo) <= FEOS_INTERACT_RADIO);
-  const emergenciaCerca = distanciaFeos(miPosActual, mapa.puntoEmergencia) <= FEOS_INTERACT_RADIO;
-  const sabotajeCerca = !!(sala.sabotaje && distanciaFeos(miPosActual, mapa.puntosSabotaje[sala.sabotaje.tipo]) <= FEOS_INTERACT_RADIO);
-  const killCooldownRestante = Math.max(0, FEOS_KILL_COOLDOWN_MS - (ahora - (misDatos.ultimoKillTs || 0)));
-  const sabotajeCooldownRestante = Math.max(0, FEOS_SABOTAJE_COOLDOWN_MS - (ahora - (misDatos.ultimoSabotajeTs || 0)));
-  const camuflajeCooldownRestante = Math.max(0, FEOS_CAMUFLAJE_COOLDOWN_MS - (ahora - (misDatos.ultimoCamuflajeTs || 0)));
-  const activo3D = estoyVivo && sala.fase === "jugando" && !misDatos.camuflado && !tareaAbierta;
+  const propio = record && record[miId];
+  const tablaOnline = USUARIOS_REALES
+    .map((u) => ({ ...u, r: (record && record[u.id]) || { vJugador: 0, dJugador: 0 } }))
+    .sort((a, b) => (b.r.vJugador || 0) - (a.r.vJugador || 0));
 
   return (
     <div>
-      <button onClick={() => setPantalla("hub")} style={ESTILO_BOTON_VOLVER}>← Volver</button>
-      <SectionTitle>Llegaron los Feos</SectionTitle>
-
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
-        <Badge color={esImpostor ? COLORS.neonRed : COLORS.neonBlue}>{esImpostor ? "Eres el infiltrado" : "Eres tripulante"}</Badge>
-        <Badge color={COLORS.neonSuccess}>Misiones: {sala.tareasHechas.length}/{mapa.tareas.length}</Badge>
-        <Badge color={COLORS.textMuted}>{mapa.icono} {mapa.nombre}</Badge>
-        {!estoyVivo && <Badge color={COLORS.textMuted}>{misDatos.expulsado ? "Fuiste expulsado" : "Te eliminaron"} — modo fantasma</Badge>}
-      </div>
-
-      {sala.sabotaje && (
-        <Card style={{ marginBottom: 14, borderColor: COLORS.neonRed }}>
-          <div style={{ fontFamily: FONT_DISPLAY, fontSize: 16, color: COLORS.neonRed, letterSpacing: 1, textShadow: `0 0 10px ${COLORS.neonRed}88` }}>
-            ⚠ {(mapa.sabotajeNombres[sala.sabotaje.tipo] || "SABOTAJE").toUpperCase()} — {Math.max(0, Math.ceil((sala.sabotaje.venceEn - ahora) / 1000))}s
-          </div>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>
-            Repárenlo en el punto marcado del mapa antes de que se acabe el tiempo.
-          </div>
-        </Card>
-      )}
-
-      <Card style={{ marginBottom: 14, padding: 6 }}>
-        <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 10", background: "#05060a", border: `2px solid ${COLORS.neonMagenta}`, borderRadius: 8, overflow: "hidden", boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
-          <EscenaFeos3D
-            mapa={mapa}
-            miPosRef={miPosRef}
-            keysRef={keysRef}
-            activo={activo3D}
-            jugadoresRemotos={Object.entries(sala.jugadores)
-              .filter(([id, j]) => id !== miId && j.vivo && !j.expulsado && !j.camuflado)
-              .map(([id, j]) => ({ id, x: j.x, y: j.y, personaje: j.personaje, nombre: USUARIOS_REALES.find((u) => u.id === id)?.nombre || id }))}
-            cuerpo={sala.cuerpo}
-            tareas={mapa.tareas}
-            tareasHechas={sala.tareasHechas}
-            props={mapa.props}
-            puntoEmergencia={mapa.puntoEmergencia}
-            puntosSabotaje={mapa.puntosSabotaje}
-            sabotaje={sala.sabotaje}
-          />
+      <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver a Cúpula Games</button>
+      <SectionTitle>No haga sino Jogar</SectionTitle>
+      <Card style={{ textAlign: "center", padding: "34px 20px", marginBottom: 14 }}>
+        <CornerFrame color={COLORS.neonMagenta} size={16} thickness={2} />
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 18 }}>
+          <div style={{ width: 74, height: 74, borderRadius: "50%", background: hexColorCabezones(colorLocal), border: `3px solid ${COLORS.white}`, boxShadow: `0 0 20px ${hexColorCabezones(colorLocal)}88` }} />
         </div>
-        <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: COLORS.textMuted, textAlign: "center", marginTop: 6, letterSpacing: 0.5 }}>
-          {esMovil ? "Joystick para moverte · desliza a la derecha del mapa para mirar" : "WASD para moverte · clic sobre el mapa + mouse para mirar"}
+        <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 26, maxWidth: 440, marginLeft: "auto", marginRight: "auto", lineHeight: 1.6 }}>
+          Fútbol de cabezones estilo arcade: corre, salta y patea para meter más goles que tu rival, solo contra el computador o en línea 1 contra 1 con los de la cúpula.
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 260, margin: "0 auto" }}>
+          <NeonButton active onClick={() => setPantalla("modo")}>🎮 Jugar</NeonButton>
+          <NeonButton onClick={() => setPantalla("personalizar")}>🎨 Personalizar mi cabezón</NeonButton>
+          <NeonButton onClick={() => setPantalla("reglas")}>📖 Cómo jugar</NeonButton>
         </div>
       </Card>
 
-      {estoyVivo && sala.fase === "jugando" && (
+      {propio && (
         <Card style={{ marginBottom: 14 }}>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>
-            {misDatos.camuflado ? "ESTÁS CAMUFLADO — NO PUEDES MOVERTE" : `ESTÁS EN: ${(zonaActual ? zonaActual.nombre : "zona desconocida").toUpperCase()}`}
-          </div>
-          {misDatos.camuflado ? (
-            <NeonButton active onClick={revelarse}>Salir del camuflaje</NeonButton>
-          ) : (
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {tareasCercanas.map((t) => {
-                const hecha = sala.tareasHechas.includes(t.id);
-                return <NeonButton key={t.id} small active={hecha} disabled={hecha} onClick={() => setTareaAbierta(t)}>{hecha ? "✓ " : ""}{t.nombre}</NeonButton>;
-              })}
-              {propCercano && (
-                <NeonButton small disabled={camuflajeCooldownRestante > 0} onClick={() => camuflarse(propCercano.icono)}>
-                  {camuflajeCooldownRestante > 0 ? `Camuflaje (${Math.ceil(camuflajeCooldownRestante / 1000)}s)` : `${propCercano.icono} Camuflarse`}
-                </NeonButton>
-              )}
-              {esImpostor && cercanosParaMatar.map((id) => (
-                <NeonButton key={id} small disabled={killCooldownRestante > 0} onClick={() => eliminarJugador(id)}>
-                  {killCooldownRestante > 0 ? `Eliminar (${Math.ceil(killCooldownRestante / 1000)}s)` : `Eliminar a ${USUARIOS_REALES.find((u) => u.id === id)?.nombre || id}`}
-                </NeonButton>
-              ))}
-              {cuerpoCerca && <NeonButton small active onClick={() => iniciarReunion("reporte")}>🚨 Reportar cuerpo</NeonButton>}
-              {emergenciaCerca && !misDatos.usoEmergencia && <NeonButton small onClick={() => iniciarReunion("emergencia")}>📢 Reunión de emergencia</NeonButton>}
-              {sabotajeCerca && <NeonButton small active onClick={repararSabotaje}>🔧 Reparar: {mapa.sabotajeNombres[sala.sabotaje.tipo]}</NeonButton>}
-            </div>
-          )}
-          {esImpostor && !misDatos.camuflado && (
-            <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${COLORS.border}` }}>
-              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.neonRed, letterSpacing: 1, marginBottom: 8 }}>SABOTAJE</div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <NeonButton small disabled={!!sala.sabotaje || sabotajeCooldownRestante > 0} onClick={() => activarSabotaje("luces")}>
-                  {sabotajeCooldownRestante > 0 && !sala.sabotaje ? `Espera (${Math.ceil(sabotajeCooldownRestante / 1000)}s)` : `Sabotear: ${mapa.sabotajeNombres.luces}`}
-                </NeonButton>
-                <NeonButton small disabled={!!sala.sabotaje || sabotajeCooldownRestante > 0} onClick={() => activarSabotaje("reactor")}>
-                  {sabotajeCooldownRestante > 0 && !sala.sabotaje ? `Espera (${Math.ceil(sabotajeCooldownRestante / 1000)}s)` : `Sabotear: ${mapa.sabotajeNombres.reactor}`}
-                </NeonButton>
-              </div>
-            </div>
-          )}
-        </Card>
-      )}
-
-      {!estoyVivo && sala.fase === "jugando" && (
-        <Card style={{ marginBottom: 14 }}>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, textAlign: "center" }}>
-            Sigues viendo la partida en el mapa de arriba, pero ya no puedes moverte ni interactuar.
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>TU RÉCORD</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Badge color={COLORS.neonSuccess}>vs. Computador: {propio.vBot || 0}V - {propio.dBot || 0}D</Badge>
+            <Badge color={COLORS.neonBlue}>En línea: {propio.vJugador || 0}V - {propio.dJugador || 0}D</Badge>
+            <Badge color={COLORS.textMuted}>Goles: {propio.golesFavor || 0} a favor / {propio.golesContra || 0} en contra</Badge>
           </div>
         </Card>
       )}
 
-      {tareaAbierta && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-          <Card style={{ width: "min(360px, 92vw)" }}>
-            <CornerFrame color={COLORS.neonBlue} size={12} thickness={2} />
-            <div style={{ fontFamily: FONT_DISPLAY, fontSize: 16, color: COLORS.white, letterSpacing: 1, marginBottom: 16, textAlign: "center" }}>{tareaAbierta.nombre}</div>
-            {tareaAbierta.tipo === "escaneo" && <TareaEscaneo onCompletar={() => completarTarea(tareaAbierta.id, esImpostor)} onCancelar={() => setTareaAbierta(null)} />}
-            {tareaAbierta.tipo === "codigo" && <TareaCodigo onCompletar={() => completarTarea(tareaAbierta.id, esImpostor)} onCancelar={() => setTareaAbierta(null)} />}
-            {tareaAbierta.tipo === "cables" && <TareaCables onCompletar={() => completarTarea(tareaAbierta.id, esImpostor)} onCancelar={() => setTareaAbierta(null)} />}
-          </Card>
-        </div>
-      )}
-
-      {sala.fase === "reunion" && sala.reunion && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, overflowY: "auto" }}>
-          <Card style={{ width: "min(420px, 92vw)" }}>
-            <CornerFrame color={COLORS.neonRed} size={14} thickness={2} />
-            {!sala.reunion.resuelta ? (
-              <>
-                <div style={{ fontFamily: FONT_DISPLAY, fontSize: 20, color: COLORS.neonRed, letterSpacing: 1, marginBottom: 6, textAlign: "center" }}>
-                  {sala.reunion.motivo === "reporte" ? "🚨 CUERPO REPORTADO" : "📢 REUNIÓN DE EMERGENCIA"}
-                </div>
-                <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, textAlign: "center", marginBottom: 16 }}>
-                  Vota a quien sospeches — {Math.max(0, Math.ceil((sala.reunion.venceEn - ahora) / 1000))}s
-                </div>
-                {estoyVivo ? (
-                  sala.reunion.votos[miId] !== undefined ? (
-                    <div style={{ textAlign: "center", fontFamily: FONT_MONO, fontSize: 12, color: COLORS.neonSuccess }}>
-                      Voto registrado. Esperando a los demás ({Object.keys(sala.reunion.votos).length}/{Object.keys(sala.jugadores).filter((id) => sala.jugadores[id].vivo && !sala.jugadores[id].expulsado).length})...
-                    </div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      {Object.keys(sala.jugadores).filter((id) => sala.jugadores[id].vivo && !sala.jugadores[id].expulsado && id !== miId).map((id) => (
-                        <NeonButton key={id} onClick={() => votar(id)}>{USUARIOS_REALES.find((u) => u.id === id)?.nombre || id}</NeonButton>
-                      ))}
-                      <NeonButton onClick={() => votar("omitir")}>Omitir voto</NeonButton>
-                    </div>
-                  )
-                ) : (
-                  <div style={{ textAlign: "center", fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>No puedes votar — estás fuera de la partida.</div>
-                )}
-              </>
-            ) : (
-              <div style={{ textAlign: "center" }}>
-                <div style={{ fontFamily: FONT_DISPLAY, fontSize: 20, color: COLORS.white, letterSpacing: 1, marginBottom: 10 }}>
-                  {sala.reunion.expulsadoId ? `${USUARIOS_REALES.find((u) => u.id === sala.reunion.expulsadoId)?.nombre || sala.reunion.expulsadoId} fue expulsado` : "Nadie fue expulsado (empate)"}
-                </div>
-                {sala.reunion.expulsadoId && (
-                  <Badge color={sala.reunion.eraImpostor ? COLORS.neonRed : COLORS.neonBlue}>{sala.reunion.eraImpostor ? "SÍ era el infiltrado" : "NO era el infiltrado"}</Badge>
-                )}
-              </div>
-            )}
-          </Card>
-        </div>
-      )}
+      <Card>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>RÉCORD HISTÓRICO — EN LÍNEA</div>
+        {tablaOnline.map((u, i) => (
+          <div key={u.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: i < tablaOnline.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
+            <span style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.white, fontWeight: 700, textTransform: "uppercase" }}>{u.nombre}</span>
+            <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>{u.r.vJugador || 0}V - {u.r.dJugador || 0}D</span>
+          </div>
+        ))}
+      </Card>
     </div>
   );
 }
@@ -4592,7 +4165,7 @@ const CUPULA_GAMES_LISTA = [
   { id: "happyweed", nombre: "Happy Weed", desc: "Estilo Flappy Bird: esquiva los portales neón con tu propia foto convertida en pajarito.", color: COLORS.neonRed },
   { id: "aura", nombre: "Batallas de Aura", desc: "Estilo Brick Breaker: rompe los bloques de energía con tu esfera de aura antes de perder tus vidas.", color: COLORS.neonBlue },
   { id: "feria", nombre: "Feria de Tiro", desc: "Galería de disparos en primera persona: dale a patos, latas y botellas antes de quedarte sin tiempo o munición.", color: COLORS.neonAmber },
-  { id: "feos", nombre: "Llegaron los Feos", desc: "Multijugador en 3D y primera persona para los 5 — camina por varios mapas, camúflate como un objeto, cumple misiones y descubre (o sé) al infiltrado antes de que acabe con todos.", color: COLORS.neonMagenta },
+  { id: "cabezones", nombre: "No haga sino Jogar", desc: "Fútbol de cabezones estilo arcade: corre, salta y patea/cabecea para meter más goles que tu rival, solo contra el computador o en línea 1 contra 1 con los de la cúpula. Tiene power-ups y récord histórico.", color: COLORS.neonMagenta },
 ];
 
 function CupulaGamesView({ user }) {
@@ -4600,7 +4173,7 @@ function CupulaGamesView({ user }) {
 
   if (juegoActivo === "happyweed") return <HappyWeedView user={user} onVolver={() => setJuegoActivo(null)} />;
   if (juegoActivo === "aura") return <AuraBattleView user={user} onVolver={() => setJuegoActivo(null)} />;
-  if (juegoActivo === "feos") return <LlegaronLosFeosView user={user} onVolver={() => setJuegoActivo(null)} />;
+  if (juegoActivo === "cabezones") return <NoHagaSinoJogarView user={user} onVolver={() => setJuegoActivo(null)} />;
   if (juegoActivo === "feria") return <FeriaTiroView user={user} onVolver={() => setJuegoActivo(null)} />;
 
   return (
