@@ -4778,10 +4778,14 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
   }, [soyJugador1, sala && sala.fase, roomId]);
 
   // Ambos jugadores reciben el estado autoritativo del servidor de Cúpula en tiempo real, por igual
-  // (antes solo el invitado hacía esto; el anfitrión se leía a sí mismo). Si en 40s nunca llega ni
-  // un solo estado del servidor — puede tardar unos segundos la primera vez si el servidor estaba
-  // "dormido" (se apaga solo tras un rato sin uso) — asumimos que algo falló y libero la sala en vez
-  // de dejarla trabada para siempre.
+  // (antes solo el invitado hacía esto; el anfitrión se leía a sí mismo). Si en 75s nunca llega ni
+  // un solo estado del servidor — puede tardar hasta cerca de un minuto la primera vez si el servidor
+  // estaba "dormido" (se apaga solo tras un rato sin uso; el propio hospedaje avisa que puede tardar
+  // 50s o más en despertar) — asumimos que algo falló y libero la sala en vez de dejarla trabada para
+  // siempre. Antes este margen era de 40s, que resultó ser demasiado corto: un despertar lento del
+  // servidor (cerca del límite de esos 50s que el hospedaje mismo advierte) hacía que el margen se
+  // venciera ANTES de que llegara el primer estado, sacando a los jugadores de la sala justo cuando el
+  // servidor ya casi estaba listo.
   useEffect(() => {
     if (!enPartida) return;
     let ultimoOk = Date.now();
@@ -4789,7 +4793,7 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
       if (e) { estadoRemotoRef.current = e; ultimoOk = Date.now(); }
     });
     const id = setInterval(() => {
-      if (Date.now() - ultimoOk > 40000) {
+      if (Date.now() - ultimoOk > 75000) {
         const limpia = salaVaciaCabezones();
         saveData(k(claveSala), limpia);
         setSala(limpia);
@@ -4938,7 +4942,7 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(5,6,10,0.9)" }}>
               <div style={{ textAlign: "center", fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, padding: 20 }}>
                 Conectando con el servidor de Cúpula...
-                <div style={{ marginTop: 6, fontSize: 10, opacity: 0.7 }}>Puede tardar unos segundos si estaba inactivo.</div>
+                <div style={{ marginTop: 6, fontSize: 10, opacity: 0.7 }}>Puede tardar hasta cerca de un minuto si estaba inactivo. No cierres esta pantalla.</div>
               </div>
             </div>
           )}
