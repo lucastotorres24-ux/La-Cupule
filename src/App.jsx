@@ -3172,6 +3172,9 @@ const CABEZONES_POWERUPS = [
   { tipo: "cabezon", icono: "🎈", nombre: "Cabezón", color: "#FF6FD8" },
   { tipo: "fuego", icono: "🔥", nombre: "Balón de fuego", color: "#FF7A1A" },
   { tipo: "congelar", icono: "🧊", nombre: "Congela al rival", color: "#7FE8FF" },
+  { tipo: "lento", icono: "🐌", nombre: "Ralentiza al rival", color: "#9B5CFF" },
+  { tipo: "arco_chico", icono: "🛡️", nombre: "Achica tu arco", color: "#3DFFA0" },
+  { tipo: "arco_grande", icono: "🎯", nombre: "Agranda el arco rival", color: "#FF2FD6" },
 ];
 
 // ── Camisetas de equipo random (por partido, no se elige — así como los juegos de cabezones de
@@ -3231,6 +3234,11 @@ function crearEstadoPartidoCabezones(opts) {
     powerupProximoEn: CABEZONES_POWERUP_INTERVALO_S,
     ganador: null,
     equipoIzq, equipoDer,
+    // Tamaño efectivo de cada arco (1 = normal). Los power-ups "arco_chico"/"arco_grande" lo
+    // cambian temporalmente — se guarda por LADO (no por jugador) porque es una propiedad de la
+    // cancha, y con revanchas/reinicios el arco de cada lado siempre debe volver a 1.
+    arcoIzqFactor: 1, arcoIzqVenceEn: 0,
+    arcoDerFactor: 1, arcoDerVenceEn: 0,
   };
 }
 function clonarEstadoCabezones(estado) {
@@ -3250,7 +3258,9 @@ function clonarEstadoCabezones(estado) {
 const CABEZONES_ACELERACION = 4600;
 function moverJugadorCabezones(jugador, entrada, dt) {
   const congelado = jugador.efecto === "congelado";
-  const velocidadBase = jugador.efecto === "velocidad" ? CABEZONES_VELOCIDAD * 1.55 : CABEZONES_VELOCIDAD;
+  const velocidadBase = jugador.efecto === "velocidad" ? CABEZONES_VELOCIDAD * 1.55
+    : jugador.efecto === "lento" ? CABEZONES_VELOCIDAD * 0.5
+    : CABEZONES_VELOCIDAD;
   let vxObjetivo = 0;
   if (!congelado) {
     if (entrada.izq) vxObjetivo -= velocidadBase;
@@ -3296,15 +3306,18 @@ function avanzarBalonCabezones(balon, dt) {
   if (balon.altura > alturaMax) { balon.altura = alturaMax; balon.vAltura = -Math.abs(balon.vAltura) * 0.5; }
 }
 
-function revisarGolYParedes(balon) {
+// arcoIzqFactor/arcoDerFactor (opcionales, 1 por defecto) escalan la altura efectiva del arco de
+// CADA lado — los power-ups "arco_chico"/"arco_grande" los cambian temporalmente por partido.
+function revisarGolYParedes(balon, arcoIzqFactor, arcoDerFactor) {
   const radio = balon.efecto === "gigante" ? CABEZONES_RADIO_BALON * 1.8 : CABEZONES_RADIO_BALON;
-  const enVentanaGol = balon.altura < CABEZONES_ARCO_ALTO;
   if (balon.x - radio < 0) {
-    if (enVentanaGol) return "derecha";
+    const altoArcoIzq = CABEZONES_ARCO_ALTO * (arcoIzqFactor || 1);
+    if (balon.altura < altoArcoIzq) return "derecha";
     balon.x = radio; balon.vx = Math.abs(balon.vx) * CABEZONES_RESTITUCION;
   }
   if (balon.x + radio > CABEZONES_ANCHO) {
-    if (enVentanaGol) return "izquierda";
+    const altoArcoDer = CABEZONES_ARCO_ALTO * (arcoDerFactor || 1);
+    if (balon.altura < altoArcoDer) return "izquierda";
     balon.x = CABEZONES_ANCHO - radio; balon.vx = -Math.abs(balon.vx) * CABEZONES_RESTITUCION;
   }
   return null;
@@ -3313,12 +3326,15 @@ function revisarGolYParedes(balon) {
 // El travesano de cada arco ahora sí colisiona de verdad: si el balón lo toca (por arriba o por
 // abajo) rebota en vez de atravesarlo. Solo cubre la barra horizontal de arriba — el resto del
 // marco es visual, para no bloquear tiros que van limpio hacia el gol por abajo.
-function revisarColisionArco(balon) {
+function revisarColisionArco(balon, arcoIzqFactor, arcoDerFactor) {
   const radio = balon.efecto === "gigante" ? CABEZONES_RADIO_BALON * 1.8 : CABEZONES_RADIO_BALON;
   const mitadGrosor = CABEZONES_TRAVESANO_GROSOR / 2;
-  [{ enBorde: 0, signo: 1 }, { enBorde: CABEZONES_ANCHO, signo: -1 }].forEach(({ enBorde, signo }) => {
+  [
+    { enBorde: 0, signo: 1, factor: arcoIzqFactor || 1 },
+    { enBorde: CABEZONES_ANCHO, signo: -1, factor: arcoDerFactor || 1 },
+  ].forEach(({ enBorde, signo, factor }) => {
     const xPoste = enBorde + signo * CABEZONES_ARCO_ANCHO;
-    const yTravesano = CABEZONES_SUELO_Y - CABEZONES_ARCO_ALTO;
+    const yTravesano = CABEZONES_SUELO_Y - CABEZONES_ARCO_ALTO * factor;
     const ballY = CABEZONES_SUELO_Y - balon.altura;
     const xMin = Math.min(enBorde, xPoste), xMax = Math.max(enBorde, xPoste);
     const cercaX = Math.max(xMin, Math.min(balon.x, xMax));
@@ -3437,12 +3453,22 @@ function intentarGolpe(jugador, balon) {
   return true;
 }
 
+const CABEZONES_ARCO_FACTOR_DURACION_S = 8;
 function aplicarPowerupCabezones(estado, tipo, ladoBeneficiario) {
   if (tipo === "fuego") { estado.balon.efecto = "fuego"; estado.balon.efectoVenceEn = CABEZONES_POWERUP_DURACION_S; return; }
   const jugador = ladoBeneficiario === "derecha" ? estado.jugadorDer : estado.jugadorIzq;
-  if (tipo === "congelar") {
+  if (tipo === "congelar" || tipo === "lento") {
     const rival = jugador === estado.jugadorIzq ? estado.jugadorDer : estado.jugadorIzq;
-    rival.efecto = "congelado"; rival.efectoVenceEn = 2.2;
+    rival.efecto = tipo;
+    rival.efectoVenceEn = tipo === "congelar" ? 2.2 : 3.5;
+  } else if (tipo === "arco_chico") {
+    // Achica el propio arco: quien lo toma se vuelve más difícil de vencer un rato.
+    if (ladoBeneficiario === "izquierda") { estado.arcoIzqFactor = 0.55; estado.arcoIzqVenceEn = CABEZONES_ARCO_FACTOR_DURACION_S; }
+    else { estado.arcoDerFactor = 0.55; estado.arcoDerVenceEn = CABEZONES_ARCO_FACTOR_DURACION_S; }
+  } else if (tipo === "arco_grande") {
+    // Agranda el arco RIVAL: quien lo toma se lo pone más fácil para anotarle al otro.
+    if (ladoBeneficiario === "izquierda") { estado.arcoDerFactor = 1.7; estado.arcoDerVenceEn = CABEZONES_ARCO_FACTOR_DURACION_S; }
+    else { estado.arcoIzqFactor = 1.7; estado.arcoIzqVenceEn = CABEZONES_ARCO_FACTOR_DURACION_S; }
   } else {
     jugador.efecto = tipo; jugador.efectoVenceEn = CABEZONES_POWERUP_DURACION_S;
   }
@@ -3491,6 +3517,8 @@ function expirarEfectosCabezones(estado, dt) {
     if (j.efecto) { j.efectoVenceEn -= dt; if (j.efectoVenceEn <= 0) { j.efecto = null; j.efectoVenceEn = 0; } }
   });
   if (estado.balon.efecto) { estado.balon.efectoVenceEn -= dt; if (estado.balon.efectoVenceEn <= 0) { estado.balon.efecto = null; estado.balon.efectoVenceEn = 0; } }
+  if (estado.arcoIzqFactor !== 1) { estado.arcoIzqVenceEn -= dt; if (estado.arcoIzqVenceEn <= 0) { estado.arcoIzqFactor = 1; estado.arcoIzqVenceEn = 0; } }
+  if (estado.arcoDerFactor !== 1) { estado.arcoDerVenceEn -= dt; if (estado.arcoDerVenceEn <= 0) { estado.arcoDerFactor = 1; estado.arcoDerVenceEn = 0; } }
 }
 
 // Motor principal: función pura, siempre da el mismo resultado para el mismo estado+entradas.
@@ -3510,12 +3538,12 @@ function avanzarPartidoCabezones(estado, dt, entradaIzq, entradaDer) {
     resolverColisionJugadorJugador(nuevo.jugadorIzq, nuevo.jugadorDer);
     const balonAntesX = nuevo.balon.x, balonAntesAltura = nuevo.balon.altura;
     avanzarBalonCabezones(nuevo.balon, subDt);
-    revisarColisionArco(nuevo.balon);
+    revisarColisionArco(nuevo.balon, nuevo.arcoIzqFactor, nuevo.arcoDerFactor);
     if (resolverColisionJugadorBalon(nuevo.jugadorIzq, nuevo.balon, balonAntesX, balonAntesAltura)) nuevo.ultimoToque = "izquierda";
     if (resolverColisionJugadorBalon(nuevo.jugadorDer, nuevo.balon, balonAntesX, balonAntesAltura)) nuevo.ultimoToque = "derecha";
     if (intentarGolpe(nuevo.jugadorIzq, nuevo.balon)) nuevo.ultimoToque = "izquierda";
     if (intentarGolpe(nuevo.jugadorDer, nuevo.balon)) nuevo.ultimoToque = "derecha";
-    gol = revisarGolYParedes(nuevo.balon);
+    gol = revisarGolYParedes(nuevo.balon, nuevo.arcoIzqFactor, nuevo.arcoDerFactor);
     if (gol) break;
   }
   actualizarPowerupsCabezones(nuevo, dt);
@@ -3529,6 +3557,9 @@ function avanzarPartidoCabezones(estado, dt, entradaIzq, entradaDer) {
     nuevo.jugadorDer = crearJugadorCabezones("derecha");
     nuevo.balon = crearBalonCabezones();
     nuevo.powerup = null;
+    // un gol es un punto de reinicio limpio — las ventajas de arco no se cargan de un gol al otro
+    nuevo.arcoIzqFactor = 1; nuevo.arcoIzqVenceEn = 0;
+    nuevo.arcoDerFactor = 1; nuevo.arcoDerVenceEn = 0;
   }
   const metaGoles = nuevo.metaGoles || CABEZONES_GOLES_PARA_GANAR;
   if (nuevo.tiempoRestante <= 0 || nuevo.golesIzq >= metaGoles || nuevo.golesDer >= metaGoles) {
@@ -3551,10 +3582,16 @@ function avanzarPartidoCabezones(estado, dt, entradaIzq, entradaDer) {
 // esos 90ms, casi lo mismo que el alcance de golpe del bot, así que un tiro cercano y rápido podía
 // literalmente entrar antes de que el bot llegara a reaccionar una sola vez. Ahora los niveles más
 // altos "piensan" más seguido (reflejos más rápidos de verdad, no solo más precisos).
+// "ruido" = margen de error aleatorio (en unidades de cancha) que se le suma a dónde apunta a
+// pararse en cada decisión — sin esto, la IA es una función determinista del estado del juego, así
+// que jugando varias veces contra ella se puede aprender el patrón exacto ("si me paro acá, el bot
+// SIEMPRE hace esto") y explotarlo para goles fáciles una y otra vez. Con ruido, la MISMA situación
+// no produce siempre exactamente la misma reacción — más en fácil (menos preciso), casi nada en
+// Ronaldinho (pero no cero, para que tampoco sea 100% predecible ni al nivel más alto).
 const DIFICULTADES_BOT_CABEZONES = {
-  facil: { reaccion: 0.6, zonaMuerta: 22, alcanceExtra: 1.2, probSalto: 0.35, cobertura: 0.4, anclaje: 0.18, tick: 140 },
-  medio: { reaccion: 0.92, zonaMuerta: 12, alcanceExtra: 1.6, probSalto: 0.6, cobertura: 0.85, anclaje: 0.5, tick: 75 },
-  ronaldinho: { reaccion: 1, zonaMuerta: 4, alcanceExtra: 2.05, probSalto: 0.85, cobertura: 1, anclaje: 0.78, tick: 45 },
+  facil: { reaccion: 0.6, zonaMuerta: 22, alcanceExtra: 1.2, probSalto: 0.35, cobertura: 0.4, anclaje: 0.18, tick: 140, ruido: 60 },
+  medio: { reaccion: 0.92, zonaMuerta: 12, alcanceExtra: 1.6, probSalto: 0.6, cobertura: 0.85, anclaje: 0.5, tick: 75, ruido: 26 },
+  ronaldinho: { reaccion: 1, zonaMuerta: 4, alcanceExtra: 2.05, probSalto: 0.85, cobertura: 1, anclaje: 0.78, tick: 45, ruido: 8 },
 };
 // IA del bot (siempre juega en el lado derecho). Se llama unas 10 veces por segundo (no cada
 // cuadro) para que no reaccione de forma sobrehumana. Además de perseguir el balón:
@@ -3596,6 +3633,9 @@ function decidirEntradaBotCabezones(estado, dificultad) {
   } else {
     objetivoX = balon.x;
   }
+  // Margen de error: rompe el patrón "misma situación = mismo movimiento exacto siempre" que se
+  // puede aprender y explotar para anotar fácil una y otra vez.
+  objetivoX += (Math.random() * 2 - 1) * cfg.ruido;
 
   const entrada = { izq: false, der: false, saltar: false, patear: false };
   const distX = objetivoX - jugador.x;
@@ -3839,9 +3879,51 @@ function dibujarBalonCabezones(ctx, x, y, radio, efecto) {
   ctx.fill();
 }
 
+function crearParticulasCabezones(efectos, x, y, color, cantidad, velocidad) {
+  if (!efectos) return;
+  for (let i = 0; i < cantidad; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const v = velocidad * (0.4 + Math.random() * 0.6);
+    efectos.particulas.push({
+      x, y, vx: Math.cos(ang) * v, vy: Math.sin(ang) * v - velocidad * 0.3,
+      color, radio: 2 + Math.random() * 2.5, vida: 0.5 + Math.random() * 0.4, vidaMax: 0.9,
+    });
+  }
+}
+
 function dibujarCanchaCabezones(ctx, estado, opts) {
-  const { colorIzq, colorDer, nombreIzq, nombreDer } = opts;
-  ctx.clearRect(0, 0, CABEZONES_ANCHO, CABEZONES_ALTO);
+  const { colorIzq, colorDer, nombreIzq, nombreDer, efectos } = opts;
+  const dtEfectos = opts.dt || 0.0167;
+  if (efectos) {
+    // Gol nuevo (detectado por timestamp, para lanzar la explosión de partículas UNA sola vez):
+    // el lado que anota es el opuesto al arco donde entró el balón.
+    if (estado.ultimoGolTs && estado.ultimoGolTs !== efectos.ultimoGolTs) {
+      efectos.ultimoGolTs = estado.ultimoGolTs;
+      efectos.sacudida = 14;
+      const xGol = estado.ultimoGol === "derecha" ? 0 : CABEZONES_ANCHO;
+      const colorGol = estado.ultimoGol === "derecha" ? colorDer : colorIzq;
+      crearParticulasCabezones(efectos, xGol, CABEZONES_SUELO_Y - 60, colorGol, 34, 260);
+    }
+    // Chispa de impacto la primera vez que se ve "pateando" (no en cada cuadro que se sostiene).
+    if (estado.jugadorIzq.pateando && !efectos.pateandoIzqPrev) {
+      crearParticulasCabezones(efectos, estado.jugadorIzq.x + 18, CABEZONES_SUELO_Y - estado.jugadorIzq.altura - 12, colorIzq, 8, 140);
+    }
+    efectos.pateandoIzqPrev = estado.jugadorIzq.pateando;
+    if (estado.jugadorDer.pateando && !efectos.pateandoDerPrev) {
+      crearParticulasCabezones(efectos, estado.jugadorDer.x - 18, CABEZONES_SUELO_Y - estado.jugadorDer.altura - 12, colorDer, 8, 140);
+    }
+    efectos.pateandoDerPrev = estado.jugadorDer.pateando;
+    efectos.particulas.forEach((p) => {
+      p.vy += 900 * dtEfectos; p.x += p.vx * dtEfectos; p.y += p.vy * dtEfectos; p.vida -= dtEfectos;
+    });
+    efectos.particulas = efectos.particulas.filter((p) => p.vida > 0);
+    efectos.sacudida = Math.max(0, efectos.sacudida - dtEfectos * 40);
+  }
+  ctx.save();
+  if (efectos && efectos.sacudida > 0.1) {
+    ctx.translate((Math.random() * 2 - 1) * efectos.sacudida, (Math.random() * 2 - 1) * efectos.sacudida);
+  }
+  ctx.clearRect(-20, -20, CABEZONES_ANCHO + 40, CABEZONES_ALTO + 40);
 
   // grada con público falso (solo decorativo)
   const cielo = ctx.createLinearGradient(0, 0, 0, 95);
@@ -3910,27 +3992,41 @@ function dibujarCanchaCabezones(ctx, estado, opts) {
   ctx.arc(CABEZONES_ANCHO, CABEZONES_SUELO_Y, 10, Math.PI, Math.PI * 1.5);
   ctx.stroke();
 
-  // arcos (el travesano de arriba ahora también es colisionador en la física)
-  [{ enBorde: 0, signo: 1 }, { enBorde: CABEZONES_ANCHO, signo: -1 }].forEach(({ enBorde, signo }) => {
+  // arcos (el travesano de arriba ahora también es colisionador en la física) — el alto real de
+  // cada uno refleja los power-ups "arco_chico"/"arco_grande" activos en ese lado, con un tinte de
+  // color para que se note a simple vista cuál está achicado (verde) o agrandado (magenta).
+  [
+    { enBorde: 0, signo: 1, factor: estado.arcoIzqFactor || 1 },
+    { enBorde: CABEZONES_ANCHO, signo: -1, factor: estado.arcoDerFactor || 1 },
+  ].forEach(({ enBorde, signo, factor }) => {
     const xPoste = enBorde + signo * CABEZONES_ARCO_ANCHO;
-    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    const altoArco = CABEZONES_ARCO_ALTO * factor;
+    const alterado = Math.abs(factor - 1) > 0.01;
+    const colorArco = factor < 1 ? "#3DFFA0" : factor > 1 ? "#FF2FD6" : "rgba(255,255,255,0.9)";
+    if (alterado) {
+      ctx.save();
+      ctx.shadowColor = colorArco;
+      ctx.shadowBlur = 14;
+    }
+    ctx.strokeStyle = colorArco;
     ctx.lineWidth = 6;
     ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(enBorde, CABEZONES_SUELO_Y);
-    ctx.lineTo(enBorde, CABEZONES_SUELO_Y - CABEZONES_ARCO_ALTO);
-    ctx.lineTo(xPoste, CABEZONES_SUELO_Y - CABEZONES_ARCO_ALTO);
+    ctx.lineTo(enBorde, CABEZONES_SUELO_Y - altoArco);
+    ctx.lineTo(xPoste, CABEZONES_SUELO_Y - altoArco);
     ctx.lineTo(xPoste, CABEZONES_SUELO_Y);
     ctx.stroke();
+    if (alterado) ctx.restore();
     ctx.strokeStyle = "rgba(255,255,255,0.18)";
     ctx.lineWidth = 1;
     for (let i = 1; i < 5; i++) {
-      const yy = CABEZONES_SUELO_Y - (CABEZONES_ARCO_ALTO / 5) * i;
+      const yy = CABEZONES_SUELO_Y - (altoArco / 5) * i;
       ctx.beginPath(); ctx.moveTo(enBorde, yy); ctx.lineTo(xPoste, yy); ctx.stroke();
     }
     for (let i = 1; i < 3; i++) {
       const xx = enBorde + signo * (CABEZONES_ARCO_ANCHO / 3) * i;
-      ctx.beginPath(); ctx.moveTo(xx, CABEZONES_SUELO_Y); ctx.lineTo(xx, CABEZONES_SUELO_Y - CABEZONES_ARCO_ALTO); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(xx, CABEZONES_SUELO_Y); ctx.lineTo(xx, CABEZONES_SUELO_Y - altoArco); ctx.stroke();
     }
   });
 
@@ -3979,6 +4075,20 @@ function dibujarCanchaCabezones(ctx, estado, opts) {
     ctx.fillText("¡GOL!", CABEZONES_ANCHO / 2, 160);
     ctx.restore();
   }
+
+  // partículas (chispa de patada, explosión de gol)
+  if (efectos && efectos.particulas.length) {
+    ctx.save();
+    efectos.particulas.forEach((p) => {
+      ctx.globalAlpha = Math.max(0, p.vida / p.vidaMax);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radio, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.restore();
+  }
+  ctx.restore(); // cierra el ctx.save() de la sacudida de cámara, al comienzo de la función
 }
 
 // ── Botón de control (mover, saltar, patear) — mismo estilo press-and-hold para mouse y táctil,
@@ -4010,11 +4120,11 @@ function BotonAccionCabezones({ onPress, onRelease, children, ancho = 62, color 
 // Solo para el invitado: entre paquete y paquete del anfitrión (llegan cada ~110ms, y en wifi con
 // jitter a veces más espaciados o fuera de orden), sigue moviendo el balón y al rival con la misma
 // física real en vez de quedarse "congelado" hasta el próximo dato — así no se ve a saltos.
-function extrapolarBalonCabezones(balon, dt, jugadorIzq, jugadorDer) {
+function extrapolarBalonCabezones(balon, dt, jugadorIzq, jugadorDer, arcoIzqFactor, arcoDerFactor) {
   const clon = { ...balon };
   const antesX = clon.x, antesAltura = clon.altura;
   avanzarBalonCabezones(clon, dt);
-  revisarColisionArco(clon);
+  revisarColisionArco(clon, arcoIzqFactor, arcoDerFactor);
   if (jugadorIzq) resolverColisionJugadorBalon(jugadorIzq, clon, antesX, antesAltura);
   if (jugadorDer) resolverColisionJugadorBalon(jugadorDer, clon, antesX, antesAltura);
   // Red de seguridad: si por cualquier motivo (un dato remoto incompleto, etc.) algo dejó un
@@ -4044,6 +4154,10 @@ function MotorCabezones({
   const balonSuavizadoRef = useRef(null);
   const jugadorIzqSuavizadoRef = useRef(null);
   const ultimoRemotoRecibidoRef = useRef(null);
+  // Efectos puramente visuales (partículas de gol, chispa de patada, sacudida de cámara) — viven
+  // en un ref para no disparar renders de React por esto; dibujarCanchaCabezones los actualiza y
+  // dibuja directamente cuadro a cuadro.
+  const efectosRef = useRef({ particulas: [], sacudida: 0, ultimoGolTs: 0, pateandoIzqPrev: false, pateandoDerPrev: false });
 
   useEffect(() => {
     const contenedor = contenedorRef.current;
@@ -4073,7 +4187,7 @@ function MotorCabezones({
         const entradaIzq = ladoLocal === "izquierda" ? entradaLocalRef.current : entradaOponenteRef.current;
         const entradaDer = ladoLocal === "derecha" ? entradaLocalRef.current : entradaOponenteRef.current;
         estadoLocalRef.current = avanzarPartidoCabezones(estadoLocalRef.current, dt, entradaIzq, entradaDer);
-        dibujarCanchaCabezones(ctx, estadoLocalRef.current, { colorIzq, colorDer, nombreIzq, nombreDer });
+        dibujarCanchaCabezones(ctx, estadoLocalRef.current, { colorIzq, colorDer, nombreIzq, nombreDer, efectos: efectosRef.current, dt });
       } else {
         const remoto = estadoRemotoRef.current;
         if (remoto) {
@@ -4132,7 +4246,7 @@ function MotorCabezones({
             // balón respete colisiones (si no, en conexiones lentas se podía ver al balón
             // "traspasar" al jugador durante el hueco entre paquetes)
             const jugadorDerParaColision = { x: propio.x, altura: propio.altura, vx: propio.vx || 0, lado: "derecha" };
-            balonSuavizadoRef.current = extrapolarBalonCabezones(balonSuavizadoRef.current, dt, jugadorIzqSuavizadoRef.current, jugadorDerParaColision);
+            balonSuavizadoRef.current = extrapolarBalonCabezones(balonSuavizadoRef.current, dt, jugadorIzqSuavizadoRef.current, jugadorDerParaColision, remoto.arcoIzqFactor, remoto.arcoDerFactor);
             jugadorIzqSuavizadoRef.current = extrapolarJugadorRemotoCabezones(jugadorIzqSuavizadoRef.current, dt);
           }
 
@@ -4142,7 +4256,7 @@ function MotorCabezones({
             jugadorIzq: jugadorIzqSuavizadoRef.current,
             jugadorDer: { ...remoto.jugadorDer, x: propio.x, altura: propio.altura, pateando: propio.pateando },
           };
-          dibujarCanchaCabezones(ctx, estadoDibujado, { colorIzq, colorDer, nombreIzq, nombreDer });
+          dibujarCanchaCabezones(ctx, estadoDibujado, { colorIzq, colorDer, nombreIzq, nombreDer, efectos: efectosRef.current, dt });
         } else {
           ctx.clearRect(0, 0, CABEZONES_ANCHO, CABEZONES_ALTO);
         }
@@ -4190,8 +4304,20 @@ function PartidaBotCabezones({ user, colorLocal, config, dificultad, onVolver, o
 
   useEffect(() => {
     const cfgBot = DIFICULTADES_BOT_CABEZONES[dificultad] || DIFICULTADES_BOT_CABEZONES.medio;
-    const id = setInterval(() => { entradaBotRef.current = decidirEntradaBotCabezones(estadoLocalRef.current, dificultad); }, cfgBot.tick);
-    return () => clearInterval(id);
+    let vivo = true;
+    let timeoutId = null;
+    // En vez de un setInterval de período fijo (que un jugador podía llegar a "sentir" y sincronizar
+    // sus fintas exactamente en el hueco entre reacciones), cada vez que decide se reprograma con un
+    // poquito de variación aleatoria (±30%) — el ritmo de reacción del bot ya no es perfectamente
+    // predecible tampoco en el tiempo, no solo en la posición.
+    const pensar = () => {
+      if (!vivo) return;
+      entradaBotRef.current = decidirEntradaBotCabezones(estadoLocalRef.current, dificultad);
+      const jitter = 0.7 + Math.random() * 0.6;
+      timeoutId = setTimeout(pensar, cfgBot.tick * jitter);
+    };
+    pensar();
+    return () => { vivo = false; if (timeoutId) clearTimeout(timeoutId); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dificultad]);
 
@@ -4858,7 +4984,7 @@ function NoHagaSinoJogarView({ user, onVolver }) {
         <Card style={{ fontFamily: FONT_BODY, fontSize: 13, color: COLORS.textMuted, lineHeight: 1.7 }}>
           <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Meta:</b> mete más goles que tu rival antes de que se acabe el tiempo, o llega primero a la meta de goles — vos eliges ambas cosas antes de empezar (2/3/5/10 goles, 2/3/5/10 minutos).</div>
           <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Moverse:</b> ◀ ▶ para correr por toda la cancha (podés atacar y defender en cualquier parte), ⤴ para saltar, 🦵 para patear o cabecear (si el balón está arriba, se cabecea; si está abajo, se patea). El travesaño del arco rebota si el balón lo toca. En computador también funciona el teclado: A/D o flechas, W/flecha arriba para saltar, espacio/S/flecha abajo para patear.</div>
-          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Power-ups:</b> cada tanto aparece un ícono flotando en la cancha — se activa al tocarlo con el balón (se lo lleva quien tocó el balón por última vez) o directamente con el cuerpo (se lo lleva quien lo toque). ⚡ te hace más rápido, 🎈 te agranda la cabeza (más alcance de cabezazo y salto), 🔥 hace el balón más fuerte al patearlo, 🧊 congela al rival un momento.</div>
+          <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Power-ups:</b> cada tanto aparece un ícono flotando en la cancha — se activa al tocarlo con el balón (se lo lleva quien tocó el balón por última vez) o directamente con el cuerpo (se lo lleva quien lo toque). ⚡ te hace más rápido, 🎈 te agranda la cabeza (más alcance de cabezazo y salto), 🔥 hace el balón más fuerte al patearlo, 🧊 congela al rival un momento, 🐌 lo ralentiza (más leve que congelarlo, pero se puede seguir moviendo), 🛡️ achica tu propio arco (más difícil que te metan gol), 🎯 agranda el arco rival (más fácil que le metas gol).</div>
           <div style={{ marginBottom: 14 }}><b style={{ color: COLORS.white }}>Contra el computador:</b> juega solo, cuando quieras, sin depender de nadie más.</div>
           <div><b style={{ color: COLORS.white }}>En línea:</b> elige contra quién de la cúpula jugar desde el lobby — ahí ves quién está en línea y quién ya está jugando (y contra quién). Si retas a alguien que no está esperándote, se crea una sala solo para ustedes dos (varias parejas pueden jugar al mismo tiempo sin estorbarse). Si te sales de una partida, la sala queda libre al toque.</div>
         </Card>
