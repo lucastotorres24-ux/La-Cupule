@@ -3606,8 +3606,20 @@ const DIFICULTADES_BOT_CABEZONES = {
 //    propio arco por diseño de la física — así que la IA ya no puede regalar un autogol por sí sola.
 //  - No se queda empujando de frente contra el rival sin avanzar: si queda pegado a él (choque de
 //    cuerpos) y no puede alcanzar el balón, salta para separarse en vez de insistir sin resultado.
-function decidirEntradaBotCabezones(estado, dificultad) {
-  const cfg = DIFICULTADES_BOT_CABEZONES[dificultad] || DIFICULTADES_BOT_CABEZONES.medio;
+function decidirEntradaBotCabezones(estado, dificultad, alerta) {
+  const cfgBase = DIFICULTADES_BOT_CABEZONES[dificultad] || DIFICULTADES_BOT_CABEZONES.medio;
+  // Modo alerta: se activa un rato justo después de recibir un gol (lo controla quien llama a esta
+  // función). En vez de arriesgarse a repetir el mismo error que acaba de costarle un gol, durante
+  // esa ventana el bot juega más precavido: reacciona más seguido, se pega más a su línea de
+  // resguardo y salta más a despejar. Es lo más parecido a "reaccionar a lo que acaba de pasar" que
+  // puede hacer sin memoria entre partidas.
+  const cfg = alerta ? {
+    ...cfgBase,
+    anclaje: Math.min(1, cfgBase.anclaje + 0.3),
+    probSalto: Math.min(1, cfgBase.probSalto + 0.3),
+    reaccion: Math.min(1, cfgBase.reaccion + 0.2),
+    zonaMuerta: Math.max(2, cfgBase.zonaMuerta - 4),
+  } : cfgBase;
   const jugador = estado.jugadorDer;
   const rival = estado.jugadorIzq;
   const balon = estado.balon;
@@ -3616,6 +3628,14 @@ function decidirEntradaBotCabezones(estado, dificultad) {
   const distBalonArcoRival = Math.abs(0 - balon.x);
   const enPeligro = distBalonArcoPropio < distBalonArcoRival;
   const malUbicado = enPeligro && jugador.x < balon.x - 4;
+  // Contragolpe urgente: el balón quedó "detrás" del bot, entre él y su propio arco, y encima ya
+  // está relativamente cerca de ese arco — si el rival se queda esperando atrás mientras el bot
+  // avanza, puede pasarlo/tirarlo por encima hacia el arco vacío. Antes esta cobertura solo se
+  // activaba en dificultades con cobertura>0.4 (fácil quedaba totalmente afuera) y encima podía
+  // "saltarse" el turno por el margen de error normal del bot — así se quedaba de espaldas mientras
+  // el balón entraba. Ahora SIEMPRE intenta cubrir algo (más débil en fácil, total en Ronaldinho) y
+  // fuerza que este cuadro sí reaccione.
+  const contragolpeUrgente = malUbicado && distBalonArcoPropio < 340;
   // Antes la línea de resguardo estaba en 0.66 del ancho — bastante adelantada respecto a su
   // propio arco (en x=ANCHO), dejando un hueco grande sin cubrir detrás si lo superaban una vez.
   // Ahora se para más cerca de su arco (0.82), como un último defensor de verdad, no una presión
@@ -3624,8 +3644,9 @@ function decidirEntradaBotCabezones(estado, dificultad) {
   const distBalonBot = Math.abs(balon.x - jugador.x);
 
   let objetivoX;
-  if (malUbicado && cfg.cobertura > 0.4) {
-    objetivoX = Math.min(CABEZONES_ANCHO - CABEZONES_ARCO_ANCHO - 8, balon.x + 30);
+  if (malUbicado) {
+    const objetivoCobertura = Math.min(CABEZONES_ANCHO - CABEZONES_ARCO_ANCHO - 8, balon.x + 30);
+    objetivoX = balon.x + (objetivoCobertura - balon.x) * Math.max(0.35, cfg.cobertura);
   } else if (!enPeligro && distBalonBot > 260) {
     // el balón está lejos y no es una amenaza inmediata: se queda parcialmente en su línea de
     // resguardo en vez de abandonar el arco por completo (más "anclaje" = se aleja menos).
@@ -3639,7 +3660,8 @@ function decidirEntradaBotCabezones(estado, dificultad) {
 
   const entrada = { izq: false, der: false, saltar: false, patear: false };
   const distX = objetivoX - jugador.x;
-  if (Math.random() < cfg.reaccion) {
+  const reaccionEfectiva = contragolpeUrgente ? Math.max(cfg.reaccion, 0.85) : cfg.reaccion;
+  if (Math.random() < reaccionEfectiva) {
     if (distX > cfg.zonaMuerta) entrada.der = true;
     else if (distX < -cfg.zonaMuerta) entrada.izq = true;
   }
@@ -3652,6 +3674,13 @@ function decidirEntradaBotCabezones(estado, dificultad) {
     entrada.patear = true;
     if (centroBalonY < centroJugadorY - 15 && jugador.altura === 0) entrada.saltar = true;
   } else if (balon.vx < 0 && Math.abs(balon.x - jugador.x) < 230 && centroBalonY < centroJugadorY && jugador.altura === 0 && Math.random() < cfg.probSalto) {
+    // cabezazo ofensivo: el balón va hacia el arco rival, está cerca y arriba — se eleva a rematarlo.
+    entrada.saltar = true;
+  } else if (balon.vx > 0 && (jugador.x - balon.x) > -20 && (jugador.x - balon.x) < 180 && centroBalonY < centroJugadorY - 10 && jugador.altura === 0 && Math.random() < Math.min(1, cfg.probSalto + 0.3)) {
+    // despeje defensivo: el balón viene POR ARRIBA hacia su propio arco (un globo por encima del
+    // bot) y todavía no está a distancia de patada — antes esto se dejaba pasar sin más, así que un
+    // rival que se quedaba esperando atrás podía tirarlo por encima del bot una y otra vez para
+    // anotar en bucle; ahora salta a intentar despejarlo/cabecearlo antes de que le pase por arriba.
     entrada.saltar = true;
   }
 
@@ -4219,6 +4248,15 @@ function MotorCabezones({
           // no) lo sigue decidiendo el anfitrión como siempre.
           const jugadorTemp = { x: propio.x, vx: propio.vx, altura: propio.altura, vAltura: propio.vAltura, lado: "derecha", efecto: remoto.jugadorDer.efecto, cooldownPatada: propio.cooldownPatada, pateando: false };
           moverJugadorCabezones(jugadorTemp, entradaLocal, dt);
+          // Colisión jugador-jugador también en la predicción local: antes esto solo corría en la
+          // física completa del anfitrión, así que al acercarse o alejarse del rival el invitado se
+          // veía "atravesarlo" o quedar superpuesto varios cuadros hasta que la reconciliación de red
+          // lo corregía — eso es lo que se sentía/veía como que el movimiento "se pega" al avanzar o
+          // devolverse cerca del rival. Ahora se resuelve también acá, contra la posición del rival
+          // que se está mostrando en pantalla en este instante, así el invitado nunca se ve metido
+          // dentro del rival esperando a que llegue el próximo paquete para corregirlo.
+          const rivalParaColision = { ...(jugadorIzqSuavizadoRef.current || remoto.jugadorIzq) };
+          resolverColisionJugadorJugador(rivalParaColision, jugadorTemp);
           propio.x = jugadorTemp.x;
           propio.altura = jugadorTemp.altura;
           propio.vAltura = jugadorTemp.vAltura;
@@ -4330,6 +4368,13 @@ function PartidaBotCabezones({ user, colorLocal, config, dificultad, onVolver, o
   const entradaBotRef = useRef({ izq: false, der: false, saltar: false, patear: false });
   const [marcador, setMarcador] = useState({ golesIzq: 0, golesDer: 0, tiempoRestante: estadoLocalRef.current.tiempoRestante, fase: "jugando", ganador: null });
   const terminadoNotificadoRef = useRef(false);
+  // "Modo alerta" del bot: se activa unos segundos justo después de que le hagan un gol (golesIzq
+  // sube), para que no repita de inmediato el mismo error que acaba de costarle — ver el modo
+  // `alerta` de decidirEntradaBotCabezones. No es memoria entre partidas (eso, si se quiere de
+  // verdad, es una función aparte con estadísticas guardadas), es una reacción inmediata dentro del
+  // mismo partido a lo que acaba de pasar.
+  const golesIzqAnteriorRef = useRef(0);
+  const alertaBotHastaTsRef = useRef(0);
 
   useEffect(() => {
     const TECLAS = { a: "izq", arrowleft: "izq", d: "der", arrowright: "der", w: "saltar", arrowup: "saltar", " ": "patear", s: "patear", arrowdown: "patear" };
@@ -4350,7 +4395,8 @@ function PartidaBotCabezones({ user, colorLocal, config, dificultad, onVolver, o
     // predecible tampoco en el tiempo, no solo en la posición.
     const pensar = () => {
       if (!vivo) return;
-      entradaBotRef.current = decidirEntradaBotCabezones(estadoLocalRef.current, dificultad);
+      const alerta = Date.now() < alertaBotHastaTsRef.current;
+      entradaBotRef.current = decidirEntradaBotCabezones(estadoLocalRef.current, dificultad, alerta);
       const jitter = 0.7 + Math.random() * 0.6;
       timeoutId = setTimeout(pensar, cfgBot.tick * jitter);
     };
@@ -4361,6 +4407,12 @@ function PartidaBotCabezones({ user, colorLocal, config, dificultad, onVolver, o
 
   const alEstadoActualizado = (estado) => {
     if (!estado) return;
+    // Le acaban de hacer un gol al bot (golesIzq subió): unos segundos de "modo alerta" en vez de
+    // repetir de inmediato el mismo error.
+    if (estado.golesIzq > golesIzqAnteriorRef.current) {
+      alertaBotHastaTsRef.current = Date.now() + 9000;
+    }
+    golesIzqAnteriorRef.current = estado.golesIzq;
     setMarcador({ golesIzq: estado.golesIzq, golesDer: estado.golesDer, tiempoRestante: estado.tiempoRestante, fase: estado.fase, ganador: estado.ganador });
     if (estado.fase === "terminado" && !terminadoNotificadoRef.current) {
       terminadoNotificadoRef.current = true;
@@ -4370,6 +4422,8 @@ function PartidaBotCabezones({ user, colorLocal, config, dificultad, onVolver, o
 
   const jugarDeNuevo = () => {
     terminadoNotificadoRef.current = false;
+    golesIzqAnteriorRef.current = 0;
+    alertaBotHastaTsRef.current = 0;
     estadoLocalRef.current = crearEstadoPartidoCabezones(config);
   };
   const presionar = (accion) => { entradaLocalRef.current[accion] = true; };
