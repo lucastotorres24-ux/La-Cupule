@@ -3159,7 +3159,7 @@ const CABEZONES_SALTO_V = 800;
 const CABEZONES_VELOCIDAD = 300;
 const CABEZONES_RESTITUCION = 0.72;
 const CABEZONES_FRICCION_SUELO = 0.985;
-const CABEZONES_ALCANCE_GOLPE = 68;
+const CABEZONES_ALCANCE_GOLPE = 78;
 const CABEZONES_COOLDOWN_GOLPE = 0.32;
 const CABEZONES_DURACION_PARTIDO_S = 120;
 const CABEZONES_GOLES_PARA_GANAR = 5;
@@ -4144,6 +4144,21 @@ function extrapolarJugadorRemotoCabezones(jugador, dt) {
   return clon;
 }
 
+// Qué tan fuerte corregir hacia el dato del anfitrión, según qué tan lejos está la predicción/
+// extrapolación local de ese dato ("distancia" en px, puede venir de un solo eje o de un hypot).
+// Por debajo de `zonaMuerta` no corrige nada (ese margen es error normal de predicción/latencia:
+// corregirlo igual es lo que se sentía como un "imán" frenando el movimiento, o como que el balón
+// se pegaba de los pies al ser jalado de vuelta constantemente). Entre `zonaMuerta` y `zonaFuerte`
+// la corrección crece gradualmente de `tasaMin` a `tasaMax`; por encima de `zonaFuerte` corrige al
+// máximo (`tasaMax`), para que un desync real (por ejemplo tras una patada que el anfitrión resolvió
+// distinto, o un paquete perdido) sí se corrija rápido y no se quede visiblemente desincronizado.
+function factorSuavizadoCabezones(distancia, zonaMuerta, zonaFuerte, dt, tasaMin, tasaMax) {
+  if (!(distancia > zonaMuerta)) return 0;
+  const t = Math.min(1, (distancia - zonaMuerta) / Math.max(1e-6, zonaFuerte - zonaMuerta));
+  const tasa = tasaMin + t * (tasaMax - tasaMin);
+  return Math.min(1, Math.max(0, dt) * tasa);
+}
+
 function MotorCabezones({
   esHost, entradaLocalRef, entradaOponenteRef, estadoRemotoRef, estadoLocalRef,
   colorIzq, colorDer, nombreIzq, nombreDer, ladoLocal, onEstadoActualizado,
@@ -4210,36 +4225,59 @@ function MotorCabezones({
           propio.vx = jugadorTemp.vx;
           propio.cooldownPatada = jugadorTemp.cooldownPatada;
           propio.pateando = jugadorTemp.pateando;
-          // reconciliación suave hacia lo que diga el anfitrión, para no divergir con el tiempo
-          propio.x += (remoto.jugadorDer.x - propio.x) * Math.min(1, dt * 3);
-          // si la patada real sí conectó, el anfitrión aplica un cooldown más largo del que la
-          // predicción local podía adivinar — nos alineamos a ese valor para no mostrar patadas
-          // más seguido de lo que el servidor realmente permite.
-          propio.cooldownPatada = Math.max(propio.cooldownPatada, remoto.jugadorDer.cooldownPatada || 0);
+
+          // ¿Llegó un paquete nuevo del anfitrión desde el cuadro anterior? Todas las
+          // reconciliaciones (jugador propio, balón, rival) se calculan UNA vez por paquete, no
+          // en cada cuadro (60/s). Antes se corregía la posición propia contra el mismo dato ya
+          // "viejo" en cada cuadro, incluso sin datos nuevos — eso se sentía como un imán frenando
+          // el movimiento del invitado, porque la predicción local siempre estaba siendo jalada
+          // hacia atrás por un dato que no había cambiado.
+          const paqueteNuevo = remoto !== ultimoRemotoRecibidoRef.current;
+          ultimoRemotoRecibidoRef.current = remoto;
+
+          if (paqueteNuevo) {
+            // Reconciliación del jugador propio: con zona muerta. Un margen chico entre la
+            // predicción local y lo que dice el anfitrión es normal (latencia, redondeos) y NO se
+            // corrige — corregirlo igual era lo que causaba la sensación de "imán". Solo una
+            // diferencia grande (desync real) se corrige, y mientras más grande, más rápido.
+            const diffX = remoto.jugadorDer.x - propio.x;
+            const fJugador = factorSuavizadoCabezones(Math.abs(diffX), 10, 70, dt, 1.5, 11);
+            if (fJugador > 0) propio.x += diffX * fJugador;
+            // si la patada real sí conectó, el anfitrión aplica un cooldown más largo del que la
+            // predicción local podía adivinar — nos alineamos a ese valor para no mostrar patadas
+            // más seguido de lo que el servidor realmente permite.
+            propio.cooldownPatada = Math.max(propio.cooldownPatada, remoto.jugadorDer.cooldownPatada || 0);
+          }
 
           // Suavizado del balón y del rival (jugadorIzq): en wifi los paquetes llegan cada ~110ms
           // pero con jitter (a veces más espaciados o desordenados), y dibujar el último dato crudo
-          // se ve "a saltos". Si llegó un paquete nuevo desde el cuadro anterior, nos acercamos rápido
-          // a lo real (no de golpe, para no generar un nuevo salto); si no llegó nada nuevo todavía,
+          // se ve "a saltos". Si llegó un paquete nuevo, corregimos hacia lo real con la misma zona
+          // muerta gradual (un margen chico —esperable mientras la extrapolación local hace su
+          // trabajo— no se toca, así el balón no se ve "jalado" de golpe cerca de los pies del
+          // jugador cada vez que llega un paquete; un desync grande, como tras un rebote que el
+          // anfitrión resolvió distinto, sí se corrige rápido). Si no llegó nada nuevo todavía,
           // seguimos moviendo el balón/jugador con la física real en vez de congelarlos.
-          const paqueteNuevo = remoto !== ultimoRemotoRecibidoRef.current;
-          ultimoRemotoRecibidoRef.current = remoto;
           if (!balonSuavizadoRef.current) balonSuavizadoRef.current = { ...remoto.balon };
           if (!jugadorIzqSuavizadoRef.current) jugadorIzqSuavizadoRef.current = { ...remoto.jugadorIzq };
 
           if (paqueteNuevo) {
-            const f = Math.min(1, dt * 14);
             const balonPrev = balonSuavizadoRef.current;
+            const dxBalon = remoto.balon.x - balonPrev.x;
+            const dyBalon = remoto.balon.altura - balonPrev.altura;
+            const fBalon = factorSuavizadoCabezones(Math.hypot(dxBalon, dyBalon), 6, 90, dt, 2, 28);
             balonSuavizadoRef.current = {
               ...remoto.balon,
-              x: balonPrev.x + (remoto.balon.x - balonPrev.x) * f,
-              altura: balonPrev.altura + (remoto.balon.altura - balonPrev.altura) * f,
+              x: balonPrev.x + dxBalon * fBalon,
+              altura: balonPrev.altura + dyBalon * fBalon,
             };
             const jIzqPrev = jugadorIzqSuavizadoRef.current;
+            const dxIzq = remoto.jugadorIzq.x - jIzqPrev.x;
+            const dyIzq = remoto.jugadorIzq.altura - jIzqPrev.altura;
+            const fIzq = factorSuavizadoCabezones(Math.hypot(dxIzq, dyIzq), 6, 70, dt, 2, 20);
             jugadorIzqSuavizadoRef.current = {
               ...remoto.jugadorIzq,
-              x: jIzqPrev.x + (remoto.jugadorIzq.x - jIzqPrev.x) * f,
-              altura: jIzqPrev.altura + (remoto.jugadorIzq.altura - jIzqPrev.altura) * f,
+              x: jIzqPrev.x + dxIzq * fIzq,
+              altura: jIzqPrev.altura + dyIzq * fIzq,
             };
           } else {
             // pasamos las posiciones actuales de ambos cabezones para que la extrapolación del
