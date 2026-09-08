@@ -4040,7 +4040,7 @@ function MotorCabezones({
 }) {
   const contenedorRef = useRef(null);
   const canvasRef = useRef(null);
-  const posLocalPredichaRef = useRef({ x: null, altura: 0, vAltura: 0, vx: 0 });
+  const posLocalPredichaRef = useRef({ x: null, altura: 0, vAltura: 0, vx: 0, cooldownPatada: 0, pateando: false });
   const balonSuavizadoRef = useRef(null);
   const jugadorIzqSuavizadoRef = useRef(null);
   const ultimoRemotoRecibidoRef = useRef(null);
@@ -4082,14 +4082,26 @@ function MotorCabezones({
           const entradaLocal = entradaLocalRef.current;
           const propio = posLocalPredichaRef.current;
           if (propio.x === null) propio.x = remoto.jugadorDer.x;
-          const jugadorTemp = { x: propio.x, vx: 0, altura: propio.altura, vAltura: propio.vAltura, lado: "derecha", efecto: remoto.jugadorDer.efecto, cooldownPatada: 0, pateando: false };
+          // OJO: antes "pateando" (la pose de la patada) se recreaba en false cada cuadro y se
+          // descartaba sin usar — el invitado nunca veía su propia patada hasta que la respuesta
+          // completa del anfitrión daba toda la vuelta por la red, así que la patada se sentía
+          // "atrasada" incluso con una conexión perfecta. Ahora se predice localmente igual que el
+          // movimiento: se ve al instante al presionar el botón, y el resultado real (si conectó o
+          // no) lo sigue decidiendo el anfitrión como siempre.
+          const jugadorTemp = { x: propio.x, vx: propio.vx, altura: propio.altura, vAltura: propio.vAltura, lado: "derecha", efecto: remoto.jugadorDer.efecto, cooldownPatada: propio.cooldownPatada, pateando: false };
           moverJugadorCabezones(jugadorTemp, entradaLocal, dt);
           propio.x = jugadorTemp.x;
           propio.altura = jugadorTemp.altura;
           propio.vAltura = jugadorTemp.vAltura;
           propio.vx = jugadorTemp.vx;
+          propio.cooldownPatada = jugadorTemp.cooldownPatada;
+          propio.pateando = jugadorTemp.pateando;
           // reconciliación suave hacia lo que diga el anfitrión, para no divergir con el tiempo
           propio.x += (remoto.jugadorDer.x - propio.x) * Math.min(1, dt * 3);
+          // si la patada real sí conectó, el anfitrión aplica un cooldown más largo del que la
+          // predicción local podía adivinar — nos alineamos a ese valor para no mostrar patadas
+          // más seguido de lo que el servidor realmente permite.
+          propio.cooldownPatada = Math.max(propio.cooldownPatada, remoto.jugadorDer.cooldownPatada || 0);
 
           // Suavizado del balón y del rival (jugadorIzq): en wifi los paquetes llegan cada ~110ms
           // pero con jitter (a veces más espaciados o desordenados), y dibujar el último dato crudo
@@ -4128,7 +4140,7 @@ function MotorCabezones({
             ...remoto,
             balon: balonSuavizadoRef.current,
             jugadorIzq: jugadorIzqSuavizadoRef.current,
-            jugadorDer: { ...remoto.jugadorDer, x: propio.x, altura: propio.altura },
+            jugadorDer: { ...remoto.jugadorDer, x: propio.x, altura: propio.altura, pateando: propio.pateando },
           };
           dibujarCanchaCabezones(ctx, estadoDibujado, { colorIzq, colorDer, nombreIzq, nombreDer });
         } else {
