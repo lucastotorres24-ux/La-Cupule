@@ -3365,11 +3365,10 @@ function resolverColisionJugadorBalon(jugador, balon, balonAntesX, balonAntesAlt
   if (distancia >= radios) return false;
   const nx = dx / distancia, ny = dy / distancia;
   // Reubicamos el balón justo afuera del cuerpo en la dirección del punto de contacto real
-  // (no de su posición final), con un pequeño margen extra (1.06x) — reubicarlo EXACTO en el borde
-  // hacía que, si el jugador seguía moviéndose hacia el balón, volviera a quedar "adentro" el
-  // siguiente sub-paso y se resolviera de nuevo, y de nuevo — eso era el balón "pegándose" al
-  // cuerpo en vez de despegarse limpio.
-  const radiosConMargen = radios * 1.06;
+  // (no de su posición final), con un margen extra (1.12x en vez de solo 1.06x) — reubicarlo
+  // demasiado justo al borde hacía que, si el jugador seguía moviéndose hacia el balón, volviera a
+  // quedar "adentro" el siguiente sub-paso y se resolviera de nuevo, y de nuevo.
+  const radiosConMargen = radios * 1.12;
   balon.x = jugador.x + nx * radiosConMargen;
   const nuevoCentroBalonY = centroJugadorY + ny * radiosConMargen;
   balon.altura = CABEZONES_SUELO_Y - nuevoCentroBalonY;
@@ -3378,7 +3377,16 @@ function resolverColisionJugadorBalon(jugador, balon, balonAntesX, balonAntesAlt
   // de magnitud fija sin importar si venía lento o a toda velocidad, lo que se sentía como que
   // "rebota mal" en un tiro fuerte). Un balón que venía rápido rebota más fuerte.
   const rebotePropio = Math.min(500, Math.abs(balon.vx)) * 0.45;
-  let vxNuevo = nx * (impulso + rebotePropio) + jugador.vx * 0.5;
+  // Causa real de que el balón se quedara "pegado" al cuerpo hasta saltar: si el jugador seguía
+  // caminando hacia el balón, alcanzaba el nuevo margen de separación casi al instante (más rápido
+  // de lo que el balón lograba alejarse) y esta función se volvía a disparar una y otra vez,
+  // reseteando la posición al mismo lugar en bucle — visualmente parecía pegado. La solución de
+  // raíz es garantizar que el balón SIEMPRE salga más rápido de lo que el jugador puede volver a
+  // alcanzarlo: medimos qué tan rápido se está acercando el jugador en esta misma dirección
+  // (cierreJugador) y forzamos que el empuje de salida le gane con margen de sobra.
+  const cierreJugador = Math.max(0, (jugador.vx || 0) * nx);
+  const magnitud = Math.max(impulso + rebotePropio, cierreJugador + 240);
+  let vxNuevo = nx * magnitud;
   // Un choque de CUERPO (no una patada, que ya solo dispara hacia el arco rival por diseño) nunca
   // debe mandar el balón hacia el PROPIO arco — eso es justo el autogol regalado que se reportó. Si
   // el rebote natural del choque iba hacia adentro de su arco, se redirige hacia afuera en cambio.
@@ -3538,10 +3546,15 @@ function avanzarPartidoCabezones(estado, dt, entradaIzq, entradaDer) {
 // reposiciona antes de tocar un balón peligroso; "anclaje" qué tanto se mantiene cerca de una línea
 // de resguardo frente a su arco en vez de abandonarlo por completo cuando el balón está lejos (0 =
 // siempre va directo al balón sin importar qué tan lejos esté su arco, 1 = nunca se aleja del todo).
+// "tick" = cada cuántos ms el bot vuelve a "pensar" (llamar a decidirEntradaBotCabezones). Antes
+// era fijo en 90ms para los 3 niveles — pero un balón a velocidad máxima recorre ~126 unidades en
+// esos 90ms, casi lo mismo que el alcance de golpe del bot, así que un tiro cercano y rápido podía
+// literalmente entrar antes de que el bot llegara a reaccionar una sola vez. Ahora los niveles más
+// altos "piensan" más seguido (reflejos más rápidos de verdad, no solo más precisos).
 const DIFICULTADES_BOT_CABEZONES = {
-  facil: { reaccion: 0.6, zonaMuerta: 22, alcanceExtra: 1.2, probSalto: 0.35, cobertura: 0.4, anclaje: 0.18 },
-  medio: { reaccion: 0.88, zonaMuerta: 13, alcanceExtra: 1.5, probSalto: 0.55, cobertura: 0.8, anclaje: 0.42 },
-  ronaldinho: { reaccion: 1, zonaMuerta: 5, alcanceExtra: 1.9, probSalto: 0.7, cobertura: 1, anclaje: 0.68 },
+  facil: { reaccion: 0.6, zonaMuerta: 22, alcanceExtra: 1.2, probSalto: 0.35, cobertura: 0.4, anclaje: 0.18, tick: 140 },
+  medio: { reaccion: 0.92, zonaMuerta: 12, alcanceExtra: 1.6, probSalto: 0.6, cobertura: 0.85, anclaje: 0.5, tick: 75 },
+  ronaldinho: { reaccion: 1, zonaMuerta: 4, alcanceExtra: 2.05, probSalto: 0.85, cobertura: 1, anclaje: 0.78, tick: 45 },
 };
 // IA del bot (siempre juega en el lado derecho). Se llama unas 10 veces por segundo (no cada
 // cuadro) para que no reaccione de forma sobrehumana. Además de perseguir el balón:
@@ -3566,7 +3579,11 @@ function decidirEntradaBotCabezones(estado, dificultad) {
   const distBalonArcoRival = Math.abs(0 - balon.x);
   const enPeligro = distBalonArcoPropio < distBalonArcoRival;
   const malUbicado = enPeligro && jugador.x < balon.x - 4;
-  const lineaResguardoX = CABEZONES_ANCHO * 0.66;
+  // Antes la línea de resguardo estaba en 0.66 del ancho — bastante adelantada respecto a su
+  // propio arco (en x=ANCHO), dejando un hueco grande sin cubrir detrás si lo superaban una vez.
+  // Ahora se para más cerca de su arco (0.82), como un último defensor de verdad, no una presión
+  // adelantada — coincide con lo que se pidió explícitamente: "que cuide su arco a muerte".
+  const lineaResguardoX = CABEZONES_ANCHO * 0.82;
   const distBalonBot = Math.abs(balon.x - jugador.x);
 
   let objetivoX;
@@ -4000,6 +4017,12 @@ function extrapolarBalonCabezones(balon, dt, jugadorIzq, jugadorDer) {
   revisarColisionArco(clon);
   if (jugadorIzq) resolverColisionJugadorBalon(jugadorIzq, clon, antesX, antesAltura);
   if (jugadorDer) resolverColisionJugadorBalon(jugadorDer, clon, antesX, antesAltura);
+  // Red de seguridad: si por cualquier motivo (un dato remoto incompleto, etc.) algo dejó un
+  // número inválido, no lo devolvemos — así el balón nunca "desaparece para siempre" en una
+  // partida en línea; en el peor caso se ve quieto un instante hasta el próximo paquete real.
+  if (!Number.isFinite(clon.x) || !Number.isFinite(clon.altura) || !Number.isFinite(clon.vx) || !Number.isFinite(clon.vAltura)) {
+    return balon;
+  }
   return clon;
 }
 function extrapolarJugadorRemotoCabezones(jugador, dt) {
@@ -4017,7 +4040,7 @@ function MotorCabezones({
 }) {
   const contenedorRef = useRef(null);
   const canvasRef = useRef(null);
-  const posLocalPredichaRef = useRef({ x: null, altura: 0, vAltura: 0 });
+  const posLocalPredichaRef = useRef({ x: null, altura: 0, vAltura: 0, vx: 0 });
   const balonSuavizadoRef = useRef(null);
   const jugadorIzqSuavizadoRef = useRef(null);
   const ultimoRemotoRecibidoRef = useRef(null);
@@ -4064,6 +4087,7 @@ function MotorCabezones({
           propio.x = jugadorTemp.x;
           propio.altura = jugadorTemp.altura;
           propio.vAltura = jugadorTemp.vAltura;
+          propio.vx = jugadorTemp.vx;
           // reconciliación suave hacia lo que diga el anfitrión, para no divergir con el tiempo
           propio.x += (remoto.jugadorDer.x - propio.x) * Math.min(1, dt * 3);
 
@@ -4095,7 +4119,7 @@ function MotorCabezones({
             // pasamos las posiciones actuales de ambos cabezones para que la extrapolación del
             // balón respete colisiones (si no, en conexiones lentas se podía ver al balón
             // "traspasar" al jugador durante el hueco entre paquetes)
-            const jugadorDerParaColision = { x: propio.x, altura: propio.altura, lado: "derecha" };
+            const jugadorDerParaColision = { x: propio.x, altura: propio.altura, vx: propio.vx || 0, lado: "derecha" };
             balonSuavizadoRef.current = extrapolarBalonCabezones(balonSuavizadoRef.current, dt, jugadorIzqSuavizadoRef.current, jugadorDerParaColision);
             jugadorIzqSuavizadoRef.current = extrapolarJugadorRemotoCabezones(jugadorIzqSuavizadoRef.current, dt);
           }
@@ -4153,7 +4177,8 @@ function PartidaBotCabezones({ user, colorLocal, config, dificultad, onVolver, o
   }, []);
 
   useEffect(() => {
-    const id = setInterval(() => { entradaBotRef.current = decidirEntradaBotCabezones(estadoLocalRef.current, dificultad); }, 90);
+    const cfgBot = DIFICULTADES_BOT_CABEZONES[dificultad] || DIFICULTADES_BOT_CABEZONES.medio;
+    const id = setInterval(() => { entradaBotRef.current = decidirEntradaBotCabezones(estadoLocalRef.current, dificultad); }, cfgBot.tick);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dificultad]);
