@@ -1,7 +1,38 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { initializeApp } from "firebase/app";
+import { getDatabase, ref as rtdbRef, onValue as rtdbOnValue, set as rtdbSet, onDisconnect as rtdbOnDisconnect } from "firebase/database";
 
 // ── Conexión real y compartida a Firebase Realtime Database ──
 const FIREBASE_DB_URL = "https://the-cupule-7cd07-default-rtdb.firebaseio.com";
+
+// ── Canal en tiempo real (WebSocket, SDK oficial) — solo para lo que de verdad no puede tener ni
+// un milisegundo de retraso evitable: la partida de "No haga sino Jogar" en línea (estado del
+// anfitrión, botones del invitado) y quién está en línea ahora mismo. El resto de la app (chat,
+// tareas, candidatos, etc.) sigue funcionando exactamente igual que siempre por window.storage/REST
+// arriba — esto es un canal aparte, no un reemplazo, para no arriesgar nada que ya funciona bien.
+// Antes se intentó "simular" tiempo real a mano sobre REST (Server-Sent Events) y no cargaba bien
+// online; esto usa el SDK real de Firebase (mismo mecanismo que usan apps de producción para esto:
+// una sola conexión WebSocket persistente en vez de estar preguntando "¿hay algo nuevo?" cientos de
+// veces por segundo), que es lo que de verdad elimina el retraso de raíz en vez de solo acortarlo.
+const firebaseApp = initializeApp({ databaseURL: FIREBASE_DB_URL });
+const rtdb = getDatabase(firebaseApp);
+function rtdbEnviar(ruta, valor) {
+  return rtdbSet(rtdbRef(rtdb, ruta), valor).catch(() => {});
+}
+// Se suscribe a una ruta y llama a onCambio(valor) cada vez que cambia, ya (sin esperar el próximo
+// "tick" de nada) — devuelve la función para cancelar la suscripción.
+function rtdbEscuchar(ruta, onCambio) {
+  return rtdbOnValue(rtdbRef(rtdb, ruta), (snap) => onCambio(snap.exists() ? snap.val() : null), () => {});
+}
+// Le dice al servidor de Firebase (no al navegador, que puede cerrarse sin avisar) que borre esta
+// ruta apenas detecte que nos desconectamos — así una sala/presencia abandonada de verdad (se cerró
+// la pestaña, se cayó el wifi) se limpia sola al instante, sin heartbeats ni ventanas de tolerancia.
+function rtdbLimpiarAlDesconectar(ruta) {
+  rtdbOnDisconnect(rtdbRef(rtdb, ruta)).remove().catch(() => {});
+}
+const RT_ESTADO_CABEZONES = (roomId) => `cabezones_rt/estado/${roomId}`;
+const RT_ENTRADA2_CABEZONES = (roomId) => `cabezones_rt/entrada2/${roomId}`;
+const RT_PRESENCIA_CABEZONES = (uid) => `cabezones_rt/presencia/${uid}`;
 
 if (typeof window !== "undefined" && !window.storage) {
   window.storage = {
@@ -3212,13 +3243,26 @@ function clonarEstadoCabezones(estado) {
   };
 }
 
+// Aceleración/desaceleración por segundo al cambiar de dirección o soltar el botón: antes la
+// velocidad era binaria (arrancaba y frenaba en seco de un cuadro a otro), lo que se sentía tosco.
+// El valor es alto a propósito — llega a la velocidad máxima en bastante menos de 0.1s — para que
+// se sienta ágil y responsivo, solo con un poquito de suavizado en vez de un salto instantáneo.
+const CABEZONES_ACELERACION = 4600;
 function moverJugadorCabezones(jugador, entrada, dt) {
   const congelado = jugador.efecto === "congelado";
   const velocidadBase = jugador.efecto === "velocidad" ? CABEZONES_VELOCIDAD * 1.55 : CABEZONES_VELOCIDAD;
-  let vx = 0;
+  let vxObjetivo = 0;
   if (!congelado) {
-    if (entrada.izq) vx -= velocidadBase;
-    if (entrada.der) vx += velocidadBase;
+    if (entrada.izq) vxObjetivo -= velocidadBase;
+    if (entrada.der) vxObjetivo += velocidadBase;
+  }
+  let vx;
+  if (congelado) {
+    vx = 0; // congelado de verdad: no desliza, se detiene en seco
+  } else {
+    const cambioMax = CABEZONES_ACELERACION * dt;
+    const dv = vxObjetivo - jugador.vx;
+    vx = jugador.vx + Math.max(-cambioMax, Math.min(cambioMax, dv));
   }
   jugador.x += vx * dt;
   jugador.vx = vx;
@@ -3236,7 +3280,10 @@ function moverJugadorCabezones(jugador, entrada, dt) {
   jugador.pateando = !!(entrada.patear && jugador.cooldownPatada <= 0 && !congelado);
 }
 
+const CABEZONES_VELOCIDAD_MAX_BALON = 1400; // tope de seguridad: evita que un cúmulo de rebotes
+// dispare la velocidad del balón a un punto en que pudiera atravesar algo entre sub-pasos.
 function avanzarBalonCabezones(balon, dt) {
+  balon.vx = Math.max(-CABEZONES_VELOCIDAD_MAX_BALON, Math.min(CABEZONES_VELOCIDAD_MAX_BALON, balon.vx));
   balon.vAltura -= CABEZONES_GRAVEDAD_BALON * dt;
   balon.altura += balon.vAltura * dt;
   balon.x += balon.vx * dt;
@@ -3318,19 +3365,33 @@ function resolverColisionJugadorBalon(jugador, balon, balonAntesX, balonAntesAlt
   if (distancia >= radios) return false;
   const nx = dx / distancia, ny = dy / distancia;
   // Reubicamos el balón justo afuera del cuerpo en la dirección del punto de contacto real
-  // (no de su posición final), para que quede visualmente pegado al jugador en vez de "adentro".
-  balon.x = jugador.x + nx * radios;
-  const nuevoCentroBalonY = centroJugadorY + ny * radios;
+  // (no de su posición final), con un pequeño margen extra (1.06x) — reubicarlo EXACTO en el borde
+  // hacía que, si el jugador seguía moviéndose hacia el balón, volviera a quedar "adentro" el
+  // siguiente sub-paso y se resolviera de nuevo, y de nuevo — eso era el balón "pegándose" al
+  // cuerpo en vez de despegarse limpio.
+  const radiosConMargen = radios * 1.06;
+  balon.x = jugador.x + nx * radiosConMargen;
+  const nuevoCentroBalonY = centroJugadorY + ny * radiosConMargen;
   balon.altura = CABEZONES_SUELO_Y - nuevoCentroBalonY;
   const impulso = 260;
-  let vxNuevo = nx * impulso + jugador.vx * 0.5;
+  // El rebote ahora también conserva parte de la velocidad que TRAÍA el balón (antes era un empuje
+  // de magnitud fija sin importar si venía lento o a toda velocidad, lo que se sentía como que
+  // "rebota mal" en un tiro fuerte). Un balón que venía rápido rebota más fuerte.
+  const rebotePropio = Math.min(500, Math.abs(balon.vx)) * 0.45;
+  let vxNuevo = nx * (impulso + rebotePropio) + jugador.vx * 0.5;
   // Un choque de CUERPO (no una patada, que ya solo dispara hacia el arco rival por diseño) nunca
   // debe mandar el balón hacia el PROPIO arco — eso es justo el autogol regalado que se reportó. Si
   // el rebote natural del choque iba hacia adentro de su arco, se redirige hacia afuera en cambio.
   const haciaAfuera = jugador.lado === "izquierda" ? 1 : -1;
   if (vxNuevo * haciaAfuera < 0) vxNuevo = Math.abs(vxNuevo) * haciaAfuera;
   balon.vx = vxNuevo;
-  balon.vAltura = Math.max(balon.vAltura, -ny * impulso * 0.6);
+  // Solo un golpe claramente "por arriba" (cabezazo) empuja el balón hacia arriba. Antes CUALQUIER
+  // contacto —incluso uno lateral, al ras del cuerpo— aplastaba la velocidad vertical del balón
+  // casi a 0 (con Math.max), y si el jugador se quedaba ahí, el balón dejaba de caer y quedaba
+  // flotando "pegado" contra el costado del cuerpo en vez de seguir su caída natural.
+  if (ny < -0.35) {
+    balon.vAltura = Math.max(balon.vAltura, -ny * impulso * 0.6);
+  }
   return true;
 }
 
@@ -3810,6 +3871,28 @@ function dibujarCanchaCabezones(ctx, estado, opts) {
   ctx.lineTo(CABEZONES_ANCHO, CABEZONES_SUELO_Y);
   ctx.stroke();
 
+  // áreas de penal y arcos de esquina — puramente visuales, para que cada arco se sienta como una
+  // "zona" propia de la cancha en vez de un poste suelto
+  ctx.strokeStyle = "rgba(255,255,255,0.22)";
+  ctx.lineWidth = 2;
+  const anchoArea = CABEZONES_ARCO_ANCHO * 2.3;
+  const altoArea = CABEZONES_ARCO_ALTO * 1.55;
+  [0, CABEZONES_ANCHO].forEach((borde) => {
+    const signo = borde === 0 ? 1 : -1;
+    ctx.beginPath();
+    ctx.moveTo(borde, CABEZONES_SUELO_Y);
+    ctx.lineTo(borde + signo * anchoArea, CABEZONES_SUELO_Y);
+    ctx.lineTo(borde + signo * anchoArea, CABEZONES_SUELO_Y - altoArea);
+    ctx.lineTo(borde, CABEZONES_SUELO_Y - altoArea);
+    ctx.stroke();
+  });
+  ctx.beginPath();
+  ctx.arc(0, CABEZONES_SUELO_Y, 10, -Math.PI / 2, 0);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(CABEZONES_ANCHO, CABEZONES_SUELO_Y, 10, Math.PI, Math.PI * 1.5);
+  ctx.stroke();
+
   // arcos (el travesano de arriba ahora también es colisionador en la física)
   [{ enBorde: 0, signo: 1 }, { enBorde: CABEZONES_ANCHO, signo: -1 }].forEach(({ enBorde, signo }) => {
     const xPoste = enBorde + signo * CABEZONES_ARCO_ANCHO;
@@ -3910,9 +3993,13 @@ function BotonAccionCabezones({ onPress, onRelease, children, ancho = 62, color 
 // Solo para el invitado: entre paquete y paquete del anfitrión (llegan cada ~110ms, y en wifi con
 // jitter a veces más espaciados o fuera de orden), sigue moviendo el balón y al rival con la misma
 // física real en vez de quedarse "congelado" hasta el próximo dato — así no se ve a saltos.
-function extrapolarBalonCabezones(balon, dt) {
+function extrapolarBalonCabezones(balon, dt, jugadorIzq, jugadorDer) {
   const clon = { ...balon };
+  const antesX = clon.x, antesAltura = clon.altura;
   avanzarBalonCabezones(clon, dt);
+  revisarColisionArco(clon);
+  if (jugadorIzq) resolverColisionJugadorBalon(jugadorIzq, clon, antesX, antesAltura);
+  if (jugadorDer) resolverColisionJugadorBalon(jugadorDer, clon, antesX, antesAltura);
   return clon;
 }
 function extrapolarJugadorRemotoCabezones(jugador, dt) {
@@ -4005,7 +4092,11 @@ function MotorCabezones({
               altura: jIzqPrev.altura + (remoto.jugadorIzq.altura - jIzqPrev.altura) * f,
             };
           } else {
-            balonSuavizadoRef.current = extrapolarBalonCabezones(balonSuavizadoRef.current, dt);
+            // pasamos las posiciones actuales de ambos cabezones para que la extrapolación del
+            // balón respete colisiones (si no, en conexiones lentas se podía ver al balón
+            // "traspasar" al jugador durante el hueco entre paquetes)
+            const jugadorDerParaColision = { x: propio.x, altura: propio.altura, lado: "derecha" };
+            balonSuavizadoRef.current = extrapolarBalonCabezones(balonSuavizadoRef.current, dt, jugadorIzqSuavizadoRef.current, jugadorDerParaColision);
             jugadorIzqSuavizadoRef.current = extrapolarJugadorRemotoCabezones(jugadorIzqSuavizadoRef.current, dt);
           }
 
@@ -4208,22 +4299,25 @@ function LobbyCabezones({ user, onVolver, onElegirOponente }) {
   const [salas, setSalas] = useState({});
   const [cargando, setCargando] = useState(true);
 
+  // Quién está en línea ahora mismo se ve al instante (WebSocket): apenas alguien entra o cierra
+  // "No haga sino Jogar" (incluso si cierra la pestaña de golpe, gracias a rtdbLimpiarAlDesconectar
+  // más abajo), el punto verde cambia solo, sin esperar ningún sondeo.
+  useEffect(() => {
+    return rtdbEscuchar("cabezones_rt/presencia", (p) => setPresencia(p || {}));
+  }, []);
+
   useEffect(() => {
     let vivo = true;
-    const refrescar = async () => {
-      const [p, listaSalas] = await Promise.all([
-        fetchData(k("cabezones_presencia")),
-        Promise.all(USUARIOS_REALES.flatMap((a, i) => USUARIOS_REALES.slice(i + 1).map((b) => fetchData(k(`cabezones_sala_${idSalaCabezones(a.id, b.id)}`)).then((s) => [idSalaCabezones(a.id, b.id), s])))),
-      ]);
+    const refrescarSalas = async () => {
+      const listaSalas = await Promise.all(USUARIOS_REALES.flatMap((a, i) => USUARIOS_REALES.slice(i + 1).map((b) => fetchData(k(`cabezones_sala_${idSalaCabezones(a.id, b.id)}`)).then((s) => [idSalaCabezones(a.id, b.id), s]))));
       if (!vivo) return;
       const mapaSalas = {};
       listaSalas.forEach(([id, s]) => { if (s) mapaSalas[id] = s; });
-      setPresencia(p || {});
       setSalas(mapaSalas);
       setCargando(false);
     };
-    refrescar();
-    const id = setInterval(refrescar, 3000);
+    refrescarSalas();
+    const id = setInterval(refrescarSalas, 3000);
     return () => { vivo = false; clearInterval(id); };
   }, [miId]);
 
@@ -4231,7 +4325,7 @@ function LobbyCabezones({ user, onVolver, onElegirOponente }) {
   const nombrePorId = (id) => (USUARIOS_REALES.find((u) => u.id === id) || {}).nombre || "";
 
   const estadoDe = (otroId) => {
-    const enLinea = !!(presencia[otroId] && Date.now() - presencia[otroId] < 12000);
+    const enLinea = !!presencia[otroId];
     let jugandoContra = null;
     Object.values(salas).forEach((s) => {
       if (s && s.fase === "jugando" && (s.jugador1Id === otroId || s.jugador2Id === otroId)) {
@@ -4285,8 +4379,6 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
   const miId = user.id;
   const roomId = idSalaCabezones(miId, oponente.id);
   const claveSala = `cabezones_sala_${roomId}`;
-  const claveEstado = `cabezones_estado_${roomId}`;
-  const claveEntrada2 = `cabezones_entrada2_${roomId}`;
 
   const [sala, setSala] = useState(null);
   const [cargando, setCargando] = useState(true);
@@ -4345,6 +4437,16 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
 
   useEffect(() => { if (enPartida) estabaEnPartidaRef.current = true; }, [enPartida]);
 
+  // Si el navegador se cierra o se cae la conexión sin avisar (wifi que se corta, se cierra la
+  // pestaña), le pedimos al SERVIDOR de Firebase — no al navegador, que ya no puede avisar de nada
+  // en ese momento — que borre nuestro último dato en tiempo real apenas lo detecte, para que el
+  // otro lado no se quede mirando una posición congelada.
+  useEffect(() => {
+    if (soyJugador1) rtdbLimpiarAlDesconectar(RT_ESTADO_CABEZONES(roomId));
+    if (soyJugador2) rtdbLimpiarAlDesconectar(RT_ENTRADA2_CABEZONES(roomId));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soyJugador1, soyJugador2, roomId]);
+
   // Latido del anfitrión cada 5s mientras se juega, para que una sala de verdad abandonada
   // (cerró la pestaña sin avisar) se pueda liberar sola más adelante.
   useEffect(() => {
@@ -4359,55 +4461,55 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
     estadoSembradoRef.current = true;
     terminadoNotificadoRef.current = false;
     estadoLocalRef.current = crearEstadoPartidoCabezones(sala.config || configElegida);
-    saveData(k(claveEstado), estadoLocalRef.current);
+    rtdbEnviar(RT_ESTADO_CABEZONES(roomId), estadoLocalRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador1, sala && sala.fase, roomId]);
 
+  // Anfitrión → invitado (estado de la partida) e invitado → anfitrión (botones): antes esto se
+  // hacía "preguntando" por HTTP cada tantos milisegundos (sondeo/polling), lo que de raíz mete un
+  // retraso mínimo de medio intervalo en cada sentido además de la ida y vuelta de cada pedido HTTP
+  // — y en wifi cada uno de esos pedidos puede tardar bastante más que en cable. Ahora se manda por
+  // una conexión WebSocket persistente (SDK real de Firebase) y se recibe al instante apenas cambia,
+  // sin esperar ningún "próximo sondeo": esto es lo que elimina el lag de raíz en vez de acortarlo.
   useEffect(() => {
     if (!soyJugador1) return;
     const id = setInterval(() => {
-      if (estadoLocalRef.current) saveData(k(claveEstado), estadoLocalRef.current);
-    }, 70);
+      if (estadoLocalRef.current) rtdbEnviar(RT_ESTADO_CABEZONES(roomId), estadoLocalRef.current);
+    }, 45);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador1, roomId]);
 
-  // Anfitrión: sondea los botones del invitado. (Se probó una versión con suscripción en tiempo
-  // real vía Server-Sent Events para evitar el sondeo, pero causó que algunas partidas no cargaran
-  // bien en línea — se volvió a este método, que es el que sí carga siempre, con un intervalo más
-  // corto que antes para bajar el retraso lo más posible sin arriesgar la conexión.)
+  // Anfitrión: recibe los botones del invitado en tiempo real (nada de sondeo).
   useEffect(() => {
     if (!soyJugador1) return;
-    const id = setInterval(async () => {
-      const e = await fetchData(k(claveEntrada2));
-      if (e) entradaOponenteRef.current = e;
-    }, 60);
-    return () => clearInterval(id);
+    return rtdbEscuchar(RT_ENTRADA2_CABEZONES(roomId), (e) => { if (e) entradaOponenteRef.current = e; });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador1, roomId]);
 
-  // Invitado: sondea el estado del anfitrión (mismo motivo que arriba). Si en 10s nunca llega ni un
-  // solo estado del anfitrión, es que se fue antes de arrancar (o nunca estuvo) — libero la sala en
-  // vez de dejarla trabada para siempre.
+  // Invitado: recibe el estado del anfitrión en tiempo real. Si en 10s nunca llega ni un solo
+  // estado del anfitrión, es que se fue antes de arrancar (o nunca estuvo) — libero la sala en vez
+  // de dejarla trabada para siempre.
   useEffect(() => {
     if (!soyJugador2) return;
     let ultimoOk = Date.now();
-    const id = setInterval(async () => {
-      const e = await fetchData(k(claveEstado));
+    const cancelar = rtdbEscuchar(RT_ESTADO_CABEZONES(roomId), (e) => {
       if (e) { estadoRemotoRef.current = e; ultimoOk = Date.now(); }
-      else if (Date.now() - ultimoOk > 10000) {
+    });
+    const id = setInterval(() => {
+      if (Date.now() - ultimoOk > 10000) {
         const limpia = salaVaciaCabezones();
         saveData(k(claveSala), limpia);
         setSala(limpia);
       }
-    }, 70);
-    return () => clearInterval(id);
+    }, 1000);
+    return () => { cancelar(); clearInterval(id); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador2, roomId]);
 
   useEffect(() => {
     if (!soyJugador2) return;
-    const id = setInterval(() => { saveData(k(claveEntrada2), entradaLocalRef.current); }, 60);
+    const id = setInterval(() => { rtdbEnviar(RT_ENTRADA2_CABEZONES(roomId), entradaLocalRef.current); }, 40);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador2, roomId]);
@@ -4588,18 +4690,14 @@ function NoHagaSinoJogarView({ user, onVolver }) {
   }, [pantalla]);
 
   // Presencia: mientras tenga abierta cualquier pantalla de "No haga sino Jogar" (el hub incluido)
-  // aviso cada 5s que sigo aquí, así el lobby puede mostrar quién está en línea de verdad. Al
-  // salir del juego (o de Cúpula Games) esto se detiene solo y en ~12s dejo de verse "en línea".
+  // marco que estoy en línea. Ya no hace falta "latir" cada 5s ni tolerar una ventana de espera: le
+  // pedimos al servidor de Firebase que borre esto solo apenas detecte que me desconecté (se cerró
+  // la pestaña, se cortó el wifi, lo que sea), así el lobby ve "en línea"/"desconectado" al instante
+  // y de verdad, sin depender de que mi navegador alcance a avisar antes de cerrarse.
   useEffect(() => {
-    let vivo = true;
-    const latir = async () => {
-      const fresco = (await fetchData(k("cabezones_presencia"))) || {};
-      if (!vivo) return;
-      await saveData(k("cabezones_presencia"), { ...fresco, [miId]: Date.now() });
-    };
-    latir();
-    const id = setInterval(latir, 5000);
-    return () => { vivo = false; clearInterval(id); };
+    rtdbLimpiarAlDesconectar(RT_PRESENCIA_CABEZONES(miId));
+    rtdbEnviar(RT_PRESENCIA_CABEZONES(miId), true);
+    return () => { rtdbEnviar(RT_PRESENCIA_CABEZONES(miId), null); };
   }, [miId]);
 
   const cambiarColor = (colorId) => {
