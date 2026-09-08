@@ -1,0 +1,16 @@
+{
+  "name": "cupula-server",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Servidor autoritativo de \"No haga sino Jogar\" para La Cúpula — corre el partido en vivo por igual para ambos jugadores.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "firebase": "^10.13.0"
+  }
+}
