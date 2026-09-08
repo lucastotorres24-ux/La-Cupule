@@ -31,8 +31,16 @@ function rtdbLimpiarAlDesconectar(ruta) {
   rtdbOnDisconnect(rtdbRef(rtdb, ruta)).remove().catch(() => {});
 }
 const RT_ESTADO_CABEZONES = (roomId) => `cabezones_rt/estado/${roomId}`;
+const RT_ENTRADA1_CABEZONES = (roomId) => `cabezones_rt/entrada1/${roomId}`;
 const RT_ENTRADA2_CABEZONES = (roomId) => `cabezones_rt/entrada2/${roomId}`;
 const RT_PRESENCIA_CABEZONES = (uid) => `cabezones_rt/presencia/${uid}`;
+// El servidor de Cúpula (proceso Node aparte, ver /server) escucha esta ruta para saber qué salas
+// tienen partido en curso: cuando aparece un hijo acá, arranca el bucle de físicas de esa sala;
+// cuando desaparece, lo detiene. Antes el navegador de quien creaba la sala ("jugador1") era el que
+// corría toda la física y por eso siempre tenía cero de retraso mientras el otro dependía 100% de la
+// red — ahora NINGÚN navegador simula el partido: los dos mandan solo sus botones y reciben la
+// verdad del servidor exactamente igual, con la misma latencia de red para ambos.
+const RT_SALA_ACTIVA_CABEZONES = (roomId) => `cabezones_rt/salaActiva/${roomId}`;
 
 if (typeof window !== "undefined" && !window.storage) {
   window.storage = {
@@ -3606,6 +3614,27 @@ const DIFICULTADES_BOT_CABEZONES = {
 //    propio arco por diseño de la física — así que la IA ya no puede regalar un autogol por sí sola.
 //  - No se queda empujando de frente contra el rival sin avanzar: si queda pegado a él (choque de
 //    cuerpos) y no puede alcanzar el balón, salta para separarse en vez de insistir sin resultado.
+// Intercepción predictiva: en vez de perseguir dónde ESTÁ el balón ahora mismo (que en un juego con
+// gravedad y rebotes siempre llega "un paso tarde", persiguiendo un blanco que ya se movió), se
+// simula la trayectoria futura del balón con la misma física real (gravedad, rebote en el piso,
+// fricción) y se apunta al primer punto de esa trayectoria que el jugador alcanzaría a tiempo si sale
+// ya mismo. Esta es la técnica clásica de "intercepción" que usan los bots reales de juegos con
+// pelota (por ejemplo el capítulo "Simple Soccer" de Programming Game AI by Example, o los algoritmos
+// de intercepción usados en RoboCup) en vez de la persecución ingenua de la posición actual. Si no
+// encuentra ningún punto alcanzable dentro del horizonte de tiempo dado, devuelve la posición actual
+// del balón (el comportamiento ingenuo de antes) como respaldo.
+function predecirInterceptacionBalonCabezones(balon, jugadorX, velocidadJugador, horizonteS) {
+  const paso = 0.05;
+  const clon = { x: balon.x, altura: balon.altura, vAltura: balon.vAltura, vx: balon.vx, efecto: balon.efecto };
+  for (let t = paso; t <= horizonteS + 1e-9; t += paso) {
+    avanzarBalonCabezones(clon, paso);
+    const distancia = Math.abs(clon.x - jugadorX);
+    const tiempoLlegada = distancia / Math.max(1, velocidadJugador);
+    if (tiempoLlegada <= t) return clon.x;
+  }
+  return balon.x;
+}
+
 function decidirEntradaBotCabezones(estado, dificultad, alerta) {
   const cfgBase = DIFICULTADES_BOT_CABEZONES[dificultad] || DIFICULTADES_BOT_CABEZONES.medio;
   // Modo alerta: se activa un rato justo después de recibir un gol (lo controla quien llama a esta
@@ -3651,8 +3680,12 @@ function decidirEntradaBotCabezones(estado, dificultad, alerta) {
     // el balón está lejos y no es una amenaza inmediata: se queda parcialmente en su línea de
     // resguardo en vez de abandonar el arco por completo (más "anclaje" = se aleja menos).
     objetivoX = balon.x + (lineaResguardoX - balon.x) * cfg.anclaje;
-  } else {
+  } else if (dificultad === "facil") {
+    // en fácil no se usa intercepción a propósito, para que siga sintiéndose como un bot
+    // principiante que corre detrás de la pelota en vez de anticiparse.
     objetivoX = balon.x;
+  } else {
+    objetivoX = predecirInterceptacionBalonCabezones(balon, jugador.x, CABEZONES_VELOCIDAD, 0.9);
   }
   // Margen de error: rompe el patrón "misma situación = mismo movimiento exacto siempre" que se
   // puede aprender y explotar para anotar fácil una y otra vez.
@@ -4189,14 +4222,14 @@ function factorSuavizadoCabezones(distancia, zonaMuerta, zonaFuerte, dt, tasaMin
 }
 
 function MotorCabezones({
-  esHost, entradaLocalRef, entradaOponenteRef, estadoRemotoRef, estadoLocalRef,
+  esHost, modoServidor, entradaLocalRef, entradaOponenteRef, estadoRemotoRef, estadoLocalRef,
   colorIzq, colorDer, nombreIzq, nombreDer, ladoLocal, onEstadoActualizado,
 }) {
   const contenedorRef = useRef(null);
   const canvasRef = useRef(null);
   const posLocalPredichaRef = useRef({ x: null, altura: 0, vAltura: 0, vx: 0, cooldownPatada: 0, pateando: false });
   const balonSuavizadoRef = useRef(null);
-  const jugadorIzqSuavizadoRef = useRef(null);
+  const rivalSuavizadoRef = useRef(null);
   const ultimoRemotoRecibidoRef = useRef(null);
   // Efectos puramente visuales (partículas de gol, chispa de patada, sacudida de cámara) — viven
   // en un ref para no disparar renders de React por esto; dibujarCanchaCabezones los actualiza y
@@ -4211,6 +4244,7 @@ function MotorCabezones({
     let vivo = true;
     let ultimo = performance.now();
     let acumuladorHud = 0;
+    const propioEsIzq = ladoLocal === "izquierda";
 
     function ajustarTamano() {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -4227,36 +4261,44 @@ function MotorCabezones({
       ultimo = ahoraMs;
       acumuladorHud += dt;
 
-      if (esHost) {
+      if (esHost && !modoServidor) {
+        // Partida contra el computador: todo corre acá mismo, sin red — no hay nada que reconciliar.
         const entradaIzq = ladoLocal === "izquierda" ? entradaLocalRef.current : entradaOponenteRef.current;
         const entradaDer = ladoLocal === "derecha" ? entradaLocalRef.current : entradaOponenteRef.current;
         estadoLocalRef.current = avanzarPartidoCabezones(estadoLocalRef.current, dt, entradaIzq, entradaDer);
         dibujarCanchaCabezones(ctx, estadoLocalRef.current, { colorIzq, colorDer, nombreIzq, nombreDer, efectos: efectosRef.current, dt });
       } else {
+        // Modo "cliente en red": antes solo lo usaba el invitado (mientras el anfitrión corría toda
+        // la física). Ahora, con el servidor de Cúpula como única autoridad (modoServidor), lo usan
+        // AMBOS lados por igual — ninguno de los dos navegadores simula el partido, así que ninguno
+        // tiene ventaja de latencia sobre el otro. Cada quien predice solo su propio cabezón al
+        // instante para que se sienta fluido, y reconcilia el balón + el rival contra lo último que
+        // mandó el servidor.
         const remoto = estadoRemotoRef.current;
         if (remoto) {
-          // predicción local del propio cabezón (siempre "derecha" cuando somos invitados) para que
-          // se sienta instantáneo, aunque la verdad venga del anfitrión con un poco de retraso
           const entradaLocal = entradaLocalRef.current;
           const propio = posLocalPredichaRef.current;
-          if (propio.x === null) propio.x = remoto.jugadorDer.x;
+          const remotoPropio = propioEsIzq ? remoto.jugadorIzq : remoto.jugadorDer;
+          const remotoRival = propioEsIzq ? remoto.jugadorDer : remoto.jugadorIzq;
+          if (propio.x === null) propio.x = remotoPropio.x;
           // OJO: antes "pateando" (la pose de la patada) se recreaba en false cada cuadro y se
-          // descartaba sin usar — el invitado nunca veía su propia patada hasta que la respuesta
-          // completa del anfitrión daba toda la vuelta por la red, así que la patada se sentía
-          // "atrasada" incluso con una conexión perfecta. Ahora se predice localmente igual que el
-          // movimiento: se ve al instante al presionar el botón, y el resultado real (si conectó o
-          // no) lo sigue decidiendo el anfitrión como siempre.
-          const jugadorTemp = { x: propio.x, vx: propio.vx, altura: propio.altura, vAltura: propio.vAltura, lado: "derecha", efecto: remoto.jugadorDer.efecto, cooldownPatada: propio.cooldownPatada, pateando: false };
+          // descartaba sin usar — nunca se veía la propia patada hasta que la respuesta completa de
+          // la autoridad (antes el anfitrión, ahora el servidor) daba toda la vuelta por la red, así
+          // que la patada se sentía "atrasada" incluso con una conexión perfecta. Ahora se predice
+          // localmente igual que el movimiento: se ve al instante al presionar el botón, y el
+          // resultado real (si conectó o no) lo sigue decidiendo la autoridad como siempre.
+          const jugadorTemp = { x: propio.x, vx: propio.vx, altura: propio.altura, vAltura: propio.vAltura, lado: ladoLocal, efecto: remotoPropio.efecto, cooldownPatada: propio.cooldownPatada, pateando: false };
           moverJugadorCabezones(jugadorTemp, entradaLocal, dt);
           // Colisión jugador-jugador también en la predicción local: antes esto solo corría en la
-          // física completa del anfitrión, así que al acercarse o alejarse del rival el invitado se
-          // veía "atravesarlo" o quedar superpuesto varios cuadros hasta que la reconciliación de red
-          // lo corregía — eso es lo que se sentía/veía como que el movimiento "se pega" al avanzar o
-          // devolverse cerca del rival. Ahora se resuelve también acá, contra la posición del rival
-          // que se está mostrando en pantalla en este instante, así el invitado nunca se ve metido
-          // dentro del rival esperando a que llegue el próximo paquete para corregirlo.
-          const rivalParaColision = { ...(jugadorIzqSuavizadoRef.current || remoto.jugadorIzq) };
-          resolverColisionJugadorJugador(rivalParaColision, jugadorTemp);
+          // física completa de quien tuviera la autoridad, así que al acercarse o alejarse del rival
+          // se veía "atravesarlo" o quedar superpuesto varios cuadros hasta que la reconciliación de
+          // red lo corregía — eso es lo que se sentía/veía como que el movimiento "se pega" al
+          // avanzar o devolverse cerca del rival. Ahora se resuelve también acá, contra la posición
+          // del rival que se está mostrando en pantalla en este instante, así nunca se ve al propio
+          // cabezón metido dentro del rival esperando a que llegue el próximo paquete para corregirlo.
+          const rivalParaColision = { ...(rivalSuavizadoRef.current || remotoRival) };
+          if (propioEsIzq) resolverColisionJugadorJugador(jugadorTemp, rivalParaColision);
+          else resolverColisionJugadorJugador(rivalParaColision, jugadorTemp);
           propio.x = jugadorTemp.x;
           propio.altura = jugadorTemp.altura;
           propio.vAltura = jugadorTemp.vAltura;
@@ -4264,39 +4306,39 @@ function MotorCabezones({
           propio.cooldownPatada = jugadorTemp.cooldownPatada;
           propio.pateando = jugadorTemp.pateando;
 
-          // ¿Llegó un paquete nuevo del anfitrión desde el cuadro anterior? Todas las
+          // ¿Llegó un paquete nuevo de la autoridad desde el cuadro anterior? Todas las
           // reconciliaciones (jugador propio, balón, rival) se calculan UNA vez por paquete, no
           // en cada cuadro (60/s). Antes se corregía la posición propia contra el mismo dato ya
           // "viejo" en cada cuadro, incluso sin datos nuevos — eso se sentía como un imán frenando
-          // el movimiento del invitado, porque la predicción local siempre estaba siendo jalada
-          // hacia atrás por un dato que no había cambiado.
+          // el movimiento, porque la predicción local siempre estaba siendo jalada hacia atrás por
+          // un dato que no había cambiado.
           const paqueteNuevo = remoto !== ultimoRemotoRecibidoRef.current;
           ultimoRemotoRecibidoRef.current = remoto;
 
           if (paqueteNuevo) {
             // Reconciliación del jugador propio: con zona muerta. Un margen chico entre la
-            // predicción local y lo que dice el anfitrión es normal (latencia, redondeos) y NO se
+            // predicción local y lo que dice la autoridad es normal (latencia, redondeos) y NO se
             // corrige — corregirlo igual era lo que causaba la sensación de "imán". Solo una
             // diferencia grande (desync real) se corrige, y mientras más grande, más rápido.
-            const diffX = remoto.jugadorDer.x - propio.x;
+            const diffX = remotoPropio.x - propio.x;
             const fJugador = factorSuavizadoCabezones(Math.abs(diffX), 10, 70, dt, 1.5, 11);
             if (fJugador > 0) propio.x += diffX * fJugador;
-            // si la patada real sí conectó, el anfitrión aplica un cooldown más largo del que la
+            // si la patada real sí conectó, la autoridad aplica un cooldown más largo del que la
             // predicción local podía adivinar — nos alineamos a ese valor para no mostrar patadas
             // más seguido de lo que el servidor realmente permite.
-            propio.cooldownPatada = Math.max(propio.cooldownPatada, remoto.jugadorDer.cooldownPatada || 0);
+            propio.cooldownPatada = Math.max(propio.cooldownPatada, remotoPropio.cooldownPatada || 0);
           }
 
-          // Suavizado del balón y del rival (jugadorIzq): en wifi los paquetes llegan cada ~110ms
-          // pero con jitter (a veces más espaciados o desordenados), y dibujar el último dato crudo
-          // se ve "a saltos". Si llegó un paquete nuevo, corregimos hacia lo real con la misma zona
-          // muerta gradual (un margen chico —esperable mientras la extrapolación local hace su
-          // trabajo— no se toca, así el balón no se ve "jalado" de golpe cerca de los pies del
-          // jugador cada vez que llega un paquete; un desync grande, como tras un rebote que el
-          // anfitrión resolvió distinto, sí se corrige rápido). Si no llegó nada nuevo todavía,
-          // seguimos moviendo el balón/jugador con la física real en vez de congelarlos.
+          // Suavizado del balón y del rival: en wifi los paquetes llegan cada ~110ms pero con jitter
+          // (a veces más espaciados o desordenados), y dibujar el último dato crudo se ve "a saltos".
+          // Si llegó un paquete nuevo, corregimos hacia lo real con la misma zona muerta gradual (un
+          // margen chico —esperable mientras la extrapolación local hace su trabajo— no se toca, así
+          // el balón no se ve "jalado" de golpe cerca de los pies del jugador cada vez que llega un
+          // paquete; un desync grande, como tras un rebote que la autoridad resolvió distinto, sí se
+          // corrige rápido). Si no llegó nada nuevo todavía, seguimos moviendo el balón/jugador con
+          // la física real en vez de congelarlos.
           if (!balonSuavizadoRef.current) balonSuavizadoRef.current = { ...remoto.balon };
-          if (!jugadorIzqSuavizadoRef.current) jugadorIzqSuavizadoRef.current = { ...remoto.jugadorIzq };
+          if (!rivalSuavizadoRef.current) rivalSuavizadoRef.current = { ...remotoRival };
 
           if (paqueteNuevo) {
             const balonPrev = balonSuavizadoRef.current;
@@ -4308,29 +4350,32 @@ function MotorCabezones({
               x: balonPrev.x + dxBalon * fBalon,
               altura: balonPrev.altura + dyBalon * fBalon,
             };
-            const jIzqPrev = jugadorIzqSuavizadoRef.current;
-            const dxIzq = remoto.jugadorIzq.x - jIzqPrev.x;
-            const dyIzq = remoto.jugadorIzq.altura - jIzqPrev.altura;
-            const fIzq = factorSuavizadoCabezones(Math.hypot(dxIzq, dyIzq), 6, 70, dt, 2, 20);
-            jugadorIzqSuavizadoRef.current = {
-              ...remoto.jugadorIzq,
-              x: jIzqPrev.x + dxIzq * fIzq,
-              altura: jIzqPrev.altura + dyIzq * fIzq,
+            const rivalPrev = rivalSuavizadoRef.current;
+            const dxRival = remotoRival.x - rivalPrev.x;
+            const dyRival = remotoRival.altura - rivalPrev.altura;
+            const fRival = factorSuavizadoCabezones(Math.hypot(dxRival, dyRival), 6, 70, dt, 2, 20);
+            rivalSuavizadoRef.current = {
+              ...remotoRival,
+              x: rivalPrev.x + dxRival * fRival,
+              altura: rivalPrev.altura + dyRival * fRival,
             };
           } else {
             // pasamos las posiciones actuales de ambos cabezones para que la extrapolación del
             // balón respete colisiones (si no, en conexiones lentas se podía ver al balón
             // "traspasar" al jugador durante el hueco entre paquetes)
-            const jugadorDerParaColision = { x: propio.x, altura: propio.altura, vx: propio.vx || 0, lado: "derecha" };
-            balonSuavizadoRef.current = extrapolarBalonCabezones(balonSuavizadoRef.current, dt, jugadorIzqSuavizadoRef.current, jugadorDerParaColision, remoto.arcoIzqFactor, remoto.arcoDerFactor);
-            jugadorIzqSuavizadoRef.current = extrapolarJugadorRemotoCabezones(jugadorIzqSuavizadoRef.current, dt);
+            const propioParaColision = { x: propio.x, altura: propio.altura, vx: propio.vx || 0, lado: ladoLocal };
+            const jugadorIzqExtrap = propioEsIzq ? propioParaColision : rivalSuavizadoRef.current;
+            const jugadorDerExtrap = propioEsIzq ? rivalSuavizadoRef.current : propioParaColision;
+            balonSuavizadoRef.current = extrapolarBalonCabezones(balonSuavizadoRef.current, dt, jugadorIzqExtrap, jugadorDerExtrap, remoto.arcoIzqFactor, remoto.arcoDerFactor);
+            rivalSuavizadoRef.current = extrapolarJugadorRemotoCabezones(rivalSuavizadoRef.current, dt);
           }
 
+          const propioDibujado = { ...remotoPropio, x: propio.x, altura: propio.altura, pateando: propio.pateando };
           const estadoDibujado = {
             ...remoto,
             balon: balonSuavizadoRef.current,
-            jugadorIzq: jugadorIzqSuavizadoRef.current,
-            jugadorDer: { ...remoto.jugadorDer, x: propio.x, altura: propio.altura, pateando: propio.pateando },
+            jugadorIzq: propioEsIzq ? propioDibujado : rivalSuavizadoRef.current,
+            jugadorDer: propioEsIzq ? rivalSuavizadoRef.current : propioDibujado,
           };
           dibujarCanchaCabezones(ctx, estadoDibujado, { colorIzq, colorDer, nombreIzq, nombreDer, efectos: efectosRef.current, dt });
         } else {
@@ -4340,7 +4385,7 @@ function MotorCabezones({
 
       if (acumuladorHud >= 0.12) {
         acumuladorHud = 0;
-        onEstadoActualizado(esHost ? estadoLocalRef.current : estadoRemotoRef.current);
+        onEstadoActualizado((esHost && !modoServidor) ? estadoLocalRef.current : estadoRemotoRef.current);
       }
       requestAnimationFrame(cuadro);
     }
@@ -4352,7 +4397,7 @@ function MotorCabezones({
       window.removeEventListener("resize", ajustarTamano);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [esHost, ladoLocal]);
+  }, [esHost, modoServidor, ladoLocal]);
 
   return (
     <div ref={contenedorRef} style={{ position: "absolute", inset: 0 }}>
@@ -4639,12 +4684,13 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
   const [cargando, setCargando] = useState(true);
   const [marcador, setMarcador] = useState({ golesIzq: 0, golesDer: 0, tiempoRestante: (configElegida && configElegida.duracionS) || CABEZONES_DURACION_PARTIDO_S, fase: "esperando", ganador: null });
   const salaRef = useRef(null);
-  const estadoLocalRef = useRef(crearEstadoPartidoCabezones(configElegida));
   const estadoRemotoRef = useRef(null);
   const entradaLocalRef = useRef({ izq: false, der: false, saltar: false, patear: false });
-  const entradaOponenteRef = useRef({ izq: false, der: false, saltar: false, patear: false });
   const terminadoNotificadoRef = useRef(false);
-  const estadoSembradoRef = useRef(false);
+  // Marca si YA le avisamos al servidor de Cúpula que esta sala tiene partido en curso (para no
+  // reescribir la ruta en cada cuadro) — se reinicia en cada revancha para que el servidor arranque
+  // de nuevo el bucle de físicas de esta sala.
+  const salaActivaEnviadaRef = useRef(false);
   const estabaEnPartidaRef = useRef(false);
 
   useEffect(() => { salaRef.current = sala; }, [sala]);
@@ -4694,10 +4740,16 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
 
   // Si el navegador se cierra o se cae la conexión sin avisar (wifi que se corta, se cierra la
   // pestaña), le pedimos al SERVIDOR de Firebase — no al navegador, que ya no puede avisar de nada
-  // en ese momento — que borre nuestro último dato en tiempo real apenas lo detecte, para que el
-  // otro lado no se quede mirando una posición congelada.
+  // en ese momento — que borre nuestro último dato en tiempo real apenas lo detecte. Cada quien
+  // limpia sus propios botones; además, quien creó la sala (jugador1) limpia la marca de "sala
+  // activa" que le avisa al servidor de Cúpula que corra el partido — así, si se cae justo quien
+  // creó la sala, el servidor de verdad se entera y detiene el bucle de esa partida en vez de
+  // quedar corriendo solo para nadie.
   useEffect(() => {
-    if (soyJugador1) rtdbLimpiarAlDesconectar(RT_ESTADO_CABEZONES(roomId));
+    if (soyJugador1) {
+      rtdbLimpiarAlDesconectar(RT_ENTRADA1_CABEZONES(roomId));
+      rtdbLimpiarAlDesconectar(RT_SALA_ACTIVA_CABEZONES(roomId));
+    }
     if (soyJugador2) rtdbLimpiarAlDesconectar(RT_ENTRADA2_CABEZONES(roomId));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador1, soyJugador2, roomId]);
@@ -4711,48 +4763,33 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador1, sala && sala.fase, roomId]);
 
+  // Quien creó la sala (jugador1) le avisa al servidor de Cúpula que este partido tiene que
+  // arrancar, escribiendo la config en "sala activa" — el servidor está escuchando esa ruta y, al
+  // verla aparecer, arranca su propio bucle de físicas para esta sala. NINGÚN navegador crea ni
+  // simula el estado del partido — antes lo hacía el navegador de jugador1 (por eso siempre tenía
+  // cero de retraso y el otro lado dependía 100% de la red); ahora los dos son clientes iguales del
+  // mismo servidor.
   useEffect(() => {
-    if (!soyJugador1 || !sala || sala.fase !== "jugando" || estadoSembradoRef.current) return;
-    estadoSembradoRef.current = true;
+    if (!soyJugador1 || !sala || sala.fase !== "jugando" || salaActivaEnviadaRef.current) return;
+    salaActivaEnviadaRef.current = true;
     terminadoNotificadoRef.current = false;
-    estadoLocalRef.current = crearEstadoPartidoCabezones(sala.config || configElegida);
-    rtdbEnviar(RT_ESTADO_CABEZONES(roomId), estadoLocalRef.current);
+    rtdbEnviar(RT_SALA_ACTIVA_CABEZONES(roomId), { config: sala.config || configElegida || null, iniciadaEn: Date.now() });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador1, sala && sala.fase, roomId]);
 
-  // Anfitrión → invitado (estado de la partida) e invitado → anfitrión (botones): antes esto se
-  // hacía "preguntando" por HTTP cada tantos milisegundos (sondeo/polling), lo que de raíz mete un
-  // retraso mínimo de medio intervalo en cada sentido además de la ida y vuelta de cada pedido HTTP
-  // — y en wifi cada uno de esos pedidos puede tardar bastante más que en cable. Ahora se manda por
-  // una conexión WebSocket persistente (SDK real de Firebase) y se recibe al instante apenas cambia,
-  // sin esperar ningún "próximo sondeo": esto es lo que elimina el lag de raíz en vez de acortarlo.
-  useEffect(() => {
-    if (!soyJugador1) return;
-    const id = setInterval(() => {
-      if (estadoLocalRef.current) rtdbEnviar(RT_ESTADO_CABEZONES(roomId), estadoLocalRef.current);
-    }, 45);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [soyJugador1, roomId]);
-
-  // Anfitrión: recibe los botones del invitado en tiempo real (nada de sondeo).
-  useEffect(() => {
-    if (!soyJugador1) return;
-    return rtdbEscuchar(RT_ENTRADA2_CABEZONES(roomId), (e) => { if (e) entradaOponenteRef.current = e; });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [soyJugador1, roomId]);
-
-  // Invitado: recibe el estado del anfitrión en tiempo real. Si en 10s nunca llega ni un solo
-  // estado del anfitrión, es que se fue antes de arrancar (o nunca estuvo) — libero la sala en vez
+  // Ambos jugadores reciben el estado autoritativo del servidor de Cúpula en tiempo real, por igual
+  // (antes solo el invitado hacía esto; el anfitrión se leía a sí mismo). Si en 40s nunca llega ni
+  // un solo estado del servidor — puede tardar unos segundos la primera vez si el servidor estaba
+  // "dormido" (se apaga solo tras un rato sin uso) — asumimos que algo falló y libero la sala en vez
   // de dejarla trabada para siempre.
   useEffect(() => {
-    if (!soyJugador2) return;
+    if (!enPartida) return;
     let ultimoOk = Date.now();
     const cancelar = rtdbEscuchar(RT_ESTADO_CABEZONES(roomId), (e) => {
       if (e) { estadoRemotoRef.current = e; ultimoOk = Date.now(); }
     });
     const id = setInterval(() => {
-      if (Date.now() - ultimoOk > 10000) {
+      if (Date.now() - ultimoOk > 40000) {
         const limpia = salaVaciaCabezones();
         saveData(k(claveSala), limpia);
         setSala(limpia);
@@ -4760,14 +4797,18 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
     }, 1000);
     return () => { cancelar(); clearInterval(id); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [soyJugador2, roomId]);
+  }, [enPartida, roomId]);
 
+  // Cada quien manda solo sus propios botones — nunca la posición ni el estado del partido — al
+  // servidor de Cúpula, que es el único que decide qué pasó de verdad. Antes solo el invitado hacía
+  // esto (el anfitrión mandaba el partido entero); ahora es simétrico para los dos lados.
   useEffect(() => {
-    if (!soyJugador2) return;
-    const id = setInterval(() => { rtdbEnviar(RT_ENTRADA2_CABEZONES(roomId), entradaLocalRef.current); }, 40);
+    if (!enPartida) return;
+    const ruta = soyJugador1 ? RT_ENTRADA1_CABEZONES(roomId) : RT_ENTRADA2_CABEZONES(roomId);
+    const id = setInterval(() => { rtdbEnviar(ruta, entradaLocalRef.current); }, 40);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [soyJugador2, roomId]);
+  }, [enPartida, soyJugador1, roomId]);
 
   useEffect(() => {
     if (!enPartida) return;
@@ -4794,7 +4835,7 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
   };
 
   const jugarDeNuevo = async () => {
-    estadoSembradoRef.current = false;
+    salaActivaEnviadaRef.current = false;
     const fresco = await fetchData(k(claveSala));
     const siguiente = { ...(fresco || salaRef.current || {}), fase: "jugando", latido: Date.now() };
     setSala(siguiente);
@@ -4877,23 +4918,30 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
       <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
         <Badge color={COLORS.neonBlue}>{nombreIzq} {marcador.golesIzq} - {marcador.golesDer} {nombreDer}</Badge>
         <Badge color={COLORS.textMuted}>⏱ {Math.ceil(marcador.tiempoRestante)}s</Badge>
-        <Badge color={COLORS.neonMagenta}>{soyJugador1 ? "Anfitrión" : "Invitado"}</Badge>
+        <Badge color={COLORS.neonMagenta}>{soyJugador1 ? "Jugador 1" : "Jugador 2"}</Badge>
       </div>
       <Card style={{ padding: 6, marginBottom: 14 }}>
         <div style={{ position: "relative", width: "100%", aspectRatio: `${CABEZONES_ANCHO} / ${CABEZONES_ALTO}`, borderRadius: 8, overflow: "hidden", border: `2px solid ${COLORS.neonMagenta}`, boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
           <MotorCabezones
-            esHost={soyJugador1}
+            esHost={false}
+            modoServidor
             ladoLocal={ladoLocal}
             entradaLocalRef={entradaLocalRef}
-            entradaOponenteRef={entradaOponenteRef}
             estadoRemotoRef={estadoRemotoRef}
-            estadoLocalRef={estadoLocalRef}
             colorIzq={colorIzq}
             colorDer={colorDer}
             nombreIzq={nombreIzq}
             nombreDer={nombreDer}
             onEstadoActualizado={alEstadoActualizado}
           />
+          {marcador.fase === "esperando" && (
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(5,6,10,0.9)" }}>
+              <div style={{ textAlign: "center", fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, padding: 20 }}>
+                Conectando con el servidor de Cúpula...
+                <div style={{ marginTop: 6, fontSize: 10, opacity: 0.7 }}>Puede tardar unos segundos si estaba inactivo.</div>
+              </div>
+            </div>
+          )}
           {marcador.fase === "terminado" && (
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(5,6,10,0.9)" }}>
               <div style={{ textAlign: "center" }}>
