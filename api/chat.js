@@ -29,149 +29,29 @@ function obtenerLlaveGemini() {
   return null;
 }
 
-const PROMPT_SISTEMA_CHAT =
-  "Eres Cúpula AI, la asistente virtual interna de La Cúpula (NYC 420 Style), una plataforma de gestión para un equipo de ventas de un líder y cuatro agentes. Ayudas con dudas de reclutamiento, ventas, redacción de mensajes, organización de tareas y preguntas generales. Sé breve, directa y con un tono profesional pero cercano, en español.";
+const IDENTIDAD_CUPULA_AI =
+  "Eres Cúpula AI, la asistente virtual interna de La Cúpula (NYC 420 Style), una plataforma de gestión para un equipo de ventas de un líder y cuatro agentes. Ayudas con dudas de reclutamiento, ventas, redacción de mensajes, organización de tareas y preguntas generales. En la conversación normal sé breve, directa y con un tono profesional pero cercano, en español — EXCEPTO cuando generes una propuesta de compensación (ver la sección de más abajo, es una de tus funciones principales): ahí nunca acortás ni resumís, siempre das la plantilla completa tal cual se especifica.";
 
-// Prompt de extracción para audios de candidatos. Los candidatos pueden hablar español, inglés,
-// francés, italiano o portugués — el modelo transcribe el audio y aplica el formato en un solo
-// paso. A pedido del usuario: cualquier campo/área que no se mencione claramente en el audio se
-// OMITE por completo del resultado (no se escribe "No especificado" ni la línea vacía).
-const PROMPT_EXTRACCION_AUDIO = `Actúa como un analista de reclutamiento senior para ventas de brokers, con muy buena redacción profesional en español.
-Vas a recibir un audio de un candidato (puede estar en español, inglés, francés, italiano o portugués). Transcribe internamente el audio y primero decide si el candidato TIENE experiencia previa trabajando con brokers/forex/trading o NO la tiene, según lo que diga.
+// Aviso reforzado, a propósito muy directo y cerca del final del prompt (lo último que lee el
+// modelo antes de responder pesa más que algo enterrado en el medio de un prompt largo): esta
+// función se disparaba poco/nada en la práctica, así que además de la explicación de más abajo
+// se repite acá como regla corta e innegociable, con varias formas típicas en que el usuario la
+// pide en la vida real (no solo "tengo a alguien listo").
+const RECORDATORIO_FINAL_PLANTILLA = `=== RECORDATORIO FINAL (léelo antes de responder) ===
+Si el último mensaje del usuario nombra uno de los proyectos de la base de arriba — CON o SIN el nombre de una persona — aunque lo nombre corto o distinto a como aparece en la lista (por ejemplo "proyecto Bárbara", "Bárbara", "Antonto", "Cristofer", "RD retención", "Ciudad del Este", "Brujos", "TL", "inglés", "conversión", "FTD"), tu respuesta ENTERA debe ser la plantilla maestra completa de ese proyecto (Formato A o B, la que corresponda), con el texto fijo intacto (emojis, "Contrato indefinido", lunch y breaks incluidos) y solo los datos del proyecto reemplazados. Frases típicas que disparan esto: "tengo a [nombre] para el proyecto de [proyecto]", "[nombre] está listo/a para [proyecto]", "mandame la propuesta para [nombre] en [proyecto]", "necesito la oferta de [proyecto] para [nombre]", "¿me armás la plantilla de [proyecto]?", "proyecto [proyecto]", "plantilla de [proyecto]", o simplemente el nombre del proyecto solo.
 
-Usa ÚNICAMENTE UNO de estos dos formatos según lo que detectes (nunca mezcles campos de los dos). En ambos casos, el último campo es siempre "Perfil": un resumen profesional de 3 a 5 líneas, en frases completas, que sintetice lo más relevante que dijo el candidato (trayectoria, actitud, fortalezas, motivación) — igual de completo que el ejemplo de estilo al final de estas instrucciones.
+REGLA ESTRICTA DE FORMATO — tu respuesta es ÚNICAMENTE el texto de la plantilla, palabra por palabra, empezando directo en su primera línea ("🌍 ¡ÚNETE A NUESTRO EQUIPO..." o "Propuesta de Compensación – ...") y terminando en su última línea. NO agregues absolutamente nada antes (nada de "Claro", "Aquí tienes", "Hola", saludos, ni mencionar que sos Cúpula AI) ni nada después (nada de despedidas ni comentarios). NO uses el nombre de la persona en ningún lado del texto — las plantillas no tienen campo para el nombre del candidato, son plantillas genéricas de vacante, no cartas dirigidas a alguien. NO resumas, no preguntes si la quiere, no des explicaciones: la respuesta completa ES la plantilla, nada más. Si el nombre de la persona coincide con más de un proyecto, usá la palabra clave que haya dicho el usuario ("retención"/"target" → proyecto de retención; "FTD"/"conversión"/"ventas" → proyecto de ventas; "inglés" → proyecto de inglés) para elegir cuál es. Si sigue ambiguo (nombre de proyecto o persona coincide con más de uno y no hay palabra clave) o el proyecto mencionado no existe en la base, ahí sí preguntá primero en vez de generar cualquiera.`;
 
-Si TIENE experiencia con brokers:
-Tipo de perfil: Con experiencia
-Nombre completo:
-Edad:
-Nacionalidad:
-Tráfico trabajado:
-Resultado máximo obtenido:
-Resultado mínimo obtenido:
-Empresas o proyectos:
-Países en los que ha trabajado:
-Tiempo de experiencia con brokers:
-Perfil:
+// ── Función: generador de propuestas de compensación por proyecto ──
+// La Cúpula trabaja por proyectos, y cada proyecto tiene su propio sueldo, horario y estructura de
+// comisiones (venta/conversión vs. retención son cosas distintas). Cuando alguien del equipo dice
+// algo como "tengo a fulano listo para el proyecto de X", Cúpula AI arma automáticamente una
+// propuesta de compensación lista para copiar y enviarle a esa persona — usando SOLO los datos
+// reales de este bloque, nunca inventados. Esta base y las dos plantillas de formato son las que
+// pidió el usuario textualmente; no se debe alterar ni "simplificar" ninguno de los dos estilos.
+const BASE_PROYECTOS_COMPENSACION = `=== BASE DE PROYECTOS Y COMPENSACIÓN DE LA CÚPULA (datos reales — nunca inventes ni cambies estos números, y nunca mezcles datos de un proyecto con otro) ===
 
-Si NO tiene experiencia con brokers:
-Tipo de perfil: Sin experiencia
-Nombre completo:
-Edad:
-Nacionalidad:
-Ciudad donde reside:
-Experiencia o conocimientos en Forex/trading:
-A qué se dedica actualmente:
-Por qué le interesa esta oportunidad:
-Qué le motiva a formar parte del proyecto:
-Perfil:
-
-⚠️ REGLAS IMPORTANTES:
-La primera línea SIEMPRE debe ser "Tipo de perfil: Con experiencia" o "Tipo de perfil: Sin experiencia", sin excepción.
-Para cada campo, incluye TODA la información relevante que el candidato haya dado sobre ese punto — no la resumas a una sola palabra ni la recortes de más. Si menciona varios elementos (países, empresas, etc.), lístalos todos, uno por línea con "*". Si menciona detalles, cifras, nombres, tiempos o contexto adicional, consérvalos.
-Redacta cada campo en frases completas, con buena redacción y tono profesional, corrigiendo ortografía — pero sin eliminar información real que el candidato haya dado con tal de acortar. El campo "Perfil" final NUNCA se omite ni se acorta a una sola línea: siempre es un párrafo completo de 3 a 5 líneas.
-Si un campo del formato elegido (distinto de "Perfil") no se menciona con claridad en el audio, OMÍTELO POR COMPLETO: no escribas esa línea, y nunca pongas "No especificado" ni nada equivalente.
-No mezcles campos de ambos formatos ni agregues campos que no estén en el formato elegido.
-No inventes información que el candidato no haya dicho.
-
-🎯 OBJETIVO:
-Convertir audios de candidatos en el perfil correcto (con o sin experiencia) listo para reclutamiento y selección en brokers, con el nivel de detalle y redacción profesional de este ejemplo de estilo (los datos de este ejemplo son ficticios, solo copia el TONO y el nivel de detalle, no la estructura de campos que use):
-
-Nombre: Patricia Lopera
-Edad: 43 años
-Nacionalidad: Colombiana
-Ciudad: Medellín
-
-Tráfico trabajado:
-* Colombia
-* Ecuador
-* Brasil
-
-Empresas:
-* Asisurilla
-* Experiencia en diversos call centers y empresas comerciales
-
-País de trabajo:
-Colombia
-
-Perfil:
-Profesional con amplia experiencia comercial en ventas de propiedad raíz y atención en call centers. Se destaca por su orientación a resultados, facilidad para relacionarse con clientes, actitud positiva y disposición para aprender. Cuenta con experiencia trabajando con clientes colombianos, ecuatorianos y brasileños y mantiene un constante interés por fortalecer sus conocimientos e idiomas.`;
-
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    res.status(405).json({ error: "Método no permitido" });
-    return;
-  }
-
-  const encontrada = obtenerLlaveGemini();
-  if (!encontrada) {
-    res.status(500).json({
-      error:
-        "No hay ninguna llave de Gemini configurada en Vercel. Ve a Vercel → tu proyecto → Settings → Environment Variables y agrega una variable llamada GEMINI_API_KEY con tu llave de Google AI Studio (aistudio.google.com/apikey), luego vuelve a desplegar.",
-    });
-    return;
-  }
-  const { llave } = encontrada;
-
-  try {
-    const { messages, audio } = req.body || {};
-    if (!Array.isArray(messages)) {
-      res.status(400).json({ error: "Falta el historial de mensajes en la solicitud." });
-      return;
-    }
-
-    const historialReciente = messages.slice(-8); // menos historial = respuesta más rápida
-    const contents = historialReciente.map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
-    }));
-
-    // Modo audio: se le agrega el audio (en base64) como parte del último mensaje del usuario,
-    // junto con el prompt fijo de extracción de perfil — Gemini transcribe y extrae en una sola
-    // llamada, sin necesidad de un paso separado de "speech-to-text".
-    let systemPrompt = PROMPT_SISTEMA_CHAT;
-    if (audio && audio.data) {
-      systemPrompt = PROMPT_EXTRACCION_AUDIO;
-      const ultimo = contents[contents.length - 1];
-      const parteAudio = { inline_data: { mime_type: audio.mimeType || "audio/ogg", data: audio.data } };
-      if (ultimo && ultimo.role === "user") {
-        ultimo.parts.push(parteAudio);
-      } else {
-        contents.push({ role: "user", parts: [parteAudio] });
-      }
-    }
-
-    const respuestaGemini = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODELO}:generateContent?key=${llave}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: systemPrompt }] },
-          contents,
-        }),
-      }
-    );
-
-    let data;
-    try {
-      data = await respuestaGemini.json();
-    } catch {
-      res.status(502).json({
-        error: `Gemini respondió con un formato inesperado (código HTTP ${respuestaGemini.status}). Intenta de nuevo en unos segundos.`,
-      });
-      return;
-    }
-
-    if (!respuestaGemini.ok || data.error) {
-      const mensaje = data?.error?.message || `Error HTTP ${respuestaGemini.status} al llamar a Gemini.`;
-      res.status(502).json({ error: mensaje });
-      return;
-    }
-
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "(sin respuesta)";
-    res.status(200).json({ text });
-  } catch (err) {
-    res.status(500).json({ error: `Error interno del servidor: ${String(err && err.message ? err.message : err)}` });
-  }
-}
+1) Medellín Portuguese Antonto (ventas)
+- Sueldo básico: 800 USD
+- Comisión: 20% por depósito
+- Horario:
