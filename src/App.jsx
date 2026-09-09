@@ -2721,30 +2721,33 @@ class AssetManagerCarCrash {
     return this.imagenes[clave] || null;
   }
 }
-// Manifest de rutas esperadas (carpeta /public/games/carcrash/ del proyecto, así Vercel las sirve
-// como archivos estáticos en esa misma ruta). Regla de oro: subir estos PNGs a esa carpeta con
-// estos nombres exactos alcanza para que el juego los use — no requiere ningún cambio de código.
+// Manifest de rutas esperadas: directo dentro de la carpeta /public/ del proyecto (SIN subcarpeta
+// nueva) — así Vercel las sirve como archivos estáticos en la raíz del sitio. Se eligió así a
+// propósito, sin subcarpeta /games/carcrash/: subir archivos sueltos a una carpeta que YA existe
+// (public) es mucho menos propenso a error desde GitHub web que tener que crear una subcarpeta
+// nueva primero. Regla de oro: subir estos PNGs directo dentro de /public/ con estos nombres
+// exactos alcanza para que el juego los use — no requiere ningún cambio de código.
 const CC_ASSET_MANIFEST = {
   // Un PNG del auto del jugador por cada color del garage (PALETA_CARCRASH) — así el color elegido
   // se ve reflejado en el sprite real, no solo en la forma de respaldo. "gris" (color gratis por
   // defecto) no tiene PNG todavía y usa la forma vectorial tintada a su color, como todo lo demás
   // que falte en el manifest.
-  autoJugador_azul: "/games/carcrash/auto_jugador_azul.png",
-  autoJugador_rojo: "/games/carcrash/auto_jugador_rojo.png",
-  autoJugador_amber: "/games/carcrash/auto_jugador_amber.png",
-  autoJugador_verde: "/games/carcrash/auto_jugador_verde.png",
-  autoJugador_magenta: "/games/carcrash/auto_jugador_magenta.png",
-  autoJugador_morado: "/games/carcrash/auto_jugador_morado.png",
-  autoJugador_dorado: "/games/carcrash/auto_jugador_dorado.png",
-  taxi: "/games/carcrash/taxi.png",
-  autoEbrio: "/games/carcrash/auto_ebrio.png",
-  camion: "/games/carcrash/camion.png",
-  moto: "/games/carcrash/moto.png",
-  moneda: "/games/carcrash/moneda.png",
-  pistaCiudad: "/games/carcrash/pista_ciudad.png",
-  pistaDesierto: "/games/carcrash/pista_desierto.png",
-  pistaNieve: "/games/carcrash/pista_nieve.png",
-  pistaFuego: "/games/carcrash/pista_fuego.png",
+  autoJugador_azul: "/auto_jugador_azul.png",
+  autoJugador_rojo: "/auto_jugador_rojo.png",
+  autoJugador_amber: "/auto_jugador_amber.png",
+  autoJugador_verde: "/auto_jugador_verde.png",
+  autoJugador_magenta: "/auto_jugador_magenta.png",
+  autoJugador_morado: "/auto_jugador_morado.png",
+  autoJugador_dorado: "/auto_jugador_dorado.png",
+  taxi: "/taxi.png",
+  autoEbrio: "/auto_ebrio.png",
+  camion: "/camion.png",
+  moto: "/moto.png",
+  moneda: "/moneda.png",
+  pistaCiudad: "/pista_ciudad.png",
+  pistaDesierto: "/pista_desierto.png",
+  pistaNieve: "/pista_nieve.png",
+  pistaFuego: "/pista_fuego.png",
 };
 
 const CC_BIOMAS = [
@@ -3295,7 +3298,7 @@ function CarCrashView({ user, onVolver }) {
 
   // AssetManager: se crea y precarga una sola vez por montaje del componente. Si algún PNG del
   // manifest no existe todavía (404), no pasa nada — ese elemento sigue dibujándose con la forma
-  // vectorial hasta que el archivo aparezca en /public/games/carcrash/.
+  // vectorial hasta que el archivo aparezca directo dentro de /public/.
   useEffect(() => {
     const mgr = new AssetManagerCarCrash();
     assetsRef.current = mgr;
