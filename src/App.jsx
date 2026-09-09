@@ -2630,517 +2630,630 @@ function HappyWeedView({ user, onVolver }) {
   );
 }
 
-// ---- 2) Batallas de Aura (estilo Brick Breaker) ----
-// Plataforma abajo (se mueve con el mouse o ← →), una esfera de aura rebota y rompe bloques de
-// energía de colores; al abrir hueco en una fila, la bola puede colarse a romper las de arriba.
-const AURA_ANCHO = 400;
-const AURA_ALTO = 560;
-const AURA_PALETA_ANCHO = 90;
-const AURA_PALETA_ALTO = 14;
-const AURA_PALETA_Y = AURA_ALTO - 36;
-const AURA_BOLA_RADIO = 7;
-const AURA_BOLA_VEL_INICIAL = 4.2;
-const AURA_FILAS = 5;
-const AURA_COLUMNAS = 8;
-const AURA_LADRILLO_ANCHO = 42;
-const AURA_LADRILLO_ALTO = 18;
-const AURA_LADRILLO_GAP = 6;
-const AURA_MARGEN_X = (AURA_ANCHO - (AURA_COLUMNAS * (AURA_LADRILLO_ANCHO + AURA_LADRILLO_GAP) - AURA_LADRILLO_GAP)) / 2;
-const AURA_MARGEN_Y = 50;
-const AURA_COLORES_FILA = [COLORS.neonRed, COLORS.neonAmber, COLORS.neonBlue, COLORS.neonSuccess, COLORS.neonRed];
-const AURA_VIDAS_INICIALES = 3;
+// ---- 2) Car Crash (carrera de supervivencia infinita, vista desde arriba) ----
+// La "cámara" avanza sola a una velocidad base (CC_VCAM) que sube con la distancia y el tiempo
+// vivo — eso es la dificultad progresiva. El jugador tiene su propia velocidad (con inercia hacia
+// una velocidad objetivo: crucero automático + acelerón opcional de PC - freno - penalización por
+// derrape) y si se queda por detrás de la cámara empieza a "atrasarse" en pantalla (yOffset sube);
+// si se atrasa demasiado, pierde. Chocar con tráfico no mata de una — le pega un frenazo brusco a
+// la velocidad (más riesgo de atrasarse) y dos segundos de invulnerabilidad para no encadenar
+// golpes. Todo el tráfico usa una sola definición paramétrica con 4 comportamientos, hay 4 biomas
+// que se van mezclando con la distancia, un sistema simple de misión activa + monedas, y un garage
+// para desbloquear colores de auto (mismo patrón que la personalización de "No haga sino Jogar").
+const CC_ANCHO = 420;
+const CC_ALTO = 620;
+const CC_CARRIL_ANCHO = CC_ANCHO * 0.7;
+const CC_CARRIL_X0 = (CC_ANCHO - CC_CARRIL_ANCHO) / 2;
+const CC_JUGADOR_Y = CC_ALTO * 0.76;
+const CC_JUGADOR_ANCHO = 30;
+const CC_JUGADOR_ALTO = 50;
+const CC_VCAM_BASE = 150;
+const CC_VCAM_MAX = 430;
+const CC_VCAM_ESCALA_DIST = 0.012;
+const CC_VCAM_ESCALA_TIEMPO = 1.1;
+const CC_CRUCERO = CC_VCAM_BASE * 1.18;
+const CC_BOOST = 170;
+const CC_FRENO = 130;
+const CC_DRIFT_PENALIZACION = 70;
+const CC_INERCIA = 2.6;
+const CC_DIRECCION_NORMAL = 260;
+const CC_DIRECCION_DRIFT = 400;
+const CC_LIMITE_ATRASO = CC_ALTO * 0.32;
+const CC_GOLPE_FACTOR = 0.4;
+const CC_INVULNERABLE_MS = 700;
+const CC_DIST_POR_BIOMA = 1400;
 
-function crearLadrillosAura() {
-  const ladrillos = [];
-  for (let f = 0; f < AURA_FILAS; f++) {
-    for (let c = 0; c < AURA_COLUMNAS; c++) {
-      ladrillos.push({
-        x: AURA_MARGEN_X + c * (AURA_LADRILLO_ANCHO + AURA_LADRILLO_GAP),
-        y: AURA_MARGEN_Y + f * (AURA_LADRILLO_ALTO + AURA_LADRILLO_GAP),
-        vivo: true,
-        color: AURA_COLORES_FILA[f % AURA_COLORES_FILA.length],
-        puntos: (AURA_FILAS - f) * 10,
-      });
+const CC_BIOMAS = [
+  { nombre: "Ciudad Neón", cielo: ["#050512", "#0c0c1c"], pista: "#15151f", banquina: "#0a0a12", linea: COLORS.neonBlue },
+  { nombre: "Desierto", cielo: ["#2a1608", "#120a04"], pista: "#3a2414", banquina: "#1c1108", linea: COLORS.neonAmber },
+  { nombre: "Hielo", cielo: ["#0a1a24", "#040c12"], pista: "#1a2e38", banquina: "#0c1820", linea: "#BFEFFF" },
+  { nombre: "Volcán", cielo: ["#240404", "#0c0202"], pista: "#2c0e0e", banquina: "#160606", linea: COLORS.neonRed },
+];
+
+// cierre = velocidad relativa (px/s) a la que se acerca al jugador en pantalla a dificultad base;
+// estatica: true ignora "cierre" y se acerca siempre a la velocidad de la cámara (como la barricada,
+// que no se mueve por sí sola — el que se mueve es todo lo demás alrededor de ella).
+const CC_TIPOS_TRAFICO = {
+  civil: { cierre: 60, ancho: 30, alto: 48, lateral: 0, color: "#5A6270", estatica: false },
+  ebrio: { cierre: 70, ancho: 30, alto: 48, lateral: 55, color: COLORS.neonMagenta, estatica: false },
+  moto: { cierre: 150, ancho: 18, alto: 34, lateral: 90, color: COLORS.neonAmber, estatica: false },
+  barricada: { cierre: 0, ancho: 120, alto: 36, lateral: 0, color: COLORS.neonRed, estatica: true },
+};
+
+const CC_PLANTILLAS_MISION = [
+  { id: "distancia", tipo: "distancia", base_meta: 140, variacion: 60, texto: (m) => `Recorre ${m}m` },
+  { id: "monedas", tipo: "monedas", base_meta: 5, variacion: 4, texto: (m) => `Junta ${m} monedas` },
+  { id: "esquives", tipo: "esquives", base_meta: 4, variacion: 3, texto: (m) => `Esquiva ${m} de cerca` },
+  { id: "tiempo", tipo: "tiempo", base_meta: 15, variacion: 10, texto: (m) => `Sobrevive ${m}s sin chocar` },
+];
+
+// ── Garage: solo el color del auto (se guarda local por usuario, igual que en cabezones) ──
+const PALETA_CARCRASH = [
+  { id: "gris", hex: "#7B7F87", costo: 0 },
+  { id: "azul", hex: COLORS.neonBlue, costo: 0 },
+  { id: "rojo", hex: COLORS.neonRed, costo: 30 },
+  { id: "amber", hex: COLORS.neonAmber, costo: 60 },
+  { id: "verde", hex: COLORS.neonSuccess, costo: 90 },
+  { id: "magenta", hex: COLORS.neonMagenta, costo: 120 },
+  { id: "morado", hex: "#9B5CFF", costo: 160 },
+  { id: "dorado", hex: "#E8C468", costo: 220 },
+];
+function colorCarCrashGuardado(userId) {
+  try {
+    const raw = localStorage.getItem(`cupula_carcrash_color_${userId}`);
+    if (raw && PALETA_CARCRASH.some((c) => c.id === raw)) return raw;
+  } catch (e) {}
+  return PALETA_CARCRASH[0].id;
+}
+function guardarColorCarCrashLocal(userId, colorId) {
+  try { localStorage.setItem(`cupula_carcrash_color_${userId}`, colorId); } catch (e) {}
+}
+function hexColorCarCrash(colorId) {
+  return (PALETA_CARCRASH.find((c) => c.id === colorId) || PALETA_CARCRASH[0]).hex;
+}
+function desbloqueadosCarCrashGuardado(userId) {
+  try {
+    const raw = localStorage.getItem(`cupula_carcrash_desbloqueados_${userId}`);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) return arr;
     }
-  }
-  return ladrillos;
+  } catch (e) {}
+  return PALETA_CARCRASH.filter((c) => c.costo === 0).map((c) => c.id);
+}
+function guardarDesbloqueadosCarCrashLocal(userId, arr) {
+  try { localStorage.setItem(`cupula_carcrash_desbloqueados_${userId}`, JSON.stringify(arr)); } catch (e) {}
 }
 
-function dibujarAura(ctx, st) {
-  ctx.clearRect(0, 0, AURA_ANCHO, AURA_ALTO);
-  const fondo = ctx.createLinearGradient(0, 0, 0, AURA_ALTO);
-  fondo.addColorStop(0, "#0a0512");
-  fondo.addColorStop(1, "#020103");
-  ctx.fillStyle = fondo;
-  ctx.fillRect(0, 0, AURA_ANCHO, AURA_ALTO);
+function crearEstadoCarCrash() {
+  return {
+    vivo: true, motivoFin: null,
+    x: CC_CARRIL_X0 + CC_CARRIL_ANCHO / 2, vx: 0, vAdelante: CC_CRUCERO, yOffset: 0, drift: false,
+    invulnerableHasta: 0, shake: 0,
+    distancia: 0, tiempoVivo: 0,
+    trafico: [], monedas: [], particulas: [],
+    proxSpawnTrafico: 0.6, proxSpawnMoneda: 1.2, proxExhaust: 0, proxMarca: 0,
+    monedasSesion: 0, esquivesSesion: 0,
+    mision: null,
+    toastTexto: null, toastHasta: 0,
+  };
+}
 
-  st.ladrillos.forEach((l) => {
-    if (!l.vivo) return;
+function biomaEnDistancia(distancia) {
+  const ciclo = distancia / CC_DIST_POR_BIOMA;
+  const idx = Math.floor(ciclo) % CC_BIOMAS.length;
+  const idxSig = (idx + 1) % CC_BIOMAS.length;
+  const progreso = ciclo - Math.floor(ciclo);
+  return { actual: CC_BIOMAS[idx], siguiente: CC_BIOMAS[idxSig], progreso };
+}
+function lerpHexCarCrash(hexA, hexB, t) {
+  const a = parseInt(hexA.slice(1), 16), b = parseInt(hexB.slice(1), 16);
+  const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+  const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+  const r = Math.round(ar + (br - ar) * t), g = Math.round(ag + (bg - ag) * t), bl = Math.round(ab + (bb - ab) * t);
+  return `rgb(${r},${g},${bl})`;
+}
+
+function valorBaseMisionCarCrash(st, tipo) {
+  if (tipo === "distancia") return st.distancia;
+  if (tipo === "monedas") return st.monedasSesion;
+  if (tipo === "esquives") return st.esquivesSesion;
+  if (tipo === "tiempo") return st.tiempoVivo;
+  return 0;
+}
+function progresoMisionCarCrash(st) {
+  const m = st.mision;
+  if (!m) return 0;
+  if (m.tipo === "distancia") return (st.distancia - m.base) / 8;
+  if (m.tipo === "monedas") return st.monedasSesion - m.base;
+  if (m.tipo === "esquives") return st.esquivesSesion - m.base;
+  if (m.tipo === "tiempo") return st.tiempoVivo - m.base;
+  return 0;
+}
+function elegirMisionCarCrash(st) {
+  const opciones = CC_PLANTILLAS_MISION.filter((p) => !st.mision || p.id !== st.mision.id);
+  const plantilla = opciones[Math.floor(Math.random() * opciones.length)];
+  const meta = plantilla.base_meta + Math.floor(Math.random() * plantilla.variacion);
+  st.mision = { id: plantilla.id, tipo: plantilla.tipo, meta, texto: plantilla.texto(meta), base: valorBaseMisionCarCrash(st, plantilla.tipo) };
+}
+
+function intervaloSpawnTraficoCarCrash(camaraV) {
+  const dificultad = Math.max(0, Math.min(1, (camaraV - CC_VCAM_BASE) / (CC_VCAM_MAX - CC_VCAM_BASE)));
+  return 1.15 - dificultad * 0.75 + Math.random() * 0.25;
+}
+function spawnTraficoCarCrash(st) {
+  const pesos = [["civil", 5], ["ebrio", 3], ["moto", 3], ["barricada", 1]];
+  const total = pesos.reduce((s, p) => s + p[1], 0);
+  let r = Math.random() * total, tipoId = "civil";
+  for (const [id, w] of pesos) { if (r < w) { tipoId = id; break; } r -= w; }
+  const def = CC_TIPOS_TRAFICO[tipoId];
+  const min = CC_CARRIL_X0 + def.ancho / 2 + 4, max = CC_CARRIL_X0 + CC_CARRIL_ANCHO - def.ancho / 2 - 4;
+  st.trafico.push({ tipo: tipoId, x: min + Math.random() * (max - min), y: -70, fase: Math.random() * Math.PI * 2, pasado: false, chocado: false });
+}
+function spawnMonedaCarCrash(st) {
+  const min = CC_CARRIL_X0 + 20, max = CC_CARRIL_X0 + CC_CARRIL_ANCHO - 20;
+  st.monedas.push({ x: min + Math.random() * (max - min), y: -30, tomada: false });
+}
+
+// Único punto que mueve toda la física/economía un cuadro (dt en segundos). Muta "st" directamente
+// (mismo estilo que el resto de los motores del juego en este archivo) — el componente solo lo llama
+// y después dibuja/lee lo que corresponda.
+function actualizarCarCrash(st, dt, entrada) {
+  if (!st.vivo) return;
+  st.tiempoVivo += dt;
+  const camaraV = Math.min(CC_VCAM_MAX, CC_VCAM_BASE + st.distancia * CC_VCAM_ESCALA_DIST + st.tiempoVivo * CC_VCAM_ESCALA_TIEMPO);
+  st.distancia += camaraV * dt;
+
+  let objetivo = CC_CRUCERO;
+  if (entrada.acel) objetivo += CC_BOOST;
+  if (entrada.freno) objetivo -= CC_FRENO;
+  st.drift = !!entrada.drift && (entrada.izq || entrada.der);
+  if (st.drift) objetivo -= CC_DRIFT_PENALIZACION;
+  objetivo = Math.max(50, objetivo);
+  st.vAdelante += (objetivo - st.vAdelante) * Math.min(1, CC_INERCIA * dt);
+
+  st.yOffset += (camaraV - st.vAdelante) * dt;
+  st.yOffset = Math.max(-50, Math.min(CC_LIMITE_ATRASO, st.yOffset));
+  if (st.yOffset >= CC_LIMITE_ATRASO) { st.vivo = false; st.motivoFin = "atraso"; return; }
+
+  let dirObjetivo = 0;
+  if (entrada.izq) dirObjetivo -= 1;
+  if (entrada.der) dirObjetivo += 1;
+  const velLateralMax = st.drift ? CC_DIRECCION_DRIFT : CC_DIRECCION_NORMAL;
+  const factorGiro = st.drift ? 9 : 6;
+  st.vx += (dirObjetivo * velLateralMax - st.vx) * Math.min(1, factorGiro * dt);
+  st.x += st.vx * dt;
+  const margenX1 = CC_CARRIL_X0 + CC_JUGADOR_ANCHO / 2 + 4, margenX2 = CC_CARRIL_X0 + CC_CARRIL_ANCHO - CC_JUGADOR_ANCHO / 2 - 4;
+  if (st.x < margenX1) { st.x = margenX1; st.vx = Math.max(0, st.vx); }
+  if (st.x > margenX2) { st.x = margenX2; st.vx = Math.min(0, st.vx); }
+
+  const playerY = CC_JUGADOR_Y + st.yOffset;
+
+  st.proxExhaust -= dt;
+  if (st.proxExhaust <= 0) {
+    st.proxExhaust = 0.06;
+    st.particulas.push({ x: st.x + (Math.random() * 8 - 4), y: playerY + CC_JUGADOR_ALTO / 2, vx: Math.random() * 20 - 10, vy: 40, vida: 0.4, vidaMax: 0.4, color: "#9aa0aa", radio: 3, tipo: "escape" });
+  }
+  if (st.drift && Math.abs(st.vx) > 30) {
+    st.proxMarca -= dt;
+    if (st.proxMarca <= 0) {
+      st.proxMarca = 0.03;
+      const lado = st.vx > 0 ? -1 : 1;
+      st.particulas.push({ x: st.x + lado * CC_JUGADOR_ANCHO * 0.32, y: playerY + CC_JUGADOR_ALTO * 0.4, vx: 0, vy: camaraV, vida: 1.4, vidaMax: 1.4, color: "#000000", radio: 2.4, tipo: "marca" });
+    }
+  }
+  st.particulas.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.vida -= dt; });
+  st.particulas = st.particulas.filter((p) => p.vida > 0 && p.y < CC_ALTO + 40);
+  st.shake = Math.max(0, st.shake - dt * 26);
+
+  st.proxSpawnTrafico -= dt;
+  if (st.proxSpawnTrafico <= 0) { spawnTraficoCarCrash(st); st.proxSpawnTrafico = intervaloSpawnTraficoCarCrash(camaraV); }
+  st.proxSpawnMoneda -= dt;
+  if (st.proxSpawnMoneda <= 0) { spawnMonedaCarCrash(st); st.proxSpawnMoneda = 1.5 + Math.random() * 1.4; }
+
+  st.trafico.forEach((e) => {
+    const def = CC_TIPOS_TRAFICO[e.tipo];
+    const cierre = def.estatica ? camaraV : def.cierre * (camaraV / CC_VCAM_BASE);
+    e.y += cierre * dt;
+    if (def.lateral) {
+      e.fase += dt * 2.2;
+      e.x += Math.sin(e.fase) * def.lateral * dt;
+      const min = CC_CARRIL_X0 + def.ancho / 2 + 4, max = CC_CARRIL_X0 + CC_CARRIL_ANCHO - def.ancho / 2 - 4;
+      e.x = Math.max(min, Math.min(max, e.x));
+    }
+  });
+
+  const ahoraMs = Date.now();
+  st.trafico.forEach((e) => {
+    const def = CC_TIPOS_TRAFICO[e.tipo];
+    if (!e.chocado) {
+      const cerca = Math.abs(e.y - playerY) < (def.alto + CC_JUGADOR_ALTO) / 2;
+      if (cerca) {
+        const mitadX = (def.ancho * 0.88 + CC_JUGADOR_ANCHO * 0.88) / 2;
+        const mitadY = (def.alto * 0.88 + CC_JUGADOR_ALTO * 0.88) / 2;
+        if (Math.abs(e.x - st.x) < mitadX && Math.abs(e.y - playerY) < mitadY && ahoraMs >= st.invulnerableHasta) {
+          e.chocado = true;
+          st.vAdelante *= CC_GOLPE_FACTOR;
+          st.invulnerableHasta = ahoraMs + CC_INVULNERABLE_MS;
+          st.shake = 10;
+          if (st.mision && st.mision.tipo === "tiempo") st.mision.base = st.tiempoVivo;
+          for (let i = 0; i < 10; i++) {
+            const ang = Math.random() * Math.PI * 2, vel = 60 + Math.random() * 90;
+            st.particulas.push({ x: st.x, y: playerY, vx: Math.cos(ang) * vel, vy: Math.sin(ang) * vel, vida: 0.5, vidaMax: 0.5, color: COLORS.neonAmber, radio: 3, tipo: "chispa" });
+          }
+        }
+      }
+    }
+    if (!e.pasado && e.y > playerY + 20) { e.pasado = true; if (!e.chocado) st.esquivesSesion += 1; }
+  });
+  st.trafico = st.trafico.filter((e) => e.y < CC_ALTO + 60);
+
+  st.monedas.forEach((m) => { m.y += camaraV * dt; });
+  st.monedas = st.monedas.filter((m) => {
+    const dx = m.x - st.x, dy = m.y - playerY;
+    if (Math.sqrt(dx * dx + dy * dy) < 24) {
+      st.monedasSesion += 1;
+      st.particulas.push({ x: m.x, y: m.y, vx: 0, vy: -30, vida: 0.4, vidaMax: 0.4, color: COLORS.neonAmber, radio: 4, tipo: "escape" });
+      return false;
+    }
+    return m.y < CC_ALTO + 30;
+  });
+
+  if (!st.mision) {
+    elegirMisionCarCrash(st);
+  } else {
+    const progreso = progresoMisionCarCrash(st);
+    if (progreso >= st.mision.meta) {
+      st.monedasSesion += 15;
+      st.toastTexto = "¡Misión cumplida! +15 monedas";
+      st.toastHasta = ahoraMs + 1800;
+      elegirMisionCarCrash(st);
+    }
+  }
+}
+
+function dibujarCarCrash(ctx, st, colorAuto, bioma) {
+  ctx.clearRect(0, 0, CC_ANCHO, CC_ALTO);
+  ctx.save();
+  if (st.shake > 0) {
+    const s = Math.min(6, st.shake * 0.5);
+    ctx.translate((Math.random() * 2 - 1) * s, (Math.random() * 2 - 1) * s);
+  }
+  const M = 14;
+  const cieloA = lerpHexCarCrash(bioma.actual.cielo[0], bioma.siguiente.cielo[0], bioma.progreso);
+  const cieloB = lerpHexCarCrash(bioma.actual.cielo[1], bioma.siguiente.cielo[1], bioma.progreso);
+  const colorPista = lerpHexCarCrash(bioma.actual.pista, bioma.siguiente.pista, bioma.progreso);
+  const colorBanquina = lerpHexCarCrash(bioma.actual.banquina, bioma.siguiente.banquina, bioma.progreso);
+  const colorLinea = lerpHexCarCrash(bioma.actual.linea, bioma.siguiente.linea, bioma.progreso);
+
+  const grad = ctx.createLinearGradient(0, 0, 0, CC_ALTO);
+  grad.addColorStop(0, cieloA);
+  grad.addColorStop(1, cieloB);
+  ctx.fillStyle = grad;
+  ctx.fillRect(-M, -M, CC_ANCHO + 2 * M, CC_ALTO + 2 * M);
+  ctx.fillStyle = colorBanquina;
+  ctx.fillRect(-M, -M, CC_ANCHO + 2 * M, CC_ALTO + 2 * M);
+  ctx.fillStyle = colorPista;
+  ctx.fillRect(CC_CARRIL_X0, -M, CC_CARRIL_ANCHO, CC_ALTO + 2 * M);
+
+  ctx.strokeStyle = colorLinea + "99";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([18, 16]);
+  const offset = st.distancia % 34;
+  [CC_CARRIL_X0 + CC_CARRIL_ANCHO / 3, CC_CARRIL_X0 + (CC_CARRIL_ANCHO * 2) / 3].forEach((lx) => {
+    ctx.beginPath();
+    ctx.moveTo(lx, -offset);
+    ctx.lineTo(lx, CC_ALTO);
+    ctx.stroke();
+  });
+  ctx.setLineDash([]);
+  ctx.strokeStyle = colorLinea;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(CC_CARRIL_X0, 0, CC_CARRIL_ANCHO, CC_ALTO);
+
+  st.particulas.filter((p) => p.tipo === "marca").forEach((p) => {
+    ctx.globalAlpha = Math.max(0, p.vida / p.vidaMax) * 0.6;
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(p.x - 1.4, p.y - 4, 2.8, 8);
+  });
+  ctx.globalAlpha = 1;
+
+  st.monedas.forEach((m) => {
     ctx.save();
-    ctx.shadowColor = l.color;
+    ctx.shadowColor = COLORS.neonAmber;
     ctx.shadowBlur = 10;
-    ctx.fillStyle = l.color + "cc";
-    ctx.fillRect(l.x, l.y, AURA_LADRILLO_ANCHO, AURA_LADRILLO_ALTO);
-    ctx.strokeStyle = l.color;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(l.x, l.y, AURA_LADRILLO_ANCHO, AURA_LADRILLO_ALTO);
+    ctx.fillStyle = COLORS.neonAmber;
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#1a1206";
+    ctx.font = "700 10px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("$", m.x, m.y + 1);
+    ctx.restore();
+  });
+  ctx.textBaseline = "alphabetic";
+
+  st.trafico.forEach((e) => {
+    const def = CC_TIPOS_TRAFICO[e.tipo];
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    if (e.tipo === "ebrio") ctx.rotate(Math.sin(e.fase) * 0.18);
+    ctx.shadowColor = def.color;
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = def.color;
+    ctx.fillRect(-def.ancho / 2, -def.alto / 2, def.ancho, def.alto);
+    ctx.shadowBlur = 0;
+    if (e.tipo === "barricada") {
+      ctx.strokeStyle = "#000";
+      ctx.lineWidth = 4;
+      ctx.setLineDash([10, 8]);
+      ctx.strokeRect(-def.ancho / 2 + 4, -def.alto / 2 + 4, def.ancho - 8, def.alto - 8);
+      ctx.setLineDash([]);
+    }
+    if (e.tipo === "moto") {
+      ctx.fillStyle = "#111";
+      ctx.fillRect(-def.ancho / 2, -def.alto / 2 - 4, def.ancho, 4);
+      ctx.fillRect(-def.ancho / 2, def.alto / 2, def.ancho, 4);
+    }
     ctx.restore();
   });
 
+  const playerY = CC_JUGADOR_Y + st.yOffset;
+  const invulnerable = Date.now() < st.invulnerableHasta;
   ctx.save();
-  ctx.shadowColor = COLORS.neonBlue;
-  ctx.shadowBlur = 14;
-  ctx.fillStyle = COLORS.neonBlue;
-  ctx.fillRect(st.paletaX, AURA_PALETA_Y, AURA_PALETA_ANCHO, AURA_PALETA_ALTO);
+  ctx.globalAlpha = invulnerable && Math.floor(Date.now() / 90) % 2 === 0 ? 0.35 : 1;
+  ctx.translate(st.x, playerY);
+  ctx.rotate(Math.max(-0.35, Math.min(0.35, st.vx / 700)));
+  ctx.shadowColor = colorAuto;
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = colorAuto;
+  ctx.fillRect(-CC_JUGADOR_ANCHO / 2, -CC_JUGADOR_ALTO / 2, CC_JUGADOR_ANCHO, CC_JUGADOR_ALTO);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "rgba(10,10,12,0.8)";
+  ctx.fillRect(-CC_JUGADOR_ANCHO / 2 + 4, -CC_JUGADOR_ALTO / 2 + 8, CC_JUGADOR_ANCHO - 8, CC_JUGADOR_ALTO * 0.4);
+  ctx.shadowColor = "#fff8d6";
+  ctx.shadowBlur = 6;
+  ctx.fillStyle = "#fff8d6";
+  ctx.fillRect(-CC_JUGADOR_ANCHO / 2 + 2, -CC_JUGADOR_ALTO / 2 - 2, 5, 4);
+  ctx.fillRect(CC_JUGADOR_ANCHO / 2 - 7, -CC_JUGADOR_ALTO / 2 - 2, 5, 4);
   ctx.restore();
 
-  ctx.save();
-  ctx.shadowColor = COLORS.white;
-  ctx.shadowBlur = 16;
-  ctx.fillStyle = COLORS.white;
-  ctx.beginPath();
-  ctx.arc(st.bola.x, st.bola.y, AURA_BOLA_RADIO, 0, Math.PI * 2);
-  ctx.fill();
+  st.particulas.filter((p) => p.tipo !== "marca").forEach((p) => {
+    ctx.globalAlpha = Math.max(0, p.vida / p.vidaMax);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.radio, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  if (st.toastTexto && Date.now() < st.toastHasta) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, (st.toastHasta - Date.now()) / 1800));
+    ctx.font = "700 16px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = COLORS.neonSuccess;
+    ctx.shadowColor = COLORS.neonSuccess;
+    ctx.shadowBlur = 10;
+    ctx.fillText(st.toastTexto, CC_ANCHO / 2, 90);
+    ctx.restore();
+  }
+
   ctx.restore();
 }
 
-function AuraBattleView({ user, onVolver }) {
-  const canvasRef = useRef(null);
-  const estadoRef = useRef(null);
-  const rafRef = useRef(null);
-  const [score, setScore] = useState(0);
-  const [vidas, setVidas] = useState(AURA_VIDAS_INICIALES);
-  const [mejorPuntaje, setMejorPuntaje] = useState(0);
-  const [jugando, setJugando] = useState(false);
-  const [mensajeFinal, setMensajeFinal] = useState(null);
-
-  useEffect(() => {
-    const guardado = localStorage.getItem(`cupula_aura_mejor_${user.id}`);
-    setMejorPuntaje(guardado ? Number(guardado) : 0);
-  }, [user.id]);
-
-  const bolaEnPaleta = (paletaX) => ({
-    x: paletaX + AURA_PALETA_ANCHO / 2, y: AURA_PALETA_Y - AURA_BOLA_RADIO - 1, vx: 0, vy: 0, lanzada: false,
-  });
-
-  const iniciar = useCallback(() => {
-    const paletaX = (AURA_ANCHO - AURA_PALETA_ANCHO) / 2;
-    estadoRef.current = { paletaX, ladrillos: crearLadrillosAura(), bola: bolaEnPaleta(paletaX), puntaje: 0, teclas: {} };
-    setScore(0);
-    setVidas(AURA_VIDAS_INICIALES);
-    setMensajeFinal(null);
-    setJugando(true);
-  }, []);
-
-  const lanzarBola = useCallback(() => {
-    const st = estadoRef.current;
-    if (!st) { iniciar(); return; }
-    if (!st.bola.lanzada) {
-      st.bola.lanzada = true;
-      st.bola.vx = AURA_BOLA_VEL_INICIAL * (Math.random() > 0.5 ? 1 : -1) * 0.6;
-      st.bola.vy = -AURA_BOLA_VEL_INICIAL;
-    }
-  }, [iniciar]);
-
-  useEffect(() => {
-    const onKeyDown = (e) => {
-      if (e.code === "Space") { e.preventDefault(); lanzarBola(); }
-      if (estadoRef.current) estadoRef.current.teclas[e.code] = true;
-    };
-    const onKeyUp = (e) => { if (estadoRef.current) estadoRef.current.teclas[e.code] = false; };
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
-  }, [lanzarBola]);
-
-  const onMouseMove = (e) => {
-    const st = estadoRef.current;
-    if (!st) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const escala = AURA_ANCHO / rect.width;
-    const xRelativo = (e.clientX - rect.left) * escala;
-    st.paletaX = Math.max(0, Math.min(AURA_ANCHO - AURA_PALETA_ANCHO, xRelativo - AURA_PALETA_ANCHO / 2));
-  };
-
-  useEffect(() => {
-    if (!jugando) return;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
-
-    const loop = () => {
-      const st = estadoRef.current;
-      if (!st) return;
-
-      if (st.teclas.ArrowLeft) st.paletaX = Math.max(0, st.paletaX - 6);
-      if (st.teclas.ArrowRight) st.paletaX = Math.min(AURA_ANCHO - AURA_PALETA_ANCHO, st.paletaX + 6);
-
-      if (!st.bola.lanzada) {
-        st.bola.x = st.paletaX + AURA_PALETA_ANCHO / 2;
-      } else {
-        st.bola.x += st.bola.vx;
-        st.bola.y += st.bola.vy;
-
-        if (st.bola.x - AURA_BOLA_RADIO < 0) { st.bola.x = AURA_BOLA_RADIO; st.bola.vx *= -1; }
-        if (st.bola.x + AURA_BOLA_RADIO > AURA_ANCHO) { st.bola.x = AURA_ANCHO - AURA_BOLA_RADIO; st.bola.vx *= -1; }
-        if (st.bola.y - AURA_BOLA_RADIO < 0) { st.bola.y = AURA_BOLA_RADIO; st.bola.vy *= -1; }
-
-        if (
-          st.bola.y + AURA_BOLA_RADIO > AURA_PALETA_Y &&
-          st.bola.y + AURA_BOLA_RADIO < AURA_PALETA_Y + AURA_PALETA_ALTO + 10 &&
-          st.bola.x > st.paletaX - AURA_BOLA_RADIO && st.bola.x < st.paletaX + AURA_PALETA_ANCHO + AURA_BOLA_RADIO &&
-          st.bola.vy > 0
-        ) {
-          const golpe = Math.max(-1, Math.min(1, (st.bola.x - (st.paletaX + AURA_PALETA_ANCHO / 2)) / (AURA_PALETA_ANCHO / 2)));
-          const anguloMax = Math.PI / 3;
-          const angulo = golpe * anguloMax;
-          const velocidadActual = Math.max(AURA_BOLA_VEL_INICIAL, Math.hypot(st.bola.vx, st.bola.vy));
-          st.bola.vx = velocidadActual * Math.sin(angulo);
-          st.bola.vy = -velocidadActual * Math.cos(angulo);
-          st.bola.y = AURA_PALETA_Y - AURA_BOLA_RADIO - 1;
-        }
-
-        for (const l of st.ladrillos) {
-          if (!l.vivo) continue;
-          const dentroX = st.bola.x + AURA_BOLA_RADIO > l.x && st.bola.x - AURA_BOLA_RADIO < l.x + AURA_LADRILLO_ANCHO;
-          const dentroY = st.bola.y + AURA_BOLA_RADIO > l.y && st.bola.y - AURA_BOLA_RADIO < l.y + AURA_LADRILLO_ALTO;
-          if (dentroX && dentroY) {
-            l.vivo = false;
-            st.puntaje += l.puntos;
-            st.bola.vy *= -1;
-            setScore(st.puntaje);
-            break;
-          }
-        }
-
-        if (st.bola.y - AURA_BOLA_RADIO > AURA_ALTO) {
-          const vidasRestantes = (st.vidasRestantes ?? AURA_VIDAS_INICIALES) - 1;
-          st.vidasRestantes = vidasRestantes;
-          setVidas(vidasRestantes);
-          if (vidasRestantes <= 0) {
-            setJugando(false);
-            setMensajeFinal("derrota");
-            setMejorPuntaje((prev) => {
-              if (st.puntaje > prev) { localStorage.setItem(`cupula_aura_mejor_${user.id}`, String(st.puntaje)); return st.puntaje; }
-              return prev;
-            });
-            return;
-          }
-          st.bola = bolaEnPaleta(st.paletaX);
-        }
-
-        if (st.ladrillos.every((l) => !l.vivo)) {
-          setJugando(false);
-          setMensajeFinal("victoria");
-          setMejorPuntaje((prev) => {
-            if (st.puntaje > prev) { localStorage.setItem(`cupula_aura_mejor_${user.id}`, String(st.puntaje)); return st.puntaje; }
-            return prev;
-          });
-          dibujarAura(ctx, st);
-          return;
-        }
-      }
-
-      dibujarAura(ctx, st);
-      rafRef.current = requestAnimationFrame(loop);
-    };
-    rafRef.current = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [jugando, user.id]);
-
-  const terminado = mensajeFinal !== null;
-
+function GarageCarCrash({ colorId, desbloqueados, monedasTotales, onSeleccionar, onDesbloquear, onCerrar }) {
   return (
-    <div>
-      <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver a Cúpula Games</button>
-      <SectionTitle>Batallas de Aura</SectionTitle>
-      <Card style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-        <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 10 }}>
-          Puntaje: <span style={{ color: COLORS.neonBlue, fontWeight: 700 }}>{score}</span> · Vidas: <span style={{ color: COLORS.neonRed, fontWeight: 700 }}>{"♥".repeat(Math.max(0, vidas))}</span> · Mejor: <span style={{ color: COLORS.neonAmber, fontWeight: 700 }}>{mejorPuntaje}</span>
-        </div>
-        <div style={{ position: "relative", width: AURA_ANCHO, maxWidth: "100%" }}>
-          <canvas
-            ref={canvasRef} width={AURA_ANCHO} height={AURA_ALTO} onMouseMove={onMouseMove} onClick={lanzarBola}
-            style={{ width: "100%", height: "auto", display: "block", background: "#05070d", border: `2px solid ${COLORS.neonBlue}`, borderRadius: 8, boxShadow: `0 0 26px ${COLORS.neonBlue}55, inset 0 0 40px #00000088`, cursor: "pointer" }}
-          />
-          {!jugando && (
-            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, background: "rgba(5,7,13,0.8)", borderRadius: 8 }}>
-              <div style={{ fontFamily: FONT_DISPLAY, fontSize: 24, color: COLORS.white, letterSpacing: 2, textShadow: `0 0 12px ${COLORS.neonBlue}` }}>
-                {mensajeFinal === "victoria" ? "¡VICTORIA!" : mensajeFinal === "derrota" ? "GAME OVER" : "BATALLAS DE AURA"}
-              </div>
-              {terminado && <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: COLORS.neonAmber }}>Puntaje: {score}</div>}
-              <NeonButton active onClick={iniciar}>{terminado ? "Reintentar" : "Jugar"}</NeonButton>
+    <Card style={{ marginTop: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: COLORS.white, letterSpacing: 1 }}>Garage</div>
+        <button onClick={onCerrar} style={{ ...ESTILO_BOTON_VOLVER, marginBottom: 0 }}>Cerrar</button>
+      </div>
+      <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.neonAmber, marginBottom: 12 }}>Monedas disponibles: {monedasTotales}</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {PALETA_CARCRASH.map((c) => {
+          const desbloqueado = desbloqueados.includes(c.id);
+          return (
+            <div key={c.id} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, width: 80 }}>
+              <div
+                onClick={() => desbloqueado && onSeleccionar(c.id)}
+                style={{
+                  width: 54, height: 34, borderRadius: 8, background: c.hex,
+                  border: colorId === c.id ? `2px solid ${COLORS.white}` : `2px solid ${COLORS.border}`,
+                  boxShadow: colorId === c.id ? `0 0 12px ${c.hex}aa` : "none",
+                  cursor: desbloqueado ? "pointer" : "not-allowed", opacity: desbloqueado ? 1 : 0.4,
+                }}
+              />
+              {desbloqueado ? (
+                <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: colorId === c.id ? COLORS.white : COLORS.textMuted }}>
+                  {colorId === c.id ? "Elegido" : "Listo"}
+                </span>
+              ) : (
+                <NeonButton small disabled={monedasTotales < c.costo} onClick={() => onDesbloquear(c.id, c.costo)}>
+                  {c.costo}🪙
+                </NeonButton>
+              )}
             </div>
-          )}
-        </div>
-        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginTop: 10, textAlign: "center" }}>
-          Mueve el mouse (o ← →) para mover la plataforma. Espacio o clic para lanzar la bola.
-        </div>
-      </Card>
-    </div>
+          );
+        })}
+      </div>
+    </Card>
   );
 }
 
-// ---- 3) Feria de Tiro (galería de disparos en primera persona) ----
-// Vista fija en primera persona (arma abajo, mira siguiendo el mouse), estilo puesto de feria:
-// dispara a patos, latas y botellas que cruzan la repisa antes de quedarte sin tiempo o balas.
-const FERIA_ANCHO = 460;
-const FERIA_ALTO = 520;
-const FERIA_DURACION_SEG = 45;
-const FERIA_MUNICION_INICIAL = 20;
-const FERIA_TIPOS = [
-  { tipo: "pato", puntos: 10, radio: 16, color: COLORS.neonAmber },
-  { tipo: "lata", puntos: 5, radio: 13, color: COLORS.textMuted },
-  { tipo: "botella", puntos: 15, radio: 11, color: COLORS.neonBlue },
-];
-const FERIA_MAX_OBJETIVOS = 5;
-const FERIA_INTERVALO_SPAWN_MS = 900;
-
-function crearObjetivoFeria() {
-  const def = FERIA_TIPOS[Math.floor(Math.random() * FERIA_TIPOS.length)];
-  const carril = 90 + Math.random() * (FERIA_ALTO - 260);
-  const deIzquierda = Math.random() > 0.5;
-  return {
-    id: "o" + Date.now() + Math.random(),
-    tipo: def.tipo, puntos: def.puntos, radio: def.radio, color: def.color,
-    x: deIzquierda ? -30 : FERIA_ANCHO + 30,
-    y: carril,
-    vx: (deIzquierda ? 1 : -1) * (1.2 + Math.random() * 1.6),
-    vivo: true,
-  };
-}
-
-function dibujarObjetivoFeria(ctx, o) {
-  ctx.save();
-  ctx.shadowColor = o.color;
-  ctx.shadowBlur = 10;
-  ctx.fillStyle = o.color;
-  if (o.tipo === "pato") {
-    ctx.beginPath();
-    ctx.ellipse(o.x, o.y, o.radio, o.radio * 0.75, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(o.x + o.radio * (o.vx > 0 ? 1 : -1), o.y);
-    ctx.lineTo(o.x + o.radio * (o.vx > 0 ? 1.6 : -1.6), o.y - 3);
-    ctx.lineTo(o.x + o.radio * (o.vx > 0 ? 1.6 : -1.6), o.y + 3);
-    ctx.closePath();
-    ctx.fill();
-  } else if (o.tipo === "lata") {
-    ctx.fillRect(o.x - o.radio * 0.6, o.y - o.radio, o.radio * 1.2, o.radio * 2);
-    ctx.strokeStyle = "#00000055";
-    ctx.strokeRect(o.x - o.radio * 0.6, o.y - o.radio, o.radio * 1.2, o.radio * 2);
-  } else {
-    ctx.beginPath();
-    ctx.moveTo(o.x, o.y - o.radio);
-    ctx.lineTo(o.x + o.radio * 0.7, o.y + o.radio);
-    ctx.lineTo(o.x - o.radio * 0.7, o.y + o.radio);
-    ctx.closePath();
-    ctx.fill();
-  }
-  ctx.restore();
-}
-
-function dibujarFeria(ctx, st, mouseX, mouseY) {
-  ctx.clearRect(0, 0, FERIA_ANCHO, FERIA_ALTO);
-
-  const cielo = ctx.createLinearGradient(0, 0, 0, FERIA_ALTO);
-  cielo.addColorStop(0, "#150308");
-  cielo.addColorStop(1, "#05070d");
-  ctx.fillStyle = cielo;
-  ctx.fillRect(0, 0, FERIA_ANCHO, FERIA_ALTO);
-
-  const franjaAncho = 30;
-  for (let i = 0; i * franjaAncho < FERIA_ANCHO; i++) {
-    if (i % 2 === 0) {
-      ctx.fillStyle = COLORS.neonRed + "33";
-      ctx.fillRect(i * franjaAncho, 0, franjaAncho, 46);
-    }
-  }
-  ctx.strokeStyle = COLORS.neonRed + "88";
-  ctx.beginPath(); ctx.moveTo(0, 46); ctx.lineTo(FERIA_ANCHO, 46); ctx.stroke();
-
-  ctx.fillStyle = "#2a1710";
-  ctx.fillRect(0, FERIA_ALTO - 130, FERIA_ANCHO, 130);
-  ctx.strokeStyle = COLORS.neonAmber + "55";
-  ctx.lineWidth = 1;
-  for (let ly = FERIA_ALTO - 120; ly < FERIA_ALTO; ly += 16) {
-    ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(FERIA_ANCHO, ly); ctx.stroke();
-  }
-
-  st.objetivos.forEach((o) => o.vivo && dibujarObjetivoFeria(ctx, o));
-
-  st.chispas.forEach((c) => {
-    ctx.save();
-    ctx.globalAlpha = Math.max(0, c.vida / 18);
-    ctx.strokeStyle = COLORS.white;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(c.x, c.y, (18 - c.vida) * 1.5, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  });
-
-  const armaX = FERIA_ANCHO / 2 + (mouseX - FERIA_ANCHO / 2) * 0.12;
-  ctx.save();
-  ctx.fillStyle = "#1c1c1f";
-  ctx.strokeStyle = COLORS.neonRed;
-  ctx.lineWidth = 1.5;
-  ctx.shadowColor = COLORS.neonRed;
-  ctx.shadowBlur = 8;
-  ctx.beginPath();
-  ctx.moveTo(armaX - 40, FERIA_ALTO);
-  ctx.lineTo(armaX - 12, FERIA_ALTO - 70);
-  ctx.lineTo(armaX + 18, FERIA_ALTO - 70);
-  ctx.lineTo(armaX + 46, FERIA_ALTO);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.save();
-  ctx.strokeStyle = COLORS.neonSuccess;
-  ctx.lineWidth = 2;
-  ctx.shadowColor = COLORS.neonSuccess;
-  ctx.shadowBlur = 8;
-  ctx.beginPath(); ctx.moveTo(mouseX - 12, mouseY); ctx.lineTo(mouseX - 4, mouseY); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(mouseX + 4, mouseY); ctx.lineTo(mouseX + 12, mouseY); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(mouseX, mouseY - 12); ctx.lineTo(mouseX, mouseY - 4); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(mouseX, mouseY + 4); ctx.lineTo(mouseX, mouseY + 12); ctx.stroke();
-  ctx.beginPath(); ctx.arc(mouseX, mouseY, 12, 0, Math.PI * 2); ctx.stroke();
-  ctx.restore();
-}
-
-function FeriaTiroView({ user, onVolver }) {
+function CarCrashView({ user, onVolver }) {
   const canvasRef = useRef(null);
   const estadoRef = useRef(null);
   const rafRef = useRef(null);
-  const mouseRef = useRef({ x: FERIA_ANCHO / 2, y: FERIA_ALTO / 2 });
-  const [score, setScore] = useState(0);
-  const [municion, setMunicion] = useState(FERIA_MUNICION_INICIAL);
-  const [tiempoRestante, setTiempoRestante] = useState(FERIA_DURACION_SEG);
-  const [mejorPuntaje, setMejorPuntaje] = useState(0);
+  const inputRef = useRef({ izq: false, der: false, acel: false, freno: false, drift: false });
+
   const [jugando, setJugando] = useState(false);
   const [terminado, setTerminado] = useState(false);
+  const [mostrarGarage, setMostrarGarage] = useState(false);
+  const [distanciaMostrada, setDistanciaMostrada] = useState(0);
+  const [monedasSesion, setMonedasSesion] = useState(0);
+  const [mejorDistancia, setMejorDistancia] = useState(0);
+  const [monedasTotales, setMonedasTotales] = useState(0);
+  const [colorId, setColorId] = useState(() => colorCarCrashGuardado(user.id));
+  const [desbloqueados, setDesbloqueados] = useState(() => desbloqueadosCarCrashGuardado(user.id));
+  const [misionInfo, setMisionInfo] = useState(null);
 
   useEffect(() => {
-    const guardado = localStorage.getItem(`cupula_feria_mejor_${user.id}`);
-    setMejorPuntaje(guardado ? Number(guardado) : 0);
+    setMejorDistancia(Number(localStorage.getItem(`cupula_carcrash_mejor_${user.id}`)) || 0);
+    setMonedasTotales(Number(localStorage.getItem(`cupula_carcrash_monedas_${user.id}`)) || 0);
+    setColorId(colorCarCrashGuardado(user.id));
+    setDesbloqueados(desbloqueadosCarCrashGuardado(user.id));
   }, [user.id]);
 
   const iniciar = useCallback(() => {
-    estadoRef.current = { objetivos: [], chispas: [], puntaje: 0, municion: FERIA_MUNICION_INICIAL, msParaSpawn: 0, msRestantes: FERIA_DURACION_SEG * 1000 };
-    setScore(0);
-    setMunicion(FERIA_MUNICION_INICIAL);
-    setTiempoRestante(FERIA_DURACION_SEG);
+    estadoRef.current = crearEstadoCarCrash();
+    setDistanciaMostrada(0);
+    setMonedasSesion(0);
+    setMisionInfo(null);
     setTerminado(false);
     setJugando(true);
   }, []);
 
-  const onMouseMove = (e) => {
-    const rect = canvasRef.current.getBoundingClientRect();
-    const escalaX = FERIA_ANCHO / rect.width;
-    const escalaY = FERIA_ALTO / rect.height;
-    mouseRef.current = { x: (e.clientX - rect.left) * escalaX, y: (e.clientY - rect.top) * escalaY };
-  };
-
-  const disparar = useCallback(() => {
-    const st = estadoRef.current;
-    if (!st) { iniciar(); return; }
-    if (st.municion <= 0) return;
-    st.municion -= 1;
-    setMunicion(st.municion);
-    const { x, y } = mouseRef.current;
-    let impacto = false;
-    for (const o of st.objetivos) {
-      if (!o.vivo) continue;
-      const dist = Math.hypot(o.x - x, o.y - y);
-      if (dist < o.radio + 6) {
-        o.vivo = false;
-        st.puntaje += o.puntos;
-        setScore(st.puntaje);
-        impacto = true;
-        break;
-      }
-    }
-    st.chispas.push({ x, y, vida: 18, acierto: impacto });
-  }, [iniciar]);
+  useEffect(() => {
+    const TECLAS = { arrowleft: "izq", a: "izq", arrowright: "der", d: "der", arrowup: "acel", w: "acel", arrowdown: "freno", s: "freno", " ": "drift", shift: "drift" };
+    const onDown = (e) => { const a = TECLAS[e.key.toLowerCase()]; if (a) { e.preventDefault(); inputRef.current[a] = true; } };
+    const onUp = (e) => { const a = TECLAS[e.key.toLowerCase()]; if (a) inputRef.current[a] = false; };
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
+  }, []);
 
   useEffect(() => {
     if (!jugando) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
-    let ultimoFrame = performance.now();
+    let ultimoTs = null;
+    let distPrev = -1, monedasPrev = -1, misionPrevId = null, misionPrevProgreso = -1;
 
-    const loop = (ahora) => {
+    const loop = (ts) => {
       const st = estadoRef.current;
-      if (!st) return;
-      const dt = ahora - ultimoFrame;
-      ultimoFrame = ahora;
+      if (!st || !st.vivo) return;
+      if (ultimoTs === null) ultimoTs = ts;
+      const dt = Math.min(0.05, Math.max(0, (ts - ultimoTs) / 1000));
+      ultimoTs = ts;
 
-      st.msRestantes -= dt;
-      st.msParaSpawn -= dt;
-      if (st.msParaSpawn <= 0 && st.objetivos.filter((o) => o.vivo).length < FERIA_MAX_OBJETIVOS) {
-        st.objetivos.push(crearObjetivoFeria());
-        st.msParaSpawn = FERIA_INTERVALO_SPAWN_MS * (0.6 + Math.random() * 0.8);
+      actualizarCarCrash(st, dt, inputRef.current);
+
+      const distMetros = Math.floor(st.distancia / 8);
+      if (distMetros !== distPrev) { distPrev = distMetros; setDistanciaMostrada(distMetros); }
+      if (st.monedasSesion !== monedasPrev) { monedasPrev = st.monedasSesion; setMonedasSesion(st.monedasSesion); }
+      if (st.mision) {
+        const progreso = Math.min(st.mision.meta, Math.max(0, Math.floor(progresoMisionCarCrash(st))));
+        if (st.mision.id !== misionPrevId || progreso !== misionPrevProgreso) {
+          misionPrevId = st.mision.id; misionPrevProgreso = progreso;
+          setMisionInfo({ texto: st.mision.texto, meta: st.mision.meta, progreso });
+        }
       }
 
-      st.objetivos.forEach((o) => { o.x += o.vx * (dt / 16.67); });
-      st.objetivos = st.objetivos.filter((o) => o.vivo && o.x > -60 && o.x < FERIA_ANCHO + 60);
+      dibujarCarCrash(ctx, st, hexColorCarCrash(colorId), biomaEnDistancia(st.distancia));
 
-      st.chispas.forEach((c) => { c.vida -= 1; });
-      st.chispas = st.chispas.filter((c) => c.vida > 0);
-
-      setTiempoRestante(Math.max(0, Math.ceil(st.msRestantes / 1000)));
-
-      dibujarFeria(ctx, st, mouseRef.current.x, mouseRef.current.y);
-
-      if (st.msRestantes <= 0 || st.municion <= 0) {
-        setJugando(false);
+      if (!st.vivo) {
+        const totalPrevio = Number(localStorage.getItem(`cupula_carcrash_monedas_${user.id}`)) || 0;
+        const totalNuevo = totalPrevio + st.monedasSesion;
+        try { localStorage.setItem(`cupula_carcrash_monedas_${user.id}`, String(totalNuevo)); } catch (e) {}
+        setMonedasTotales(totalNuevo);
+        const mejorPrevio = Number(localStorage.getItem(`cupula_carcrash_mejor_${user.id}`)) || 0;
+        if (distMetros > mejorPrevio) {
+          try { localStorage.setItem(`cupula_carcrash_mejor_${user.id}`, String(distMetros)); } catch (e) {}
+          setMejorDistancia(distMetros);
+        }
         setTerminado(true);
-        setMejorPuntaje((prev) => {
-          if (st.puntaje > prev) { localStorage.setItem(`cupula_feria_mejor_${user.id}`, String(st.puntaje)); return st.puntaje; }
-          return prev;
-        });
+        setJugando(false);
         return;
       }
       rafRef.current = requestAnimationFrame(loop);
     };
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [jugando, user.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jugando, user.id, colorId]);
+
+  const seleccionarColor = (id) => {
+    setColorId(id);
+    guardarColorCarCrashLocal(user.id, id);
+  };
+  const desbloquearColor = (id, costo) => {
+    if (desbloqueados.includes(id) || monedasTotales < costo) return;
+    const nuevos = [...desbloqueados, id];
+    const restante = monedasTotales - costo;
+    setDesbloqueados(nuevos);
+    setMonedasTotales(restante);
+    setColorId(id);
+    guardarDesbloqueadosCarCrashLocal(user.id, nuevos);
+    guardarColorCarCrashLocal(user.id, id);
+    try { localStorage.setItem(`cupula_carcrash_monedas_${user.id}`, String(restante)); } catch (e) {}
+  };
 
   return (
     <div>
       <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver a Cúpula Games</button>
-      <SectionTitle>Feria de Tiro</SectionTitle>
-      <Card style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-        <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 10 }}>
-          Puntaje: <span style={{ color: COLORS.neonAmber, fontWeight: 700 }}>{score}</span> · Balas: <span style={{ color: COLORS.neonRed, fontWeight: 700 }}>{municion}</span> · Tiempo: <span style={{ color: COLORS.neonBlue, fontWeight: 700 }}>{tiempoRestante}s</span> · Mejor: <span style={{ color: COLORS.neonSuccess, fontWeight: 700 }}>{mejorPuntaje}</span>
+      <SectionTitle>Car Crash</SectionTitle>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <Badge color={COLORS.neonAmber}>📏 {distanciaMostrada}m</Badge>
+        <Badge color={COLORS.neonSuccess}>🪙 {monedasSesion}</Badge>
+        <Badge color={COLORS.textMuted}>Mejor: {mejorDistancia}m</Badge>
+        <Badge color={COLORS.neonMagenta}>Monedas: {monedasTotales}</Badge>
+      </div>
+      {jugando && misionInfo && (
+        <div style={{ marginBottom: 10 }}>
+          <Badge color={COLORS.neonBlue}>🎯 {misionInfo.texto} ({misionInfo.progreso}/{misionInfo.meta})</Badge>
         </div>
-        <div style={{ position: "relative", width: FERIA_ANCHO, maxWidth: "100%" }}>
+      )}
+      <Card style={{ padding: 6, marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <div style={{ position: "relative", width: CC_ANCHO, maxWidth: "100%" }}>
           <canvas
-            ref={canvasRef} width={FERIA_ANCHO} height={FERIA_ALTO} onMouseMove={onMouseMove} onClick={disparar}
-            style={{ width: "100%", height: "auto", display: "block", background: "#05070d", border: `2px solid ${COLORS.neonAmber}`, borderRadius: 8, boxShadow: `0 0 26px ${COLORS.neonAmber}55, inset 0 0 40px #00000088`, cursor: "crosshair" }}
+            ref={canvasRef} width={CC_ANCHO} height={CC_ALTO}
+            style={{ width: "100%", height: "auto", display: "block", background: "#05070d", border: `2px solid ${COLORS.neonAmber}`, borderRadius: 8, boxShadow: `0 0 26px ${COLORS.neonAmber}55, inset 0 0 40px #00000088` }}
           />
           {!jugando && (
-            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, background: "rgba(5,7,13,0.8)", borderRadius: 8 }}>
+            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, background: "rgba(5,7,13,0.85)", borderRadius: 8, padding: 16, textAlign: "center" }}>
               <div style={{ fontFamily: FONT_DISPLAY, fontSize: 24, color: COLORS.white, letterSpacing: 2, textShadow: `0 0 12px ${COLORS.neonAmber}` }}>
-                {terminado ? "RONDA TERMINADA" : "FERIA DE TIRO"}
+                {terminado ? "TE ATRAPARON" : "CAR CRASH"}
               </div>
-              {terminado && <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: COLORS.neonAmber }}>Puntaje: {score}</div>}
-              <NeonButton active onClick={iniciar}>{terminado ? "Jugar de nuevo" : "Jugar"}</NeonButton>
+              {terminado && (
+                <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: COLORS.neonAmber }}>
+                  {distanciaMostrada}m · +{monedasSesion} monedas
+                </div>
+              )}
+              <NeonButton active onClick={iniciar}>{terminado ? "Reintentar" : "Jugar"}</NeonButton>
+              <NeonButton onClick={() => setMostrarGarage(true)}>Garage</NeonButton>
             </div>
           )}
         </div>
-        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginTop: 10, textAlign: "center" }}>
-          Mueve el mouse para apuntar, clic para disparar. Patos = 10, latas = 5, botellas = 15.
-        </div>
       </Card>
+      {jugando && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <BotonAccionCabezones color={COLORS.neonBlue} onPress={() => { inputRef.current.izq = true; }} onRelease={() => { inputRef.current.izq = false; }}>◀</BotonAccionCabezones>
+            <BotonAccionCabezones color={COLORS.neonBlue} onPress={() => { inputRef.current.der = true; }} onRelease={() => { inputRef.current.der = false; }}>▶</BotonAccionCabezones>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <BotonAccionCabezones color={COLORS.neonAmber} ancho={100} onPress={() => { inputRef.current.drift = true; }} onRelease={() => { inputRef.current.drift = false; }}>DERRAPE</BotonAccionCabezones>
+          </div>
+        </div>
+      )}
+      <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginTop: 10, textAlign: "center" }}>
+        PC: flechas/AD para moverte, W/↑ acelera, S/↓ frena, Espacio derrapa. Celular: usa los botones de abajo.
+      </div>
+      {mostrarGarage && (
+        <GarageCarCrash
+          colorId={colorId} desbloqueados={desbloqueados} monedasTotales={monedasTotales}
+          onSeleccionar={seleccionarColor} onDesbloquear={desbloquearColor} onCerrar={() => setMostrarGarage(false)}
+        />
+      )}
     </div>
   );
 }
 
-
-// ---- 4) No haga sino Jogar (fútbol de cabezones — 1 vs bot o en línea 1v1 con los de la cúpula) ----
+// ---- 3) No haga sino Jogar (fútbol de cabezones — 1 vs bot o en línea 1v1 con los de la cúpula) ----
 // Vista lateral estilo "Head Soccer" / "Big Head Football": cada quien mueve a su cabezón,
 // salta y patea/cabecea el balón hacia el arco rival. Se puede jugar solo contra un bot, o en
 // línea contra otro de los 5 de la cúpula. La física (gravedad, saltos, patadas, rebotes, goles
@@ -3596,22 +3709,39 @@ function avanzarPartidoCabezones(estado, dt, entradaIzq, entradaDer) {
 // SIEMPRE hace esto") y explotarlo para goles fáciles una y otra vez. Con ruido, la MISMA situación
 // no produce siempre exactamente la misma reacción — más en fácil (menos preciso), casi nada en
 // Ronaldinho (pero no cero, para que tampoco sea 100% predecible ni al nivel más alto).
-// Valores afinados por auto-juego: el bot jugó cientos de partidos simulados (con las reglas reales
-// del juego — a 5 goles o 120s, no una prueba artificial) contra pequeñas variaciones de sí mismo, y
-// se midió automáticamente cuál combinación gana más Y concede menos — así el bot "corrige errores
-// solo" en vez de que se le adivinen manualmente los números. Se validó con muestras grandes (20-40
-// partidos por comparación) antes de aceptar cada combinación, y se confirmó que la escalera de
-// dificultad se mantiene intacta: Medio le gana claramente a Fácil, y Ronaldinho le gana claramente a
-// Medio. Lo que resultó mejor en Medio y Ronaldinho, frente al diseño anterior, fue una combinación de
-// mucho más "anclaje" y "cobertura" (cuidar el arco a toda costa) JUNTO con un "alcanceExtra" y
-// "zonaMuerta" más ajustados (obliga al bot a estar realmente cerca y bien ubicado antes de intentar
-// un toque, en vez de intentarlo desde lejos y fallar) — la combinación completa importa más que
-// cualquier número suelto. Fácil se dejó casi igual a propósito (con un poco más de anclaje nada más)
-// para que siga siendo vencible, como corresponde al nivel de entrada.
+// "prioridadPoder" (nuevo, ronda 2): antes el bot ignoraba por completo los power-ups que flotan en
+// la cancha. Este número (0 a 1) controla qué tanto se anima a desviarse de su objetivo normal para
+// ir a buscar uno cuando conviene (está cerca y no lo tiene más lejos que el rival) — 0 lo ignora
+// como antes, 1 lo prioriza fuerte. Nunca compite con una cobertura urgente del propio arco (eso
+// sigue siendo lo primero, sin excepción).
+// "probControlAvanzado" (nuevo, ronda 2): antes, en cuanto el balón entraba en su alcance de patada,
+// el bot pateaba SIEMPRE de una — no existía la idea de "domino el balón, no tengo presión encima,
+// avanzo un poco antes de definir". Esta probabilidad (0 a 1) controla qué tan seguido, cuando el
+// rival está lejos (sin presión) y el bot todavía no está en zona de ataque profunda, elige seguir
+// avanzando con el balón en los pies (llevándoselo por delante al caminar) en vez de rematar de
+// primera — así el ataque se siente más orgánico y menos "tocar y patear" siempre igual. Ya cerca del
+// arco rival, o bajo presión real, esto no aplica: ahí siempre define.
+// "riesgoMarcador" (nuevo, ronda 2, no es un número de esta tabla sino un comportamiento fijo que usa
+// "avance"/"anclaje" como base): con el marcador y el tiempo restante del partido, el bot ahora
+// ajusta EN VIVO qué tan lejos se anima a avanzar — más arriesgado si va perdiendo y queda poco
+// tiempo, más conservador (cuida el resultado) si va ganando cómodo y queda poco tiempo.
+// Valores afinados por auto-juego: el bot jugó miles de partidos simulados (con las reglas reales del
+// juego — a 5 goles o 120s, no una prueba artificial) contra variaciones de sí mismo, y se midió
+// automáticamente cuál combinación gana más, concede menos, Y juega un partido más completo (tiempo
+// real atacando con el balón controlado en campo rival, power-ups aprovechados) — así el bot "corrige
+// errores solo" en vez de que se le adivinen manualmente los números. Se validó con muestras grandes
+// (150-200 partidos, jugando la mitad de cada lado para que ningún sesgo de lado del simulador
+// distorsione el resultado) y se confirmó que la escalera de dificultad se mantiene intacta: Medio le
+// gana claramente a Fácil, y Ronaldinho nunca perdió ni un solo partido de validación contra Medio ni
+// contra Fácil. Un hallazgo importante de esta ronda: en Ronaldinho (ya al techo de precisión/reflejos
+// posible), sumarle caza de power-ups o el amague de control en realidad lo hacía MÁS vencible (lo
+// distraía de la defensa perfecta que lo define) — así que ahí se dejó prioridadPoder/
+// probControlAvanzado en 0 a propósito; el mayor beneficio de esta ronda fue para Medio, que ahora
+// caza power-ups agresivamente y le gana a la versión anterior de Medio 96% de las veces.
 const DIFICULTADES_BOT_CABEZONES = {
-  facil: { reaccion: 0.6, zonaMuerta: 22, alcanceExtra: 1.2, probSalto: 0.35, cobertura: 0.4, anclaje: 0.26, tick: 140, ruido: 60, avance: 0.55 },
-  medio: { reaccion: 0.73, zonaMuerta: 8, alcanceExtra: 1.12, probSalto: 0.57, cobertura: 0.76, anclaje: 0.93, tick: 75, ruido: 16, avance: 0.76 },
-  ronaldinho: { reaccion: 0.4, zonaMuerta: 2, alcanceExtra: 2.23, probSalto: 1, cobertura: 0.92, anclaje: 1, tick: 45, ruido: 10, avance: 0.95 },
+  facil: { reaccion: 0.6, zonaMuerta: 22, alcanceExtra: 1.2, probSalto: 0.35, cobertura: 0.4, anclaje: 0.26, tick: 140, ruido: 60, avance: 0.55, prioridadPoder: 0, probControlAvanzado: 0 },
+  medio: { reaccion: 0.41, zonaMuerta: 18.4, alcanceExtra: 1.53, probSalto: 0.52, cobertura: 0.68, anclaje: 0.9, tick: 75, ruido: 12.8, avance: 0.53, prioridadPoder: 0.98, probControlAvanzado: 0.06 },
+  ronaldinho: { reaccion: 0.4, zonaMuerta: 2, alcanceExtra: 2.23, probSalto: 1, cobertura: 0.92, anclaje: 1, tick: 45, ruido: 10, avance: 0.95, prioridadPoder: 0, probControlAvanzado: 0 },
 };
 // IA del bot (siempre juega en el lado derecho). Se llama unas 10 veces por segundo (no cada
 // cuadro) para que no reaccione de forma sobrehumana. Además de perseguir el balón:
@@ -3664,6 +3794,7 @@ function decidirEntradaBotCabezones(estado, dificultad, alerta) {
   const jugador = estado.jugadorDer;
   const rival = estado.jugadorIzq;
   const balon = estado.balon;
+  const usaComportamientoAvanzado = dificultad !== "facil";
 
   const distBalonArcoPropio = Math.abs(CABEZONES_ANCHO - balon.x);
   const distBalonArcoRival = Math.abs(0 - balon.x);
@@ -3683,6 +3814,28 @@ function decidirEntradaBotCabezones(estado, dificultad, alerta) {
   // adelantada — coincide con lo que se pidió explícitamente: "que cuide su arco a muerte".
   const lineaResguardoX = CABEZONES_ANCHO * 0.82;
   const distBalonBot = Math.abs(balon.x - jugador.x);
+  const distanciaRival = Math.hypot(rival.x - jugador.x, (CABEZONES_SUELO_Y - rival.altura) - (CABEZONES_SUELO_Y - jugador.altura));
+
+  // ── Conciencia de marcador y tiempo restante ──
+  // Un jugador "orgánico" de verdad no juega exactamente igual todo el partido: yendo perdiendo y con
+  // poco tiempo se anima a arriesgar más arriba; yendo ganando cómodo y con poco tiempo, se repliega
+  // más para conservar el resultado. Esto ajusta EN VIVO qué tan lejos avanza (avance) y qué tan
+  // pegado se queda a su arco (anclaje) sin tocar el resto del comportamiento — no se aplica en fácil
+  // (se queda siempre igual, a propósito), ni cuando falta mucho partido (el ajuste crece recién
+  // cerca del final, no desde el arranque).
+  let avanceEfectivo = cfg.avance;
+  let anclajeEfectivo = cfg.anclaje;
+  if (usaComportamientoAvanzado && typeof estado.golesDer === "number" && typeof estado.golesIzq === "number") {
+    const diferencia = estado.golesDer - estado.golesIzq; // >0 = el bot va ganando
+    const metaGoles = estado.metaGoles || CABEZONES_GOLES_PARA_GANAR;
+    const duracionTotal = estado.duracionS || CABEZONES_DURACION_PARTIDO_S;
+    const tiempoRestanteFrac = duracionTotal > 0 ? Math.max(0, Math.min(1, (estado.tiempoRestante ?? duracionTotal) / duracionTotal)) : 1;
+    const urgenciaTiempo = 1 - tiempoRestanteFrac; // 0 al arranque del partido, 1 sobre la hora
+    const presionMarcador = Math.max(-1, Math.min(1, -diferencia / Math.max(2, metaGoles - 1)));
+    const ajuste = presionMarcador * urgenciaTiempo * 0.22;
+    avanceEfectivo = Math.max(0.15, Math.min(0.98, cfg.avance + ajuste));
+    anclajeEfectivo = Math.max(0.1, Math.min(1, cfg.anclaje - ajuste * 0.6));
+  }
 
   let objetivoX;
   if (malUbicado) {
@@ -3691,7 +3844,7 @@ function decidirEntradaBotCabezones(estado, dificultad, alerta) {
   } else if (!enPeligro && distBalonBot > 260) {
     // el balón está lejos y no es una amenaza inmediata: se queda parcialmente en su línea de
     // resguardo en vez de abandonar el arco por completo (más "anclaje" = se aleja menos).
-    objetivoX = balon.x + (lineaResguardoX - balon.x) * cfg.anclaje;
+    objetivoX = balon.x + (lineaResguardoX - balon.x) * anclajeEfectivo;
   } else if (dificultad === "facil") {
     // en fácil no se usa intercepción a propósito, para que siga sintiéndose como un bot
     // principiante que corre detrás de la pelota en vez de anticiparse.
@@ -3699,14 +3852,31 @@ function decidirEntradaBotCabezones(estado, dificultad, alerta) {
   } else {
     objetivoX = predecirInterceptacionBalonCabezones(balon, jugador.x, CABEZONES_VELOCIDAD, 0.9);
   }
+
+  // ── Power-ups: ahora el bot los ve (antes los ignoraba por completo) ──
+  // Solo se anima a desviarse hacia uno cuando no hay peligro real en su propio arco (nunca abandona
+  // una cobertura urgente por un power-up) y cuando está razonablemente cerca de tomarlo antes que el
+  // rival — si el rival lo tiene mucho más a mano, no vale la pena dejar su posición por él. La línea
+  // defensiva máxima (más abajo) se sigue aplicando igual sobre este objetivo.
+  if (usaComportamientoAvanzado && !malUbicado && estado.powerup && cfg.prioridadPoder > 0) {
+    const pu = estado.powerup;
+    const distBotPowerup = Math.abs(pu.x - jugador.x);
+    const distRivalPowerup = Math.abs(pu.x - rival.x);
+    const puConviene = distBotPowerup < 380 && distBotPowerup <= distRivalPowerup + 60;
+    if (puConviene) {
+      objetivoX = objetivoX + (pu.x - objetivoX) * cfg.prioridadPoder;
+    }
+  }
+
   // Línea defensiva máxima: el bot "cuida su arco a toda costa" — sin este límite, la intercepción
-  // predictiva de arriba podía mandarlo a perseguir el balón hasta MUY adentro del campo rival,
+  // predictiva de arriba (o la búsqueda de un power-up) podía mandarlo MUY adentro del campo rival,
   // dejando su propio arco completamente desprotegido mientras tanto. Cuando no está defendiendo una
   // amenaza real (no malUbicado), nunca avanza más allá de esta línea — salvo que el balón YA esté
   // más adelante que ella, caso en el que no hay nada que cuidar en el camino y sí puede ir a
-  // buscarlo. "avance" (0 a 1) controla qué tan agresivo puede ser cada dificultad.
+  // buscarlo. "avance" (0 a 1, ya ajustado arriba por marcador/tiempo) controla qué tan agresivo
+  // puede ser cada dificultad.
   if (!malUbicado) {
-    const lineaDefensivaX = CABEZONES_ANCHO * (1 - Math.max(0, Math.min(1, cfg.avance || 0.7)));
+    const lineaDefensivaX = CABEZONES_ANCHO * (1 - Math.max(0, Math.min(1, avanceEfectivo || 0.7)));
     objetivoX = Math.max(objetivoX, Math.min(lineaDefensivaX, balon.x));
   }
   // Margen de error: rompe el patrón "misma situación = mismo movimiento exacto siempre" que se
@@ -3726,7 +3896,19 @@ function decidirEntradaBotCabezones(estado, dificultad, alerta) {
   const distanciaBalon = Math.hypot(balon.x - jugador.x, centroBalonY - centroJugadorY);
   const alcance = CABEZONES_ALCANCE_GOLPE * cfg.alcanceExtra;
   if (distanciaBalon < alcance) {
-    entrada.patear = true;
+    // ── Control/amague: "domino el balón, sin presión encima, elijo el momento" ──
+    // Antes, en cuanto el balón entraba en alcance, el bot pateaba SIEMPRE de una. Ahora, solo cuando
+    // NO es una situación urgente (no malUbicado, no contragolpeUrgente, no en modo alerta), el rival
+    // está lejos (sin presión real) y el bot todavía no está en zona de ataque profunda, a veces
+    // elige seguir avanzando con el balón por delante en vez de rematar de primera.
+    const sinPresion = distanciaRival > 155;
+    const zonaAtaqueProfunda = jugador.x < CABEZONES_ANCHO * 0.38;
+    const puedeControlar = usaComportamientoAvanzado && sinPresion && !zonaAtaqueProfunda
+      && !contragolpeUrgente && !alerta && cfg.probControlAvanzado > 0
+      && Math.random() < cfg.probControlAvanzado;
+    if (!puedeControlar) {
+      entrada.patear = true;
+    }
     if (centroBalonY < centroJugadorY - 15 && jugador.altura === 0) entrada.saltar = true;
   } else if (balon.vx < 0 && Math.abs(balon.x - jugador.x) < 230 && centroBalonY < centroJugadorY && jugador.altura === 0 && Math.random() < cfg.probSalto) {
     // cabezazo ofensivo: el balón va hacia el arco rival, está cerca y arriba — se eleva a rematarlo.
@@ -3739,7 +3921,6 @@ function decidirEntradaBotCabezones(estado, dificultad, alerta) {
     entrada.saltar = true;
   }
 
-  const distanciaRival = Math.hypot(rival.x - jugador.x, (CABEZONES_SUELO_Y - rival.altura) - (CABEZONES_SUELO_Y - jugador.altura));
   const pegadoAlRival = distanciaRival < CABEZONES_CUERPO_RADIO * 2;
   if (pegadoAlRival && distanciaBalon > alcance && jugador.altura === 0 && Math.random() < (0.35 + cfg.cobertura * 0.35)) {
     entrada.saltar = true;
@@ -5224,18 +5405,16 @@ function NoHagaSinoJogarView({ user, onVolver }) {
 // ---- Menú "Cúpula Games" ----
 const CUPULA_GAMES_LISTA = [
   { id: "happyweed", nombre: "Happy Weed", desc: "Estilo Flappy Bird: esquiva los portales neón con tu propia foto convertida en pajarito.", color: COLORS.neonRed },
-  { id: "aura", nombre: "Batallas de Aura", desc: "Estilo Brick Breaker: rompe los bloques de energía con tu esfera de aura antes de perder tus vidas.", color: COLORS.neonBlue },
-  { id: "feria", nombre: "Feria de Tiro", desc: "Galería de disparos en primera persona: dale a patos, latas y botellas antes de quedarte sin tiempo o munición.", color: COLORS.neonAmber },
   { id: "cabezones", nombre: "No haga sino Jogar", desc: "Fútbol de cabezones estilo arcade: corre, salta y patea/cabecea para meter más goles que tu rival, solo contra el computador o en línea 1 contra 1 con los de la cúpula. Tiene power-ups y récord histórico.", color: COLORS.neonMagenta },
+  { id: "carcrash", nombre: "Car Crash", desc: "Carrera de supervivencia infinita vista desde arriba: esquiva tráfico, motos y barricadas, junta monedas, cumple misiones y desbloquea autos nuevos en el garage.", color: COLORS.neonAmber },
 ];
 
 function CupulaGamesView({ user }) {
   const [juegoActivo, setJuegoActivo] = useState(null);
 
   if (juegoActivo === "happyweed") return <HappyWeedView user={user} onVolver={() => setJuegoActivo(null)} />;
-  if (juegoActivo === "aura") return <AuraBattleView user={user} onVolver={() => setJuegoActivo(null)} />;
   if (juegoActivo === "cabezones") return <NoHagaSinoJogarView user={user} onVolver={() => setJuegoActivo(null)} />;
-  if (juegoActivo === "feria") return <FeriaTiroView user={user} onVolver={() => setJuegoActivo(null)} />;
+  if (juegoActivo === "carcrash") return <CarCrashView user={user} onVolver={() => setJuegoActivo(null)} />;
 
   return (
     <div>
