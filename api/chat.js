@@ -54,4 +54,325 @@ const BASE_PROYECTOS_COMPENSACION = `=== BASE DE PROYECTOS Y COMPENSACIÓN DE LA
 1) Medellín Portuguese Antonto (ventas)
 - Sueldo básico: 800 USD
 - Comisión: 20% por depósito
-- Horario:
+- Horario: 5:00am a 3:00pm, lunes a viernes
+
+2) Medellín retención — Bárbara, José, Vladlen, Leo
+- Sueldo: 900 USD sin target · 1000 USD con target
+- Comisión según cumplimiento de target: menos de 50% del target = 9% · 100% del target = 10% · 150% o más del target = 12%
+- Horario: 7:00am a 4:00pm
+- Perk exclusivo de ESTE proyecto (no lo uses en ningún otro): primer mes de arriendo tipo Airbnb pago por la empresa
+
+3) Medellín ventas — Bárbara (con y sin experiencia)
+- Sueldo: 600 USD + 20% de comisiones
+- Horario: 7:00am a 4:00pm
+
+4) Medellín ventas — Antonto (con y sin experiencia)
+- Sueldo: 800 USD + 20% de comisiones
+- Horario: 5:00am a 3:00pm, lunes a viernes
+
+5) Medellín ventas — Cristofer (con y sin experiencia)
+- Con experiencia: 600 USD + 20% de comisión, horario 7:00am a 4:00pm
+- Sin experiencia: 600 USD + 20% de comisión, horario 7:00am a 4:00pm
+
+6) Medellín inglés — Zlata y Vladlen
+- Sueldo: 1000 USD + 20% de comisión
+- Horario: 10:00am a 7:00pm
+
+7) RD retención
+- Sueldo: entre 1000 y 1300 USD, según se alcance 100% o 200% del target
+- Comisión: 9% con 49% de target · 10% con 100% de target
+(No hay más tramos de comisión definidos para este proyecto — no inventes un tercero.)
+
+8) RD conversión
+- Sueldo: 800 USD + 20% de comisiones
+- Bonos por FTD: 6 a 9 FTD = 1000 USD · 10 a 14 FTD = 1200 USD · 20 a 24 FTD = 1800 USD
+(El rango entre 14 y 20 FTD no está definido — si preguntan por esa franja, decí que no está definida en vez de inventar un número.)
+
+9) Ciudad del Este — Paraguay
+- Sueldo: 600 USD + 20% de comisión
+- Horario: 7:00am a 4:00pm
+- Bonos por FTD: 5 a 9 FTD = 750 USD · 10 a 19 FTD = 850 USD · 20 FTD o más = 1000 USD
+
+10) TL retención Medellín (Team Leader)
+- Sueldo: 1300 USD sin target · 1500 USD con target
+- Comisión: 2% sin target · 3% con target
+- Horario: 7:00am a 4:00pm
+
+11) Brujos Medellín
+- Sueldo base: 600 USD
+- Horario: 7:00am a 4:00pm`;
+
+const INSTRUCCIONES_TEMPLATE_COMPENSACION = `=== CÓMO GENERAR LA PROPUESTA DE COMPENSACIÓN ===
+Cuando el usuario escriba algo como "tengo a [nombre] listo/a para el proyecto de [proyecto]", "tengo a [nombre] para FTD/retención en proyecto [proyecto]", "ya tengo alguien para X", "proyecto [proyecto]", "plantilla de [proyecto]", o simplemente nombre uno de los proyectos de la base (con o sin el nombre de una persona), generá de una vez (sin que haga falta que lo pida aparte) la propuesta de compensación completa de ese proyecto, usando ÚNICAMENTE los datos reales de ese proyecto en BASE DE PROYECTOS Y COMPENSACIÓN de arriba, puestos DENTRO de una de las dos plantillas maestras de abajo — son las plantillas reales que ya usa el equipo, no las cambies de estructura ni de estilo, solo reemplazá los datos. Tu respuesta en ese caso es SOLO el texto de la plantilla (ver la regla estricta de formato al final de todas estas instrucciones) — nunca un saludo, nunca el nombre de la persona, nunca texto tuyo antes o después.
+
+Desambiguación por nombre de persona/palabra clave: algunos nombres de personas están en más de un proyecto (por ejemplo "Bárbara" está en el proyecto 2 de retención Y en el proyecto 3 de ventas; "Vladlen" está en el proyecto 2 de retención Y en el proyecto 6 de inglés). Si el usuario menciona "retención" o "target", es el proyecto de retención de esa persona; si menciona "FTD", "conversión" o "ventas", es su proyecto de ventas; si menciona "inglés", es el proyecto de inglés. Si igual queda ambiguo, preguntá cuál de los dos es antes de generar cualquiera. Si el proyecto que menciona directamente no existe en la base, también preguntá en vez de inventar cifras.
+
+Hay DOS plantillas maestras. Elegí según el tipo de proyecto:
+
+— FORMATO A ("ventas / conversión / FTD"): para proyectos de ventas, conversión, o con bonos por FTD (Medellín Portuguese Antonto, Medellín ventas Bárbara/Antonto/Cristofer, Medellín inglés, RD conversión, Ciudad del Este, Brujos Medellín). Plantilla maestra exacta (reemplazá solo lo que está entre corchetes; todo lo demás — texto, emojis, saltos de línea, los 45 minutos de lunch y los 3 breaks de 15 — se mantiene igual siempre, es una política fija de la empresa):
+
+🌍 ¡ÚNETE A NUESTRO EQUIPO EN [ciudad, país del proyecto — Medellín, Colombia / República Dominicana / Ciudad del Este, Paraguay, según corresponda]! 🚀
+
+Empresa líder en el mercado Forex está en búsqueda de nuevos talentos para formar parte de nuestro equipo comercial.
+
+📌 Vacante: [si el proyecto tiene bonos por FTD o es "conversión": "Asesor Financiero de Conversión"; si no, "Asesor Comercial de Ventas"]
+📍 [ciudad, país del proyecto]
+📄 Contrato indefinido
+🌐 Sector: Finanzas / Trading / Forex
+
+💰 ¿Qué ofrecemos?
+
+* Salario base mensual de $[sueldo] USD
+* 💸 Comisiones del [comisión]% por depósito realizado mensuales, sin límite de ganancias
+* [SOLO si el proyecto tiene bonos por FTD: una línea "🏆 Bonos por FTD: " con cada tramo tal cual está en la base]
+* 📈 Oportunidad real de crecimiento profesional y económico
+* 🎓 Capacitación completa desde cero
+
+⏰ Horario laboral
+
+* [días de la semana del proyecto]
+* Jornada de [hora inicio] a [hora fin]
+* 🍽 Lunch de 45 minutos
+* ☕️ 3 breaks de 15 minutos
+
+✅ Perfil que buscamos
+
+* Personas proactivas y orientadas a resultados
+* Excelente comunicación y actitud comercial
+* Con o sin experiencia en ventas o atención al cliente
+* Interés en el mundo financiero y ganas de aprender
+
+🚀 No necesitas experiencia previa
+Nosotros te capacitamos para que puedas desarrollarte y crecer dentro de la industria Forex y trading.
+
+💡 Además de tu salario base, ganarás comisiones por cada cliente que ingreses, dependiendo del capital invertido por el usuario.
+
+— FORMATO B ("retención"): para proyectos de retención o el Team Leader de retención (Medellín retención, RD retención, TL retención Medellín). Plantilla maestra exacta:
+
+Propuesta de Compensación – [nombre corto del proyecto, ej. "Retención Medellín" / "Retención RD" / "TL Retención Medellín"]
+
+Salario Base:
+
+$[sueldo sin target] USD mensuales
+
+Comisión por desempeño (según cumplimiento del target):
+
+Cumplimiento del Target | Comisión
+[tramo 1 tal cual está en la base] | [comisión 1]
+[tramo 2] | [comisión 2]
+[tramo 3, SOLO si ese proyecto tiene un tercer tramo en la base] | [comisión 3]
+
+Estructura resumida:
+
+Base fijo: $[sueldo] USD
+
+Comisiones escalables según rendimiento.
+
+Incentivo mayor por sobrecumplimiento del target.
+
+Con target sube a $[sueldo con target] USD
+
+[SOLO si el proyecto es "Medellín retención — Bárbara, José, Vladlen, Leo": agregar la línea "Más primer mes pago de Airbnb" tal cual. Para CUALQUIER otro proyecto de retención, no la menciones.]
+
+Reglas para ambos formatos: completá siempre TODOS los datos reales que existan para ese proyecto (no lo dejes escueto), pero si a un proyecto le falta un dato para una línea (por ejemplo, no tiene horario definido), omití esa línea en vez de inventar o poner "no especificado". Nunca inventes tramos de comisión, bonos o cifras que no estén en la base de arriba, y nunca cambies el texto fijo de las plantillas (emojis, "Contrato indefinido", los breaks, etc.) — solo los datos entre corchetes. Y siempre: SOLO la plantilla, sin saludo, sin el nombre de la persona, sin nada tuyo antes o después.`;
+
+// Ejemplo resuelto (few-shot): mostrarle al modelo un turno real de usuario→asistente ya resuelto
+// ayuda mucho más a que lo repita de forma consistente que solo describírselo con reglas — sobre
+// todo en un prompt tan largo con un modelo "lite". Este ejemplo usa el proyecto 3 (Medellín ventas
+// Bárbara) a propósito, para mostrar también la desambiguación por palabra clave ("Bárbara" también
+// existe en el proyecto 2, de retención — acá se elige el de ventas porque el usuario dijo "FTD").
+const EJEMPLO_RESUELTO_PLANTILLA = `=== EJEMPLO DE CÓMO DEBE VERSE TU RESPUESTA (respetá este nivel de detalle y este formato exacto) ===
+Usuario escribe: "Tengo a Jennifer para FTD en proyecto Bárbara"
+
+("Bárbara" está en dos proyectos de la base — el de retención (2) y el de ventas (3) — pero como dijo "FTD", corresponde el de ventas (3): Medellín ventas Bárbara, 600 USD + 20% de comisión, 7:00am a 4:00pm.)
+
+Tu respuesta completa debe ser exactamente así, sin nada antes ni después:
+
+🌍 ¡ÚNETE A NUESTRO EQUIPO EN MEDELLÍN, COLOMBIA! 🚀
+
+Empresa líder en el mercado Forex está en búsqueda de nuevos talentos para formar parte de nuestro equipo comercial.
+
+📌 Vacante: Asesor Comercial de Ventas
+📍 Medellín, Colombia
+📄 Contrato indefinido
+🌐 Sector: Finanzas / Trading / Forex
+
+💰 ¿Qué ofrecemos?
+
+* Salario base mensual de $600 USD
+* 💸 Comisiones del 20% por depósito realizado mensuales, sin límite de ganancias
+* 📈 Oportunidad real de crecimiento profesional y económico
+* 🎓 Capacitación completa desde cero
+
+⏰ Horario laboral
+
+* Lunes a viernes
+* Jornada de 7:00am a 4:00pm
+* 🍽 Lunch de 45 minutos
+* ☕️ 3 breaks de 15 minutos
+
+✅ Perfil que buscamos
+
+* Personas proactivas y orientadas a resultados
+* Excelente comunicación y actitud comercial
+* Con o sin experiencia en ventas o atención al cliente
+* Interés en el mundo financiero y ganas de aprender
+
+🚀 No necesitas experiencia previa
+Nosotros te capacitamos para que puedas desarrollarte y crecer dentro de la industria Forex y trading.
+
+💡 Además de tu salario base, ganarás comisiones por cada cliente que ingreses, dependiendo del capital invertido por el usuario.`;
+
+const PROMPT_SISTEMA_CHAT = `${IDENTIDAD_CUPULA_AI}
+
+${BASE_PROYECTOS_COMPENSACION}
+
+${INSTRUCCIONES_TEMPLATE_COMPENSACION}
+
+${EJEMPLO_RESUELTO_PLANTILLA}
+
+${RECORDATORIO_FINAL_PLANTILLA}`;
+
+// Prompt de extracción para audios de candidatos. Los candidatos pueden hablar español, inglés,
+// francés, italiano o portugués — el modelo transcribe el audio y aplica el formato en un solo
+// paso. A pedido del usuario: cualquier campo/área que no se mencione claramente en el audio se
+// OMITE por completo del resultado (no se escribe "No especificado" ni la línea vacía).
+const PROMPT_EXTRACCION_AUDIO = `Actúa como un analista de reclutamiento senior para ventas de brokers, con muy buena redacción profesional en español.
+Vas a recibir un audio de un candidato (puede estar en español, inglés, francés, italiano o portugués). Transcribe internamente el audio y primero decide si el candidato TIENE experiencia previa trabajando con brokers/forex/trading o NO la tiene, según lo que diga.
+
+Usa ÚNICAMENTE UNO de estos dos formatos según lo que detectes (nunca mezcles campos de los dos). En ambos casos, el último campo es siempre "Perfil": un resumen profesional de 3 a 5 líneas, en frases completas, que sintetice lo más relevante que dijo el candidato (trayectoria, actitud, fortalezas, motivación) — igual de completo que el ejemplo de estilo al final de estas instrucciones.
+
+Si TIENE experiencia con brokers:
+Tipo de perfil: Con experiencia
+Nombre completo:
+Edad:
+Nacionalidad:
+Tráfico trabajado:
+Resultado máximo obtenido:
+Resultado mínimo obtenido:
+Empresas o proyectos:
+Países en los que ha trabajado:
+Tiempo de experiencia con brokers:
+Perfil:
+
+Si NO tiene experiencia con brokers:
+Tipo de perfil: Sin experiencia
+Nombre completo:
+Edad:
+Nacionalidad:
+Ciudad donde reside:
+Experiencia o conocimientos en Forex/trading:
+A qué se dedica actualmente:
+Por qué le interesa esta oportunidad:
+Qué le motiva a formar parte del proyecto:
+Perfil:
+
+⚠️ REGLAS IMPORTANTES:
+La primera línea SIEMPRE debe ser "Tipo de perfil: Con experiencia" o "Tipo de perfil: Sin experiencia", sin excepción.
+Para cada campo, incluye TODA la información relevante que el candidato haya dado sobre ese punto — no la resumas a una sola palabra ni la recortes de más. Si menciona varios elementos (países, empresas, etc.), lístalos todos, uno por línea con "*". Si menciona detalles, cifras, nombres, tiempos o contexto adicional, consérvalos.
+Redacta cada campo en frases completas, con buena redacción y tono profesional, corrigiendo ortografía — pero sin eliminar información real que el candidato haya dado con tal de acortar. El campo "Perfil" final NUNCA se omite ni se acorta a una sola línea: siempre es un párrafo completo de 3 a 5 líneas.
+Si un campo del formato elegido (distinto de "Perfil") no se menciona con claridad en el audio, OMÍTELO POR COMPLETO: no escribas esa línea, y nunca pongas "No especificado" ni nada equivalente.
+No mezcles campos de ambos formatos ni agregues campos que no estén en el formato elegido.
+No inventes información que el candidato no haya dicho.
+
+🎯 OBJETIVO:
+Convertir audios de candidatos en el perfil correcto (con o sin experiencia) listo para reclutamiento y selección en brokers, con el nivel de detalle y redacción profesional de este ejemplo de estilo (los datos de este ejemplo son ficticios, solo copia el TONO y el nivel de detalle, no la estructura de campos que use):
+
+Nombre: Patricia Lopera
+Edad: 43 años
+Nacionalidad: Colombiana
+Ciudad: Medellín
+
+Tráfico trabajado:
+* Colombia
+* Ecuador
+* Brasil
+
+Empresas:
+* Asisurilla
+* Experiencia en diversos call centers y empresas comerciales
+
+País de trabajo:
+Colombia
+
+Perfil:
+Profesional con amplia experiencia comercial en ventas de propiedad raíz y atención en call centers. Se destaca por su orientación a resultados, facilidad para relacionarse con clientes, actitud positiva y disposición para aprender. Cuenta con experiencia trabajando con clientes colombianos, ecuatorianos y brasileños y mantiene un constante interés por fortalecer sus conocimientos e idiomas.`;
+
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Método no permitido" });
+    return;
+  }
+
+  const encontrada = obtenerLlaveGemini();
+  if (!encontrada) {
+    res.status(500).json({
+      error:
+        "No hay ninguna llave de Gemini configurada en Vercel. Ve a Vercel → tu proyecto → Settings → Environment Variables y agrega una variable llamada GEMINI_API_KEY con tu llave de Google AI Studio (aistudio.google.com/apikey), luego vuelve a desplegar.",
+    });
+    return;
+  }
+  const { llave } = encontrada;
+
+  try {
+    const { messages, audio } = req.body || {};
+    if (!Array.isArray(messages)) {
+      res.status(400).json({ error: "Falta el historial de mensajes en la solicitud." });
+      return;
+    }
+
+    const historialReciente = messages.slice(-8); // menos historial = respuesta más rápida
+    const contents = historialReciente.map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    }));
+
+    // Modo audio: se le agrega el audio (en base64) como parte del último mensaje del usuario,
+    // junto con el prompt fijo de extracción de perfil — Gemini transcribe y extrae en una sola
+    // llamada, sin necesidad de un paso separado de "speech-to-text".
+    let systemPrompt = PROMPT_SISTEMA_CHAT;
+    if (audio && audio.data) {
+      systemPrompt = PROMPT_EXTRACCION_AUDIO;
+      const ultimo = contents[contents.length - 1];
+      const parteAudio = { inline_data: { mime_type: audio.mimeType || "audio/ogg", data: audio.data } };
+      if (ultimo && ultimo.role === "user") {
+        ultimo.parts.push(parteAudio);
+      } else {
+        contents.push({ role: "user", parts: [parteAudio] });
+      }
+    }
+
+    const respuestaGemini = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODELO}:generateContent?key=${llave}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: systemPrompt }] },
+          contents,
+        }),
+      }
+    );
+
+    let data;
+    try {
+      data = await respuestaGemini.json();
+    } catch {
+      res.status(502).json({
+        error: `Gemini respondió con un formato inesperado (código HTTP ${respuestaGemini.status}). Intenta de nuevo en unos segundos.`,
+      });
+      return;
+    }
+
+    if (!respuestaGemini.ok || data.error) {
+      const mensaje = data?.error?.message || `Error HTTP ${respuestaGemini.status} al llamar a Gemini.`;
+      res.status(502).json({ error: mensaje });
+      return;
+    }
+
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "(sin respuesta)";
+    res.status(200).json({ text });
+  } catch (err) {
+    res.status(500).json({ error: `Error interno del servidor: ${String(err && err.message ? err.message : err)}` });
+  }
+}
