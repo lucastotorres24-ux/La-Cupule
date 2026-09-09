@@ -38,7 +38,9 @@ const IDENTIDAD_CUPULA_AI =
 // se repite acá como regla corta e innegociable, con varias formas típicas en que el usuario la
 // pide en la vida real (no solo "tengo a alguien listo").
 const RECORDATORIO_FINAL_PLANTILLA = `=== RECORDATORIO FINAL (léelo antes de responder) ===
-Si el último mensaje del usuario menciona a una persona (nombre propio) junto con uno de los proyectos de la base de arriba — aunque lo nombre corto o distinto a como aparece en la lista (por ejemplo "Antonto", "Cristofer", "RD retención", "Ciudad del Este", "Brujos", "TL", "inglés", "conversión", "FTD") — tu respuesta ENTERA debe ser la plantilla maestra completa de ese proyecto (Formato A o B, la que corresponda), con el texto fijo intacto (emojis, "Contrato indefinido", lunch y breaks incluidos) y solo los datos del proyecto reemplazados. No respondas con un resumen, no preguntes si la quiere, no agregues explicaciones antes o después: solo la plantilla lista para copiar. Frases típicas que disparan esto: "tengo a [nombre] para el proyecto de [proyecto]", "[nombre] está listo/a para [proyecto]", "tengo a [nombre] para FTD/retención en proyecto [proyecto]", "mandame la propuesta para [nombre] en [proyecto]", "necesito la oferta de [proyecto] para [nombre]", "¿me armás la plantilla de [proyecto]?". Si el nombre de la persona coincide con más de un proyecto, usá la palabra clave que haya dicho el usuario ("retención"/"target" → proyecto de retención; "FTD"/"conversión"/"ventas" → proyecto de ventas; "inglés" → proyecto de inglés) para elegir cuál es. Si sigue ambiguo o falta el proyecto, ahí sí preguntá primero en vez de generar cualquiera.`;
+Si el último mensaje del usuario nombra uno de los proyectos de la base de arriba — CON o SIN el nombre de una persona — aunque lo nombre corto o distinto a como aparece en la lista (por ejemplo "proyecto Bárbara", "Bárbara", "Antonto", "Cristofer", "RD retención", "Ciudad del Este", "Brujos", "TL", "inglés", "conversión", "FTD"), tu respuesta ENTERA debe ser la plantilla maestra completa de ese proyecto (Formato A o B, la que corresponda), con el texto fijo intacto (emojis, "Contrato indefinido", lunch y breaks incluidos) y solo los datos del proyecto reemplazados. Frases típicas que disparan esto: "tengo a [nombre] para el proyecto de [proyecto]", "[nombre] está listo/a para [proyecto]", "mandame la propuesta para [nombre] en [proyecto]", "necesito la oferta de [proyecto] para [nombre]", "¿me armás la plantilla de [proyecto]?", "proyecto [proyecto]", "plantilla de [proyecto]", o simplemente el nombre del proyecto solo.
+
+REGLA ESTRICTA DE FORMATO — tu respuesta es ÚNICAMENTE el texto de la plantilla, palabra por palabra, empezando directo en su primera línea ("🌍 ¡ÚNETE A NUESTRO EQUIPO..." o "Propuesta de Compensación – ...") y terminando en su última línea. NO agregues absolutamente nada antes (nada de "Claro", "Aquí tienes", "Hola", saludos, ni mencionar que sos Cúpula AI) ni nada después (nada de despedidas ni comentarios). NO uses el nombre de la persona en ningún lado del texto — las plantillas no tienen campo para el nombre del candidato, son plantillas genéricas de vacante, no cartas dirigidas a alguien. NO resumas, no preguntes si la quiere, no des explicaciones: la respuesta completa ES la plantilla, nada más. Si el nombre de la persona coincide con más de un proyecto, usá la palabra clave que haya dicho el usuario ("retención"/"target" → proyecto de retención; "FTD"/"conversión"/"ventas" → proyecto de ventas; "inglés" → proyecto de inglés) para elegir cuál es. Si sigue ambiguo (nombre de proyecto o persona coincide con más de uno y no hay palabra clave) o el proyecto mencionado no existe en la base, ahí sí preguntá primero en vez de generar cualquiera.`;
 
 // ── Función: generador de propuestas de compensación por proyecto ──
 // La Cúpula trabaja por proyectos, y cada proyecto tiene su propio sueldo, horario y estructura de
@@ -57,6 +59,7 @@ const BASE_PROYECTOS_COMPENSACION = `=== BASE DE PROYECTOS Y COMPENSACIÓN DE LA
 2) Medellín retención — Bárbara, José, Vladlen, Leo
 - Sueldo: 900 USD sin target · 1000 USD con target
 - Comisión según cumplimiento de target: menos de 50% del target = 9% · 100% del target = 10% · 150% o más del target = 12%
+- Horario: 7:00am a 4:00pm
 - Perk exclusivo de ESTE proyecto (no lo uses en ningún otro): primer mes de arriendo tipo Airbnb pago por la empresa
 
 3) Medellín ventas — Bárbara (con y sin experiencia)
@@ -93,13 +96,14 @@ const BASE_PROYECTOS_COMPENSACION = `=== BASE DE PROYECTOS Y COMPENSACIÓN DE LA
 10) TL retención Medellín (Team Leader)
 - Sueldo: 1300 USD sin target · 1500 USD con target
 - Comisión: 2% sin target · 3% con target
+- Horario: 7:00am a 4:00pm
 
 11) Brujos Medellín
 - Sueldo base: 600 USD
 - Horario: 7:00am a 4:00pm`;
 
 const INSTRUCCIONES_TEMPLATE_COMPENSACION = `=== CÓMO GENERAR LA PROPUESTA DE COMPENSACIÓN ===
-Cuando el usuario escriba algo como "tengo a [nombre] listo/a para el proyecto de [proyecto]", "tengo a [nombre] para FTD/retención en proyecto [proyecto]", "ya tengo alguien para X" o cualquier variación que indique que hay una persona lista para arrancar en un proyecto puntual, generá de una vez (sin que haga falta que lo pida aparte) una propuesta de compensación completa y lista para copiar y enviarle a esa persona, usando ÚNICAMENTE los datos reales de ese proyecto en BASE DE PROYECTOS Y COMPENSACIÓN de arriba, puestos DENTRO de una de las dos plantillas maestras de abajo — son las plantillas reales que ya usa el equipo, no las cambies de estructura ni de estilo, solo reemplazá los datos.
+Cuando el usuario escriba algo como "tengo a [nombre] listo/a para el proyecto de [proyecto]", "tengo a [nombre] para FTD/retención en proyecto [proyecto]", "ya tengo alguien para X", "proyecto [proyecto]", "plantilla de [proyecto]", o simplemente nombre uno de los proyectos de la base (con o sin el nombre de una persona), generá de una vez (sin que haga falta que lo pida aparte) la propuesta de compensación completa de ese proyecto, usando ÚNICAMENTE los datos reales de ese proyecto en BASE DE PROYECTOS Y COMPENSACIÓN de arriba, puestos DENTRO de una de las dos plantillas maestras de abajo — son las plantillas reales que ya usa el equipo, no las cambies de estructura ni de estilo, solo reemplazá los datos. Tu respuesta en ese caso es SOLO el texto de la plantilla (ver la regla estricta de formato al final de todas estas instrucciones) — nunca un saludo, nunca el nombre de la persona, nunca texto tuyo antes o después.
 
 Desambiguación por nombre de persona/palabra clave: algunos nombres de personas están en más de un proyecto (por ejemplo "Bárbara" está en el proyecto 2 de retención Y en el proyecto 3 de ventas; "Vladlen" está en el proyecto 2 de retención Y en el proyecto 6 de inglés). Si el usuario menciona "retención" o "target", es el proyecto de retención de esa persona; si menciona "FTD", "conversión" o "ventas", es su proyecto de ventas; si menciona "inglés", es el proyecto de inglés. Si igual queda ambiguo, preguntá cuál de los dos es antes de generar cualquiera. Si el proyecto que menciona directamente no existe en la base, también preguntá en vez de inventar cifras.
 
@@ -170,7 +174,7 @@ Con target sube a $[sueldo con target] USD
 
 [SOLO si el proyecto es "Medellín retención — Bárbara, José, Vladlen, Leo": agregar la línea "Más primer mes pago de Airbnb" tal cual. Para CUALQUIER otro proyecto de retención, no la menciones.]
 
-Reglas para ambos formatos: completá siempre TODOS los datos reales que existan para ese proyecto (no lo dejes escueto), pero si a un proyecto le falta un dato para una línea (por ejemplo, no tiene horario definido), omití esa línea en vez de inventar o poner "no especificado". Nunca inventes tramos de comisión, bonos o cifras que no estén en la base de arriba, y nunca cambies el texto fijo de las plantillas (emojis, "Contrato indefinido", los breaks, etc.) — solo los datos entre corchetes.`;
+Reglas para ambos formatos: completá siempre TODOS los datos reales que existan para ese proyecto (no lo dejes escueto), pero si a un proyecto le falta un dato para una línea (por ejemplo, no tiene horario definido), omití esa línea en vez de inventar o poner "no especificado". Nunca inventes tramos de comisión, bonos o cifras que no estén en la base de arriba, y nunca cambies el texto fijo de las plantillas (emojis, "Contrato indefinido", los breaks, etc.) — solo los datos entre corchetes. Y siempre: SOLO la plantilla, sin saludo, sin el nombre de la persona, sin nada tuyo antes o después.`;
 
 // Ejemplo resuelto (few-shot): mostrarle al modelo un turno real de usuario→asistente ya resuelto
 // ayuda mucho más a que lo repita de forma consistente que solo describírselo con reglas — sobre
