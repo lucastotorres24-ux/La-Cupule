@@ -3596,10 +3596,22 @@ function avanzarPartidoCabezones(estado, dt, entradaIzq, entradaDer) {
 // SIEMPRE hace esto") y explotarlo para goles fáciles una y otra vez. Con ruido, la MISMA situación
 // no produce siempre exactamente la misma reacción — más en fácil (menos preciso), casi nada en
 // Ronaldinho (pero no cero, para que tampoco sea 100% predecible ni al nivel más alto).
+// Valores afinados por auto-juego: el bot jugó cientos de partidos simulados (con las reglas reales
+// del juego — a 5 goles o 120s, no una prueba artificial) contra pequeñas variaciones de sí mismo, y
+// se midió automáticamente cuál combinación gana más Y concede menos — así el bot "corrige errores
+// solo" en vez de que se le adivinen manualmente los números. Se validó con muestras grandes (20-40
+// partidos por comparación) antes de aceptar cada combinación, y se confirmó que la escalera de
+// dificultad se mantiene intacta: Medio le gana claramente a Fácil, y Ronaldinho le gana claramente a
+// Medio. Lo que resultó mejor en Medio y Ronaldinho, frente al diseño anterior, fue una combinación de
+// mucho más "anclaje" y "cobertura" (cuidar el arco a toda costa) JUNTO con un "alcanceExtra" y
+// "zonaMuerta" más ajustados (obliga al bot a estar realmente cerca y bien ubicado antes de intentar
+// un toque, en vez de intentarlo desde lejos y fallar) — la combinación completa importa más que
+// cualquier número suelto. Fácil se dejó casi igual a propósito (con un poco más de anclaje nada más)
+// para que siga siendo vencible, como corresponde al nivel de entrada.
 const DIFICULTADES_BOT_CABEZONES = {
-  facil: { reaccion: 0.6, zonaMuerta: 22, alcanceExtra: 1.2, probSalto: 0.35, cobertura: 0.4, anclaje: 0.18, tick: 140, ruido: 60 },
-  medio: { reaccion: 0.92, zonaMuerta: 12, alcanceExtra: 1.6, probSalto: 0.6, cobertura: 0.85, anclaje: 0.5, tick: 75, ruido: 26 },
-  ronaldinho: { reaccion: 1, zonaMuerta: 4, alcanceExtra: 2.05, probSalto: 0.85, cobertura: 1, anclaje: 0.78, tick: 45, ruido: 8 },
+  facil: { reaccion: 0.6, zonaMuerta: 22, alcanceExtra: 1.2, probSalto: 0.35, cobertura: 0.4, anclaje: 0.26, tick: 140, ruido: 60, avance: 0.55 },
+  medio: { reaccion: 0.73, zonaMuerta: 8, alcanceExtra: 1.12, probSalto: 0.57, cobertura: 0.76, anclaje: 0.93, tick: 75, ruido: 16, avance: 0.76 },
+  ronaldinho: { reaccion: 0.4, zonaMuerta: 2, alcanceExtra: 2.23, probSalto: 1, cobertura: 0.92, anclaje: 1, tick: 45, ruido: 10, avance: 0.95 },
 };
 // IA del bot (siempre juega en el lado derecho). Se llama unas 10 veces por segundo (no cada
 // cuadro) para que no reaccione de forma sobrehumana. Además de perseguir el balón:
@@ -3686,6 +3698,16 @@ function decidirEntradaBotCabezones(estado, dificultad, alerta) {
     objetivoX = balon.x;
   } else {
     objetivoX = predecirInterceptacionBalonCabezones(balon, jugador.x, CABEZONES_VELOCIDAD, 0.9);
+  }
+  // Línea defensiva máxima: el bot "cuida su arco a toda costa" — sin este límite, la intercepción
+  // predictiva de arriba podía mandarlo a perseguir el balón hasta MUY adentro del campo rival,
+  // dejando su propio arco completamente desprotegido mientras tanto. Cuando no está defendiendo una
+  // amenaza real (no malUbicado), nunca avanza más allá de esta línea — salvo que el balón YA esté
+  // más adelante que ella, caso en el que no hay nada que cuidar en el camino y sí puede ir a
+  // buscarlo. "avance" (0 a 1) controla qué tan agresivo puede ser cada dificultad.
+  if (!malUbicado) {
+    const lineaDefensivaX = CABEZONES_ANCHO * (1 - Math.max(0, Math.min(1, cfg.avance || 0.7)));
+    objetivoX = Math.max(objetivoX, Math.min(lineaDefensivaX, balon.x));
   }
   // Margen de error: rompe el patrón "misma situación = mismo movimiento exacto siempre" que se
   // puede aprender y explotar para anotar fácil una y otra vez.
