@@ -2631,15 +2631,29 @@ function HappyWeedView({ user, onVolver }) {
 }
 
 // ---- 2) Car Crash (carrera de supervivencia infinita, vista desde arriba) ----
-// La "cámara" avanza sola a una velocidad base (CC_VCAM) que sube con la distancia y el tiempo
-// vivo — eso es la dificultad progresiva. El jugador tiene su propia velocidad (con inercia hacia
-// una velocidad objetivo: crucero automático + acelerón opcional de PC - freno - penalización por
-// derrape) y si se queda por detrás de la cámara empieza a "atrasarse" en pantalla (yOffset sube);
-// si se atrasa demasiado, pierde. Chocar con tráfico no mata de una — le pega un frenazo brusco a
-// la velocidad (más riesgo de atrasarse) y dos segundos de invulnerabilidad para no encadenar
-// golpes. Todo el tráfico usa una sola definición paramétrica con 4 comportamientos, hay 4 biomas
-// que se van mezclando con la distancia, un sistema simple de misión activa + monedas, y un garage
-// para desbloquear colores de auto (mismo patrón que la personalización de "No haga sino Jogar").
+// La "cámara" avanza sola a una velocidad que sube con la distancia y el tiempo vivo, expresada
+// como un % de dificultad que arranca en 50% y escala hasta un techo de 95% (nunca 100%, para que
+// siempre quede matemáticamente una vía de escape: el auto del jugador es más rápido en punta que
+// la cámara y el tráfico, así que rebasar siempre es posible). Esa dificultad mueve tres cosas a la
+// vez: la velocidad de cámara, la frecuencia de aparición de tráfico y la agilidad de los NPCs.
+// El jugador tiene su propia velocidad (con inercia hacia una velocidad objetivo: crucero
+// automático + acelerón opcional de PC - freno - penalización por derrape) y si se queda por detrás
+// de la cámara empieza a "atrasarse" en pantalla; si el auto llega a salirse del borde inferior de
+// la pantalla, pierde. Chocar con tráfico no mata de una — le pega un frenazo brusco a la velocidad
+// (más riesgo de atrasarse) y una breve invulnerabilidad para no encadenar golpes.
+//
+// Assets gráficos: el juego se dibuja con formas vectoriales por defecto (como hasta ahora), pero
+// el AssetManager de más abajo ya está listo para reemplazar cada forma por un PNG real apenas se
+// suba — no hace falta tocar el motor de física ni de colisiones para eso (ver "Regla de oro" en
+// CC_ASSET_MANIFEST). Las hitboxes son siempre un 12% más chicas que el sprite dibujado, sea forma
+// o imagen, así queda margen para roces cerrados sin que se sienta injusto.
+//
+// Canvas responsive: el tablero de juego sigue siendo una resolución lógica fija (CC_ANCHO x
+// CC_ALTO) — toda la física/física de colisión trabaja en esas coordenadas, sin cambios — pero el
+// <canvas> real se redimensiona con un ResizeObserver al tamaño del contenedor que lo envuelve, y
+// al dibujar se aplica una escala + centrado (letterbox) para que la resolución lógica siempre
+// entre completa, sin recortarse y sin deformar nada, ocupando el máximo posible del contenedor.
+
 const CC_ANCHO = 420;
 const CC_ALTO = 620;
 const CC_CARRIL_ANCHO = CC_ANCHO * 0.7;
@@ -2647,37 +2661,108 @@ const CC_CARRIL_X0 = (CC_ANCHO - CC_CARRIL_ANCHO) / 2;
 const CC_JUGADOR_Y = CC_ALTO * 0.76;
 const CC_JUGADOR_ANCHO = 30;
 const CC_JUGADOR_ALTO = 50;
-const CC_VCAM_BASE = 150;
-const CC_VCAM_MAX = 430;
-const CC_VCAM_ESCALA_DIST = 0.012;
-const CC_VCAM_ESCALA_TIEMPO = 1.1;
-const CC_CRUCERO = CC_VCAM_BASE * 1.18;
-const CC_BOOST = 170;
-const CC_FRENO = 130;
-const CC_DRIFT_PENALIZACION = 70;
-const CC_INERCIA = 2.6;
-const CC_DIRECCION_NORMAL = 260;
-const CC_DIRECCION_DRIFT = 400;
-const CC_LIMITE_ATRASO = CC_ALTO * 0.32;
+
+// Curva de dificultad: 50% al arrancar, sube con distancia + tiempo vivo, techo real en 95% (nunca
+// llega a 100% — ver nota de "vía de escape" más arriba).
+const CC_DIFICULTAD_MIN = 0.5;
+const CC_DIFICULTAD_MAX = 0.95;
+const CC_DIFICULTAD_ESCALA_DIST = 1 / 2600;
+const CC_DIFICULTAD_ESCALA_TIEMPO = 1 / 95;
+function dificultadActualCarCrash(st) {
+  const factor = 1 - Math.exp(-(st.distancia * CC_DIFICULTAD_ESCALA_DIST + st.tiempoVivo * CC_DIFICULTAD_ESCALA_TIEMPO));
+  return CC_DIFICULTAD_MIN + (CC_DIFICULTAD_MAX - CC_DIFICULTAD_MIN) * Math.min(1, Math.max(0, factor));
+}
+
+const CC_VCAM_EN_DIFICULTAD_0 = 120; // referencia hipotética a dificultad 0 (nunca se llega, solo para la interpolación)
+const CC_VCAM_EN_DIFICULTAD_1 = 480; // referencia hipotética a dificultad 1 (el techo real de 95% se queda un poco por debajo)
+const CC_VCAM_BASE = CC_VCAM_EN_DIFICULTAD_0 + CC_DIFICULTAD_MIN * (CC_VCAM_EN_DIFICULTAD_1 - CC_VCAM_EN_DIFICULTAD_0); // velocidad de cámara al 50% (arranque)
+
+// El crucero automático (y sobre todo el boost de PC) quedan siempre por encima de la velocidad de
+// cámara máxima real (dificultad 95%) para que rebasar tráfico sea siempre posible, nunca opcional.
+const CC_VCAM_MAX_REAL = CC_VCAM_EN_DIFICULTAD_0 + CC_DIFICULTAD_MAX * (CC_VCAM_EN_DIFICULTAD_1 - CC_VCAM_EN_DIFICULTAD_0);
+const CC_CRUCERO = CC_VCAM_MAX_REAL * 1.12;
+const CC_BOOST = 190;
+const CC_FRENO = 140;
+const CC_DRIFT_PENALIZACION = 65;
+const CC_INERCIA = 3.4; // aceleración/frenado del auto — alto a propósito, para que se sienta ágil y "fulminante"
+const CC_DIRECCION_NORMAL = 330;
+const CC_DIRECCION_DRIFT = 480;
+const CC_GIRO_RESPUESTA_NORMAL = 10; // qué tan rápido el auto llega a su velocidad lateral objetivo (más alto = menos "input lag")
+const CC_GIRO_RESPUESTA_DRIFT = 14;
+// Límite de atraso derivado directamente del layout: el juego termina justo cuando el auto se sale
+// por completo del borde inferior de la pantalla lógica (literal a lo pedido, no una fracción arbitraria).
+const CC_LIMITE_ATRASO = CC_ALTO - CC_JUGADOR_Y + CC_JUGADOR_ALTO / 2;
 const CC_GOLPE_FACTOR = 0.4;
 const CC_INVULNERABLE_MS = 700;
 const CC_DIST_POR_BIOMA = 1400;
+const CC_ACHIQUE_HITBOX = 0.88; // hitboxes ~12% más chicas que el sprite dibujado (sea forma o PNG)
+
+// ── AssetManager: precarga PNGs por clave y expone get(clave). Si una imagen falta o falla (404,
+// archivo vacío, etc.) simplemente no se usa y el dibujado cae de vuelta a las formas vectoriales
+// actuales — el juego nunca se rompe por assets faltantes, y apenas el archivo exista en la ruta
+// del manifest empieza a usarse solo, sin tocar ni una línea de código. ──
+class AssetManagerCarCrash {
+  constructor() {
+    this.imagenes = {};
+    this.listo = false;
+  }
+  cargar(manifest) {
+    const entradas = Object.entries(manifest).filter(([, src]) => !!src);
+    if (entradas.length === 0) { this.listo = true; return Promise.resolve(); }
+    const promesas = entradas.map(([clave, src]) => new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => { this.imagenes[clave] = img; resolve(); };
+      img.onerror = () => { resolve(); }; // sin esta imagen puntual, se sigue dibujando con formas
+      img.src = src;
+    }));
+    return Promise.all(promesas).then(() => { this.listo = true; });
+  }
+  get(clave) {
+    return this.imagenes[clave] || null;
+  }
+}
+// Manifest de rutas esperadas (carpeta /public/games/carcrash/ del proyecto, así Vercel las sirve
+// como archivos estáticos en esa misma ruta). Regla de oro: subir estos PNGs a esa carpeta con
+// estos nombres exactos alcanza para que el juego los use — no requiere ningún cambio de código.
+const CC_ASSET_MANIFEST = {
+  // Un PNG del auto del jugador por cada color del garage (PALETA_CARCRASH) — así el color elegido
+  // se ve reflejado en el sprite real, no solo en la forma de respaldo. "gris" (color gratis por
+  // defecto) no tiene PNG todavía y usa la forma vectorial tintada a su color, como todo lo demás
+  // que falte en el manifest.
+  autoJugador_azul: "/games/carcrash/auto_jugador_azul.png",
+  autoJugador_rojo: "/games/carcrash/auto_jugador_rojo.png",
+  autoJugador_amber: "/games/carcrash/auto_jugador_amber.png",
+  autoJugador_verde: "/games/carcrash/auto_jugador_verde.png",
+  autoJugador_magenta: "/games/carcrash/auto_jugador_magenta.png",
+  autoJugador_morado: "/games/carcrash/auto_jugador_morado.png",
+  autoJugador_dorado: "/games/carcrash/auto_jugador_dorado.png",
+  taxi: "/games/carcrash/taxi.png",
+  autoEbrio: "/games/carcrash/auto_ebrio.png",
+  camion: "/games/carcrash/camion.png",
+  moto: "/games/carcrash/moto.png",
+  moneda: "/games/carcrash/moneda.png",
+  pistaCiudad: "/games/carcrash/pista_ciudad.png",
+  pistaDesierto: "/games/carcrash/pista_desierto.png",
+  pistaNieve: "/games/carcrash/pista_nieve.png",
+  pistaFuego: "/games/carcrash/pista_fuego.png",
+};
 
 const CC_BIOMAS = [
-  { nombre: "Ciudad Neón", cielo: ["#050512", "#0c0c1c"], pista: "#15151f", banquina: "#0a0a12", linea: COLORS.neonBlue },
-  { nombre: "Desierto", cielo: ["#2a1608", "#120a04"], pista: "#3a2414", banquina: "#1c1108", linea: COLORS.neonAmber },
-  { nombre: "Hielo", cielo: ["#0a1a24", "#040c12"], pista: "#1a2e38", banquina: "#0c1820", linea: "#BFEFFF" },
-  { nombre: "Volcán", cielo: ["#240404", "#0c0202"], pista: "#2c0e0e", banquina: "#160606", linea: COLORS.neonRed },
+  { nombre: "Ciudad Neón", clima: "lluvia", cielo: ["#050512", "#0c0c1c"], pista: "#15151f", banquina: "#0a0a12", linea: COLORS.neonBlue, pistaImg: "pistaCiudad" },
+  { nombre: "Desierto", clima: "arena", cielo: ["#2a1608", "#120a04"], pista: "#3a2414", banquina: "#1c1108", linea: COLORS.neonAmber, pistaImg: "pistaDesierto" },
+  { nombre: "Hielo", clima: "nieve", cielo: ["#0a1a24", "#040c12"], pista: "#1a2e38", banquina: "#0c1820", linea: "#BFEFFF", pistaImg: "pistaNieve" },
+  { nombre: "Volcán", clima: "brasas", cielo: ["#240404", "#0c0202"], pista: "#2c0e0e", banquina: "#160606", linea: COLORS.neonRed, pistaImg: "pistaFuego" },
 ];
 
 // cierre = velocidad relativa (px/s) a la que se acerca al jugador en pantalla a dificultad base;
-// estatica: true ignora "cierre" y se acerca siempre a la velocidad de la cámara (como la barricada,
-// que no se mueve por sí sola — el que se mueve es todo lo demás alrededor de ella).
+// estatica: true ignora "cierre" y se acerca siempre a la velocidad de la cámara (no se mueve por
+// sí sola). "diagonal" marca a las motos, que además de zigzaguear saltan de carril de golpe.
 const CC_TIPOS_TRAFICO = {
-  civil: { cierre: 60, ancho: 30, alto: 48, lateral: 0, color: "#5A6270", estatica: false },
-  ebrio: { cierre: 70, ancho: 30, alto: 48, lateral: 55, color: COLORS.neonMagenta, estatica: false },
-  moto: { cierre: 150, ancho: 18, alto: 34, lateral: 90, color: COLORS.neonAmber, estatica: false },
-  barricada: { cierre: 0, ancho: 120, alto: 36, lateral: 0, color: COLORS.neonRed, estatica: true },
+  civil: { cierre: 60, ancho: 30, alto: 48, lateral: 0, color: "#5A6270", estatica: false, asset: "taxi" },
+  ebrio: { cierre: 75, ancho: 30, alto: 48, lateral: 60, color: COLORS.neonMagenta, estatica: false, asset: "autoEbrio" },
+  moto: { cierre: 170, ancho: 16, alto: 32, lateral: 40, diagonal: true, color: COLORS.neonAmber, estatica: false, asset: "moto" },
+  camion: { cierre: 40, ancho: 46, alto: 78, lateral: 0, color: "#3A3E46", estatica: false, asset: "camion" },
+  barricada: { cierre: 0, ancho: 120, alto: 36, lateral: 0, color: COLORS.neonRed, estatica: true, asset: null },
 };
 
 const CC_PLANTILLAS_MISION = [
@@ -2731,8 +2816,8 @@ function crearEstadoCarCrash() {
     x: CC_CARRIL_X0 + CC_CARRIL_ANCHO / 2, vx: 0, vAdelante: CC_CRUCERO, yOffset: 0, drift: false,
     invulnerableHasta: 0, shake: 0,
     distancia: 0, tiempoVivo: 0,
-    trafico: [], monedas: [], particulas: [],
-    proxSpawnTrafico: 0.6, proxSpawnMoneda: 1.2, proxExhaust: 0, proxMarca: 0,
+    trafico: [], monedas: [], particulas: [], particulasClima: [],
+    proxSpawnTrafico: 0.6, proxSpawnMoneda: 1.2, proxExhaust: 0, proxMarca: 0, proxClima: 0,
     monedasSesion: 0, esquivesSesion: 0,
     mision: null,
     toastTexto: null, toastHasta: 0,
@@ -2777,22 +2862,22 @@ function elegirMisionCarCrash(st) {
   st.mision = { id: plantilla.id, tipo: plantilla.tipo, meta, texto: plantilla.texto(meta), base: valorBaseMisionCarCrash(st, plantilla.tipo) };
 }
 
-function intervaloSpawnTraficoCarCrash(camaraV) {
-  const dificultad = Math.max(0, Math.min(1, (camaraV - CC_VCAM_BASE) / (CC_VCAM_MAX - CC_VCAM_BASE)));
-  return 1.15 - dificultad * 0.75 + Math.random() * 0.25;
+function intervaloSpawnTraficoCarCrash(dificultad) {
+  const t = (dificultad - CC_DIFICULTAD_MIN) / (CC_DIFICULTAD_MAX - CC_DIFICULTAD_MIN);
+  return 1.3 - t * 0.88 + Math.random() * 0.22;
 }
 function spawnTraficoCarCrash(st) {
-  const pesos = [["civil", 5], ["ebrio", 3], ["moto", 3], ["barricada", 1]];
+  const pesos = [["civil", 5], ["ebrio", 3], ["moto", 3], ["camion", 2], ["barricada", 1]];
   const total = pesos.reduce((s, p) => s + p[1], 0);
   let r = Math.random() * total, tipoId = "civil";
   for (const [id, w] of pesos) { if (r < w) { tipoId = id; break; } r -= w; }
   const def = CC_TIPOS_TRAFICO[tipoId];
   const min = CC_CARRIL_X0 + def.ancho / 2 + 4, max = CC_CARRIL_X0 + CC_CARRIL_ANCHO - def.ancho / 2 - 4;
-  st.trafico.push({ tipo: tipoId, x: min + Math.random() * (max - min), y: -70, fase: Math.random() * Math.PI * 2, pasado: false, chocado: false });
+  st.trafico.push({ tipo: tipoId, x: min + Math.random() * (max - min), xObjetivo: null, y: -70, fase: Math.random() * Math.PI * 2, pasado: false, chocado: false });
 }
 function spawnMonedaCarCrash(st) {
   const min = CC_CARRIL_X0 + 20, max = CC_CARRIL_X0 + CC_CARRIL_ANCHO - 20;
-  st.monedas.push({ x: min + Math.random() * (max - min), y: -30, tomada: false });
+  st.monedas.push({ x: min + Math.random() * (max - min), y: -30, fase: Math.random() * Math.PI * 2 });
 }
 
 // Único punto que mueve toda la física/economía un cuadro (dt en segundos). Muta "st" directamente
@@ -2801,7 +2886,8 @@ function spawnMonedaCarCrash(st) {
 function actualizarCarCrash(st, dt, entrada) {
   if (!st.vivo) return;
   st.tiempoVivo += dt;
-  const camaraV = Math.min(CC_VCAM_MAX, CC_VCAM_BASE + st.distancia * CC_VCAM_ESCALA_DIST + st.tiempoVivo * CC_VCAM_ESCALA_TIEMPO);
+  const dificultad = dificultadActualCarCrash(st);
+  const camaraV = CC_VCAM_EN_DIFICULTAD_0 + dificultad * (CC_VCAM_EN_DIFICULTAD_1 - CC_VCAM_EN_DIFICULTAD_0);
   st.distancia += camaraV * dt;
 
   let objetivo = CC_CRUCERO;
@@ -2820,7 +2906,7 @@ function actualizarCarCrash(st, dt, entrada) {
   if (entrada.izq) dirObjetivo -= 1;
   if (entrada.der) dirObjetivo += 1;
   const velLateralMax = st.drift ? CC_DIRECCION_DRIFT : CC_DIRECCION_NORMAL;
-  const factorGiro = st.drift ? 9 : 6;
+  const factorGiro = st.drift ? CC_GIRO_RESPUESTA_DRIFT : CC_GIRO_RESPUESTA_NORMAL;
   st.vx += (dirObjetivo * velLateralMax - st.vx) * Math.min(1, factorGiro * dt);
   st.x += st.vx * dt;
   const margenX1 = CC_CARRIL_X0 + CC_JUGADOR_ANCHO / 2 + 4, margenX2 = CC_CARRIL_X0 + CC_CARRIL_ANCHO - CC_JUGADOR_ANCHO / 2 - 4;
@@ -2837,27 +2923,56 @@ function actualizarCarCrash(st, dt, entrada) {
   if (st.drift && Math.abs(st.vx) > 30) {
     st.proxMarca -= dt;
     if (st.proxMarca <= 0) {
-      st.proxMarca = 0.03;
+      st.proxMarca = 0.025;
       const lado = st.vx > 0 ? -1 : 1;
       st.particulas.push({ x: st.x + lado * CC_JUGADOR_ANCHO * 0.32, y: playerY + CC_JUGADOR_ALTO * 0.4, vx: 0, vy: camaraV, vida: 1.4, vidaMax: 1.4, color: "#000000", radio: 2.4, tipo: "marca" });
     }
   }
+
+  // Clima ambiental del bioma actual — puramente decorativo, no interactúa con colisiones/misiones.
+  const bioma = biomaEnDistancia(st.distancia).actual;
+  st.proxClima -= dt;
+  if (st.proxClima <= 0) {
+    st.proxClima = 0.08;
+    if (bioma.clima === "nieve") {
+      st.particulasClima.push({ x: Math.random() * CC_ANCHO, y: -10, vx: (Math.random() * 20 - 10), vy: 55 + Math.random() * 35, vida: 4, vidaMax: 4, color: "#ffffff", radio: 1.6 + Math.random() * 1.6, tipo: "clima" });
+    } else if (bioma.clima === "brasas") {
+      st.particulasClima.push({ x: CC_CARRIL_X0 + Math.random() * CC_CARRIL_ANCHO, y: CC_ALTO + 10, vx: (Math.random() * 30 - 15), vy: -(40 + Math.random() * 50), vida: 2.2, vidaMax: 2.2, color: Math.random() < 0.5 ? COLORS.neonAmber : COLORS.neonRed, radio: 1.4 + Math.random() * 1.4, tipo: "clima" });
+    } else if (bioma.clima === "arena") {
+      st.particulasClima.push({ x: -10, y: Math.random() * CC_ALTO, vx: 90 + Math.random() * 60, vy: (Math.random() * 20 - 10), vida: 3, vidaMax: 3, color: "#d8b877", radio: 1.2 + Math.random(), tipo: "clima" });
+    } else if (bioma.clima === "lluvia") {
+      st.particulasClima.push({ x: Math.random() * CC_ANCHO, y: -10, vx: -18, vy: 260 + Math.random() * 60, vida: 0.9, vidaMax: 0.9, color: COLORS.neonBlue + "aa", radio: 1, tipo: "climaLluvia" });
+    }
+  }
+
   st.particulas.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.vida -= dt; });
   st.particulas = st.particulas.filter((p) => p.vida > 0 && p.y < CC_ALTO + 40);
+  st.particulasClima.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.vida -= dt; });
+  st.particulasClima = st.particulasClima.filter((p) => p.vida > 0 && p.y > -20 && p.y < CC_ALTO + 20 && p.x > -20 && p.x < CC_ANCHO + 20);
   st.shake = Math.max(0, st.shake - dt * 26);
 
   st.proxSpawnTrafico -= dt;
-  if (st.proxSpawnTrafico <= 0) { spawnTraficoCarCrash(st); st.proxSpawnTrafico = intervaloSpawnTraficoCarCrash(camaraV); }
+  if (st.proxSpawnTrafico <= 0) { spawnTraficoCarCrash(st); st.proxSpawnTrafico = intervaloSpawnTraficoCarCrash(dificultad); }
   st.proxSpawnMoneda -= dt;
   if (st.proxSpawnMoneda <= 0) { spawnMonedaCarCrash(st); st.proxSpawnMoneda = 1.5 + Math.random() * 1.4; }
 
+  // Agilidad de los NPC también escala con la dificultad (0.6 a dificultad mínima, 1 a la máxima).
+  const agilidad = 0.6 + ((dificultad - CC_DIFICULTAD_MIN) / (CC_DIFICULTAD_MAX - CC_DIFICULTAD_MIN)) * 0.4;
   st.trafico.forEach((e) => {
     const def = CC_TIPOS_TRAFICO[e.tipo];
     const cierre = def.estatica ? camaraV : def.cierre * (camaraV / CC_VCAM_BASE);
     e.y += cierre * dt;
-    if (def.lateral) {
-      e.fase += dt * 2.2;
-      e.x += Math.sin(e.fase) * def.lateral * dt;
+    if (def.diagonal) {
+      // Motos: saltos de carril agresivos en diagonal en vez de solo zigzag continuo.
+      const min = CC_CARRIL_X0 + def.ancho / 2 + 4, max = CC_CARRIL_X0 + CC_CARRIL_ANCHO - def.ancho / 2 - 4;
+      if (e.xObjetivo === null || Math.abs(e.x - e.xObjetivo) < 4) {
+        e.xObjetivo = min + Math.random() * (max - min);
+      }
+      e.x += Math.sign(e.xObjetivo - e.x) * def.lateral * agilidad * 2.2 * dt;
+      e.x = Math.max(min, Math.min(max, e.x));
+    } else if (def.lateral) {
+      e.fase += dt * 2.2 * agilidad;
+      e.x += Math.sin(e.fase) * def.lateral * agilidad * dt;
       const min = CC_CARRIL_X0 + def.ancho / 2 + 4, max = CC_CARRIL_X0 + CC_CARRIL_ANCHO - def.ancho / 2 - 4;
       e.x = Math.max(min, Math.min(max, e.x));
     }
@@ -2869,8 +2984,8 @@ function actualizarCarCrash(st, dt, entrada) {
     if (!e.chocado) {
       const cerca = Math.abs(e.y - playerY) < (def.alto + CC_JUGADOR_ALTO) / 2;
       if (cerca) {
-        const mitadX = (def.ancho * 0.88 + CC_JUGADOR_ANCHO * 0.88) / 2;
-        const mitadY = (def.alto * 0.88 + CC_JUGADOR_ALTO * 0.88) / 2;
+        const mitadX = (def.ancho * CC_ACHIQUE_HITBOX + CC_JUGADOR_ANCHO * CC_ACHIQUE_HITBOX) / 2;
+        const mitadY = (def.alto * CC_ACHIQUE_HITBOX + CC_JUGADOR_ALTO * CC_ACHIQUE_HITBOX) / 2;
         if (Math.abs(e.x - st.x) < mitadX && Math.abs(e.y - playerY) < mitadY && ahoraMs >= st.invulnerableHasta) {
           e.chocado = true;
           st.vAdelante *= CC_GOLPE_FACTOR;
@@ -2886,9 +3001,9 @@ function actualizarCarCrash(st, dt, entrada) {
     }
     if (!e.pasado && e.y > playerY + 20) { e.pasado = true; if (!e.chocado) st.esquivesSesion += 1; }
   });
-  st.trafico = st.trafico.filter((e) => e.y < CC_ALTO + 60);
+  st.trafico = st.trafico.filter((e) => e.y < CC_ALTO + 80);
 
-  st.monedas.forEach((m) => { m.y += camaraV * dt; });
+  st.monedas.forEach((m) => { m.y += camaraV * dt; m.fase += dt * 6; });
   st.monedas = st.monedas.filter((m) => {
     const dx = m.x - st.x, dy = m.y - playerY;
     if (Math.sqrt(dx * dx + dy * dy) < 24) {
@@ -2912,8 +3027,33 @@ function actualizarCarCrash(st, dt, entrada) {
   }
 }
 
-function dibujarCarCrash(ctx, st, colorAuto, bioma) {
-  ctx.clearRect(0, 0, CC_ANCHO, CC_ALTO);
+// Dibuja una entidad (tráfico o jugador) con su PNG si el AssetManager ya lo tiene cargado, o si no
+// cae de vuelta a la forma vectorial de siempre — la hitbox real (más chica, ver CC_ACHIQUE_HITBOX)
+// nunca depende de esto, es puramente visual.
+function dibujarConAssetOForma(ctx, assets, clave, ancho, alto, dibujarForma) {
+  const img = clave ? assets.get(clave) : null;
+  if (img) {
+    ctx.drawImage(img, -ancho / 2, -alto / 2, ancho, alto);
+  } else {
+    dibujarForma();
+  }
+}
+
+function dibujarCarCrash(ctx, st, colorAuto, colorIdAuto, bioma, assets) {
+  const canvas = ctx.canvas;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Escala + letterbox: la resolución lógica (CC_ANCHO x CC_ALTO) siempre entra completa dentro del
+  // canvas físico (que puede tener cualquier proporción, según el contenedor), centrada, sin
+  // recortarse ni deformarse — el resto de esta función dibuja siempre en coordenadas lógicas fijas.
+  const escala = Math.min(canvas.width / CC_ANCHO, canvas.height / CC_ALTO);
+  const offsetX = (canvas.width - CC_ANCHO * escala) / 2;
+  const offsetY = (canvas.height - CC_ALTO * escala) / 2;
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(escala, 0, 0, escala, offsetX, offsetY);
+
   ctx.save();
   if (st.shake > 0) {
     const s = Math.min(6, st.shake * 0.5);
@@ -2933,20 +3073,31 @@ function dibujarCarCrash(ctx, st, colorAuto, bioma) {
   ctx.fillRect(-M, -M, CC_ANCHO + 2 * M, CC_ALTO + 2 * M);
   ctx.fillStyle = colorBanquina;
   ctx.fillRect(-M, -M, CC_ANCHO + 2 * M, CC_ALTO + 2 * M);
-  ctx.fillStyle = colorPista;
-  ctx.fillRect(CC_CARRIL_X0, -M, CC_CARRIL_ANCHO, CC_ALTO + 2 * M);
 
-  ctx.strokeStyle = colorLinea + "99";
-  ctx.lineWidth = 2;
-  ctx.setLineDash([18, 16]);
-  const offset = st.distancia % 34;
-  [CC_CARRIL_X0 + CC_CARRIL_ANCHO / 3, CC_CARRIL_X0 + (CC_CARRIL_ANCHO * 2) / 3].forEach((lx) => {
-    ctx.beginPath();
-    ctx.moveTo(lx, -offset);
-    ctx.lineTo(lx, CC_ALTO);
-    ctx.stroke();
-  });
-  ctx.setLineDash([]);
+  // Pista: PNG en mosaico vertical con scroll si ya está cargado el de este bioma, si no el
+  // rectángulo de color plano de siempre.
+  const pistaImg = assets.get(bioma.actual.pistaImg);
+  if (pistaImg) {
+    const alto = pistaImg.height * (CC_CARRIL_ANCHO / pistaImg.width);
+    const offset = st.distancia % alto;
+    for (let y = -alto + offset; y < CC_ALTO + alto; y += alto) {
+      ctx.drawImage(pistaImg, CC_CARRIL_X0, y, CC_CARRIL_ANCHO, alto);
+    }
+  } else {
+    ctx.fillStyle = colorPista;
+    ctx.fillRect(CC_CARRIL_X0, -M, CC_CARRIL_ANCHO, CC_ALTO + 2 * M);
+    ctx.strokeStyle = colorLinea + "99";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([18, 16]);
+    const offsetLinea = st.distancia % 34;
+    [CC_CARRIL_X0 + CC_CARRIL_ANCHO / 3, CC_CARRIL_X0 + (CC_CARRIL_ANCHO * 2) / 3].forEach((lx) => {
+      ctx.beginPath();
+      ctx.moveTo(lx, -offsetLinea);
+      ctx.lineTo(lx, CC_ALTO);
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+  }
   ctx.strokeStyle = colorLinea;
   ctx.lineWidth = 2;
   ctx.strokeRect(CC_CARRIL_X0, 0, CC_CARRIL_ANCHO, CC_ALTO);
@@ -2958,20 +3109,44 @@ function dibujarCarCrash(ctx, st, colorAuto, bioma) {
   });
   ctx.globalAlpha = 1;
 
+  // Clima ambiental (nieve/brasas/arena/lluvia), como capa atmosférica sobre la pista.
+  st.particulasClima.forEach((p) => {
+    ctx.globalAlpha = Math.max(0, p.vida / p.vidaMax);
+    if (p.tipo === "climaLluvia") {
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + 3, p.y + 12);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radio, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+  ctx.globalAlpha = 1;
+
   st.monedas.forEach((m) => {
+    const pulso = 1 + Math.sin(m.fase) * 0.18;
     ctx.save();
-    ctx.shadowColor = COLORS.neonAmber;
-    ctx.shadowBlur = 10;
-    ctx.fillStyle = COLORS.neonAmber;
-    ctx.beginPath();
-    ctx.arc(m.x, m.y, 8, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "#1a1206";
-    ctx.font = "700 10px 'Courier New', monospace";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("$", m.x, m.y + 1);
+    ctx.translate(m.x, m.y);
+    ctx.scale(pulso, pulso);
+    dibujarConAssetOForma(ctx, assets, "moneda", 20, 20, () => {
+      ctx.shadowColor = COLORS.neonAmber;
+      ctx.shadowBlur = 10 + Math.sin(m.fase) * 4;
+      ctx.fillStyle = COLORS.neonAmber;
+      ctx.beginPath();
+      ctx.arc(0, 0, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "#1a1206";
+      ctx.font = "700 10px 'Courier New', monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("$", 0, 1);
+    });
     ctx.restore();
   });
   ctx.textBaseline = "alphabetic";
@@ -2981,23 +3156,29 @@ function dibujarCarCrash(ctx, st, colorAuto, bioma) {
     ctx.save();
     ctx.translate(e.x, e.y);
     if (e.tipo === "ebrio") ctx.rotate(Math.sin(e.fase) * 0.18);
-    ctx.shadowColor = def.color;
-    ctx.shadowBlur = 8;
-    ctx.fillStyle = def.color;
-    ctx.fillRect(-def.ancho / 2, -def.alto / 2, def.ancho, def.alto);
-    ctx.shadowBlur = 0;
-    if (e.tipo === "barricada") {
-      ctx.strokeStyle = "#000";
-      ctx.lineWidth = 4;
-      ctx.setLineDash([10, 8]);
-      ctx.strokeRect(-def.ancho / 2 + 4, -def.alto / 2 + 4, def.ancho - 8, def.alto - 8);
-      ctx.setLineDash([]);
-    }
-    if (e.tipo === "moto") {
-      ctx.fillStyle = "#111";
-      ctx.fillRect(-def.ancho / 2, -def.alto / 2 - 4, def.ancho, 4);
-      ctx.fillRect(-def.ancho / 2, def.alto / 2, def.ancho, 4);
-    }
+    dibujarConAssetOForma(ctx, assets, def.asset, def.ancho, def.alto, () => {
+      ctx.shadowColor = def.color;
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = def.color;
+      ctx.fillRect(-def.ancho / 2, -def.alto / 2, def.ancho, def.alto);
+      ctx.shadowBlur = 0;
+      if (e.tipo === "barricada") {
+        ctx.strokeStyle = "#000";
+        ctx.lineWidth = 4;
+        ctx.setLineDash([10, 8]);
+        ctx.strokeRect(-def.ancho / 2 + 4, -def.alto / 2 + 4, def.ancho - 8, def.alto - 8);
+        ctx.setLineDash([]);
+      }
+      if (e.tipo === "moto") {
+        ctx.fillStyle = "#111";
+        ctx.fillRect(-def.ancho / 2, -def.alto / 2 - 4, def.ancho, 4);
+        ctx.fillRect(-def.ancho / 2, def.alto / 2, def.ancho, 4);
+      }
+      if (e.tipo === "camion") {
+        ctx.fillStyle = "#16181c";
+        ctx.fillRect(-def.ancho / 2 + 3, -def.alto / 2 + 6, def.ancho - 6, def.alto * 0.32);
+      }
+    });
     ctx.restore();
   });
 
@@ -3007,18 +3188,20 @@ function dibujarCarCrash(ctx, st, colorAuto, bioma) {
   ctx.globalAlpha = invulnerable && Math.floor(Date.now() / 90) % 2 === 0 ? 0.35 : 1;
   ctx.translate(st.x, playerY);
   ctx.rotate(Math.max(-0.35, Math.min(0.35, st.vx / 700)));
-  ctx.shadowColor = colorAuto;
-  ctx.shadowBlur = 12;
-  ctx.fillStyle = colorAuto;
-  ctx.fillRect(-CC_JUGADOR_ANCHO / 2, -CC_JUGADOR_ALTO / 2, CC_JUGADOR_ANCHO, CC_JUGADOR_ALTO);
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = "rgba(10,10,12,0.8)";
-  ctx.fillRect(-CC_JUGADOR_ANCHO / 2 + 4, -CC_JUGADOR_ALTO / 2 + 8, CC_JUGADOR_ANCHO - 8, CC_JUGADOR_ALTO * 0.4);
-  ctx.shadowColor = "#fff8d6";
-  ctx.shadowBlur = 6;
-  ctx.fillStyle = "#fff8d6";
-  ctx.fillRect(-CC_JUGADOR_ANCHO / 2 + 2, -CC_JUGADOR_ALTO / 2 - 2, 5, 4);
-  ctx.fillRect(CC_JUGADOR_ANCHO / 2 - 7, -CC_JUGADOR_ALTO / 2 - 2, 5, 4);
+  dibujarConAssetOForma(ctx, assets, `autoJugador_${colorIdAuto}`, CC_JUGADOR_ANCHO, CC_JUGADOR_ALTO, () => {
+    ctx.shadowColor = colorAuto;
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = colorAuto;
+    ctx.fillRect(-CC_JUGADOR_ANCHO / 2, -CC_JUGADOR_ALTO / 2, CC_JUGADOR_ANCHO, CC_JUGADOR_ALTO);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "rgba(10,10,12,0.8)";
+    ctx.fillRect(-CC_JUGADOR_ANCHO / 2 + 4, -CC_JUGADOR_ALTO / 2 + 8, CC_JUGADOR_ANCHO - 8, CC_JUGADOR_ALTO * 0.4);
+    ctx.shadowColor = "#fff8d6";
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = "#fff8d6";
+    ctx.fillRect(-CC_JUGADOR_ANCHO / 2 + 2, -CC_JUGADOR_ALTO / 2 - 2, 5, 4);
+    ctx.fillRect(CC_JUGADOR_ANCHO / 2 - 7, -CC_JUGADOR_ALTO / 2 - 2, 5, 4);
+  });
   ctx.restore();
 
   st.particulas.filter((p) => p.tipo !== "marca").forEach((p) => {
@@ -3085,9 +3268,11 @@ function GarageCarCrash({ colorId, desbloqueados, monedasTotales, onSeleccionar,
 }
 
 function CarCrashView({ user, onVolver }) {
+  const contenedorRef = useRef(null);
   const canvasRef = useRef(null);
   const estadoRef = useRef(null);
   const rafRef = useRef(null);
+  const assetsRef = useRef(null);
   const inputRef = useRef({ izq: false, der: false, acel: false, freno: false, drift: false });
 
   const [jugando, setJugando] = useState(false);
@@ -3107,6 +3292,35 @@ function CarCrashView({ user, onVolver }) {
     setColorId(colorCarCrashGuardado(user.id));
     setDesbloqueados(desbloqueadosCarCrashGuardado(user.id));
   }, [user.id]);
+
+  // AssetManager: se crea y precarga una sola vez por montaje del componente. Si algún PNG del
+  // manifest no existe todavía (404), no pasa nada — ese elemento sigue dibujándose con la forma
+  // vectorial hasta que el archivo aparezca en /public/games/carcrash/.
+  useEffect(() => {
+    const mgr = new AssetManagerCarCrash();
+    assetsRef.current = mgr;
+    mgr.cargar(CC_ASSET_MANIFEST);
+  }, []);
+
+  // Canvas responsive: el <canvas> ocupa 100% del contenedor que lo envuelve, y su resolución real
+  // en píxeles se ajusta con un ResizeObserver cada vez que ese contenedor cambia de tamaño — el
+  // dibujado (dibujarCarCrash) se encarga de escalar/centrar la resolución lógica fija adentro.
+  useEffect(() => {
+    const contenedor = contenedorRef.current;
+    const canvas = canvasRef.current;
+    if (!contenedor || !canvas) return;
+    const ajustar = () => {
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const w = Math.max(1, Math.round(contenedor.clientWidth * dpr));
+      const h = Math.max(1, Math.round(contenedor.clientHeight * dpr));
+      if (canvas.width !== w) canvas.width = w;
+      if (canvas.height !== h) canvas.height = h;
+    };
+    ajustar();
+    const ro = new ResizeObserver(ajustar);
+    ro.observe(contenedor);
+    return () => ro.disconnect();
+  }, []);
 
   const iniciar = useCallback(() => {
     estadoRef.current = crearEstadoCarCrash();
@@ -3153,7 +3367,7 @@ function CarCrashView({ user, onVolver }) {
         }
       }
 
-      dibujarCarCrash(ctx, st, hexColorCarCrash(colorId), biomaEnDistancia(st.distancia));
+      dibujarCarCrash(ctx, st, hexColorCarCrash(colorId), colorId, biomaEnDistancia(st.distancia), assetsRef.current);
 
       if (!st.vivo) {
         const totalPrevio = Number(localStorage.getItem(`cupula_carcrash_monedas_${user.id}`)) || 0;
@@ -3208,10 +3422,10 @@ function CarCrashView({ user, onVolver }) {
         </div>
       )}
       <Card style={{ padding: 6, marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center" }}>
-        <div style={{ position: "relative", width: CC_ANCHO, maxWidth: "100%" }}>
+        <div ref={contenedorRef} style={{ position: "relative", width: "100%", maxWidth: 640, aspectRatio: `${CC_ANCHO} / ${CC_ALTO}` }}>
           <canvas
-            ref={canvasRef} width={CC_ANCHO} height={CC_ALTO}
-            style={{ width: "100%", height: "auto", display: "block", background: "#05070d", border: `2px solid ${COLORS.neonAmber}`, borderRadius: 8, boxShadow: `0 0 26px ${COLORS.neonAmber}55, inset 0 0 40px #00000088` }}
+            ref={canvasRef}
+            style={{ width: "100%", height: "100%", display: "block", background: "#000000", border: `2px solid ${COLORS.neonAmber}`, borderRadius: 8, boxShadow: `0 0 26px ${COLORS.neonAmber}55, inset 0 0 40px #00000088` }}
           />
           {!jugando && (
             <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, background: "rgba(5,7,13,0.85)", borderRadius: 8, padding: 16, textAlign: "center" }}>
