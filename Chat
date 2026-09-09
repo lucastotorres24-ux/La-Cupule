@@ -1,44 +1,293 @@
 // Esta función corre en el servidor de Vercel, NUNCA en el navegador del usuario.
 // La llave (GEMINI_API_KEY) queda escondida — nadie puede verla mirando el código de la página.
 // Usa el nivel gratuito de Google Gemini (sin tarjeta de crédito).
+//
+// IMPORTANTE — por qué este archivo vive en /api/: Vercel solo despliega como función
+// serverless los archivos que están dentro de la carpeta /api en la raíz del repo. Antes este
+// código vivía en un archivo suelto llamado "Chat" en la raíz (sin carpeta /api ni extensión
+// .js), así que Vercel nunca lo desplegaba como endpoint — por eso el chat no respondía y solo
+// funcionaban los enlaces estáticos a otras IA. Este archivo reemplaza a aquel.
+
+const MODELO = "gemini-3.5-flash-lite"; // más rápido que gemini-3.6-flash, sigue en nivel gratis
+
+// El usuario no recuerda con certeza qué nombre de variable configuró en Vercel, así que se
+// revisan varios nombres posibles en orden — el primero que exista se usa. Esto hace que el
+// sistema se autodiagnostique en vez de depender de que alguien recuerde el nombre exacto.
+const NOMBRES_POSIBLES_LLAVE = [
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_GEMINI_API_KEY",
+  "GEMINI_KEY",
+  "API_KEY_GEMINI",
+];
+
+function obtenerLlaveGemini() {
+  for (const nombre of NOMBRES_POSIBLES_LLAVE) {
+    const valor = process.env[nombre];
+    if (valor && valor.trim()) return { llave: valor.trim(), nombreUsado: nombre };
+  }
+  return null;
+}
+
+const IDENTIDAD_CUPULA_AI =
+  "Eres Cúpula AI, la asistente virtual interna de La Cúpula (NYC 420 Style), una plataforma de gestión para un equipo de ventas de un líder y cuatro agentes. Ayudas con dudas de reclutamiento, ventas, redacción de mensajes, organización de tareas y preguntas generales. Sé breve, directa y con un tono profesional pero cercano, en español.";
+
+// ── Función: generador de propuestas de compensación por proyecto ──
+// La Cúpula trabaja por proyectos, y cada proyecto tiene su propio sueldo, horario y estructura de
+// comisiones (venta/conversión vs. retención son cosas distintas). Cuando alguien del equipo dice
+// algo como "tengo a fulano listo para el proyecto de X", Cúpula AI arma automáticamente una
+// propuesta de compensación lista para copiar y enviarle a esa persona — usando SOLO los datos
+// reales de este bloque, nunca inventados. Esta base y las dos plantillas de formato son las que
+// pidió el usuario textualmente; no se debe alterar ni "simplificar" ninguno de los dos estilos.
+const BASE_PROYECTOS_COMPENSACION = `=== BASE DE PROYECTOS Y COMPENSACIÓN DE LA CÚPULA (datos reales — nunca inventes ni cambies estos números, y nunca mezcles datos de un proyecto con otro) ===
+
+1) Medellín Portuguese Antonto (ventas)
+- Sueldo básico: 800 USD
+- Comisión: 20% por depósito
+- Horario: 5:00am a 3:00pm, lunes a viernes
+
+2) Medellín retención — Bárbara, José, Vladlen, Leo
+- Sueldo: 900 USD sin target · 1000 USD con target
+- Comisión según cumplimiento de target: menos de 50% del target = 9% · 100% del target = 10% · 150% o más del target = 12%
+- Perk exclusivo de ESTE proyecto (no lo uses en ningún otro): primer mes de arriendo tipo Airbnb pago por la empresa
+
+3) Medellín ventas — Bárbara (con y sin experiencia)
+- Sueldo: 600 USD + 20% de comisiones
+- Horario: 7:00am a 4:00pm
+
+4) Medellín ventas — Antonto (con y sin experiencia)
+- Sueldo: 800 USD + 20% de comisiones
+- Horario: 5:00am a 3:00pm, lunes a viernes
+
+5) Medellín ventas — Cristofer (con y sin experiencia)
+- Con experiencia: 600 USD + 20% de comisión, horario 7:00am a 4:00pm
+- Sin experiencia: 600 USD + 20% de comisión, horario 7:00am a 4:00pm
+
+6) Medellín inglés — Zlata y Vladlen
+- Sueldo: 1000 USD + 20% de comisión
+- Horario: 10:00am a 7:00pm
+
+7) RD retención
+- Sueldo: entre 1000 y 1300 USD, según se alcance 100% o 200% del target
+- Comisión: 9% con 49% de target · 10% con 100% de target
+(No hay más tramos de comisión definidos para este proyecto — no inventes un tercero.)
+
+8) RD conversión
+- Sueldo: 800 USD + 20% de comisiones
+- Bonos por FTD: 6 a 9 FTD = 1000 USD · 10 a 14 FTD = 1200 USD · 20 a 24 FTD = 1800 USD
+(El rango entre 14 y 20 FTD no está definido — si preguntan por esa franja, decí que no está definida en vez de inventar un número.)
+
+9) Ciudad del Este — Paraguay
+- Sueldo: 600 USD + 20% de comisión
+- Horario: 7:00am a 4:00pm
+- Bonos por FTD: 5 a 9 FTD = 750 USD · 10 a 19 FTD = 850 USD · 20 FTD o más = 1000 USD
+
+10) TL retención Medellín (Team Leader)
+- Sueldo: 1300 USD sin target · 1500 USD con target
+- Comisión: 2% sin target · 3% con target
+
+11) Brujos Medellín
+- Sueldo base: 600 USD
+- Horario: 7:00am a 4:00pm`;
+
+const INSTRUCCIONES_TEMPLATE_COMPENSACION = `=== CÓMO GENERAR LA PROPUESTA DE COMPENSACIÓN ===
+Cuando el usuario escriba algo como "tengo a [nombre] listo/a para el proyecto de [proyecto]", "ya tengo alguien para X" o cualquier variación que indique que hay una persona lista para arrancar en un proyecto puntual, generá de una vez (sin que haga falta que lo pida aparte) una propuesta de compensación completa y lista para copiar y enviarle a esa persona, usando ÚNICAMENTE los datos reales de ese proyecto en BASE DE PROYECTOS Y COMPENSACIÓN de arriba.
+
+Si el proyecto que menciona no existe en la base, o el nombre es ambiguo (puede referirse a más de uno), preguntá primero a cuál se refiere en vez de inventar cifras.
+
+Hay DOS estilos de plantilla. Elegí según el tipo de proyecto:
+
+— FORMATO A ("ventas / conversión / FTD"): para proyectos de ventas, conversión, o que tengan bonos por FTD (por ejemplo Medellín Portuguese Antonto, Medellín ventas Bárbara/Antonto/Cristofer, Medellín inglés, RD conversión, Ciudad del Este, Brujos Medellín). Es un formato vistoso, con emojis y buena cantidad de contenido — no lo hagas escueto ni corto, seguí este nivel de detalle:
+
+🚀 ¡Únete a nuestro equipo! 🚀
+
+📍 Vacante: Agente de Ventas — [nombre del proyecto]
+📌 Modalidad: Presencial / Remoto
+🏢 Sector: Ventas / Call center
+
+💰 ¿Qué ofrecemos?
+• Sueldo base: [sueldo] USD
+• Comisión: [comisión]% por [depósito / venta, según el proyecto]
+• [Si el proyecto tiene bonos por FTD: listar cada tramo tal cual está en la base, uno por línea]
+• Posibilidad real de crecimiento dentro del equipo
+• Capacitación y acompañamiento desde el primer día
+
+⏰ Horario laboral
+[días de la semana] de [hora inicio] a [hora fin]
+
+✅ Perfil que buscamos
+• Buena actitud y ganas de aprender
+• Buena comunicación y facilidad de palabra
+• Responsabilidad y puntualidad
+• No es necesaria experiencia previa, nosotros te formamos
+
+¡No necesitas experiencia, nosotros te enseñamos todo lo que necesitás saber! Si te interesa, contáctanos y arrancamos cuanto antes 🔥
+
+— FORMATO B ("retención"): para proyectos de retención o el Team Leader de retención (Medellín retención, RD retención, TL retención Medellín). Es un formato más sobrio y estructurado, con tabla de comisiones:
+
+Propuesta de Compensación – [nombre del proyecto]
+
+Salario Base: [sueldo sin target] USD (sube a [sueldo con target] USD cumpliendo target)
+
+Cumplimiento del Target | Comisión
+[tramo 1 tal cual está en la base] | [comisión 1]
+[tramo 2] | [comisión 2]
+[tramo 3, solo si ese proyecto tiene un tercer tramo] | [comisión 3]
+
+Estructura resumida
+• Base fijo: [sueldo] USD
+• Comisiones escalables según cumplimiento
+• Incentivo mayor con más target alcanzado
+• [Solo si el proyecto es "Medellín retención — Bárbara, José, Vladlen, Leo": agregar la línea del perk de Airbnb tal cual está en la base. Para CUALQUIER otro proyecto, no menciones el Airbnb.]
+
+Reglas para ambos formatos: completá siempre TODOS los datos reales que existan para ese proyecto (no lo dejes escueto), pero si a un proyecto le falta un dato para una línea del formato (por ejemplo, no tiene horario definido), omití esa línea en vez de inventar o poner "no especificado". Nunca inventes tramos de comisión, bonos o cifras que no estén en la base de arriba.`;
+
+const PROMPT_SISTEMA_CHAT = `${IDENTIDAD_CUPULA_AI}
+
+${BASE_PROYECTOS_COMPENSACION}
+
+${INSTRUCCIONES_TEMPLATE_COMPENSACION}`;
+
+// Prompt de extracción para audios de candidatos. Los candidatos pueden hablar español, inglés,
+// francés, italiano o portugués — el modelo transcribe el audio y aplica el formato en un solo
+// paso. A pedido del usuario: cualquier campo/área que no se mencione claramente en el audio se
+// OMITE por completo del resultado (no se escribe "No especificado" ni la línea vacía).
+const PROMPT_EXTRACCION_AUDIO = `Actúa como un analista de reclutamiento senior para ventas de brokers, con muy buena redacción profesional en español.
+Vas a recibir un audio de un candidato (puede estar en español, inglés, francés, italiano o portugués). Transcribe internamente el audio y primero decide si el candidato TIENE experiencia previa trabajando con brokers/forex/trading o NO la tiene, según lo que diga.
+
+Usa ÚNICAMENTE UNO de estos dos formatos según lo que detectes (nunca mezcles campos de los dos). En ambos casos, el último campo es siempre "Perfil": un resumen profesional de 3 a 5 líneas, en frases completas, que sintetice lo más relevante que dijo el candidato (trayectoria, actitud, fortalezas, motivación) — igual de completo que el ejemplo de estilo al final de estas instrucciones.
+
+Si TIENE experiencia con brokers:
+Tipo de perfil: Con experiencia
+Nombre completo:
+Edad:
+Nacionalidad:
+Tráfico trabajado:
+Resultado máximo obtenido:
+Resultado mínimo obtenido:
+Empresas o proyectos:
+Países en los que ha trabajado:
+Tiempo de experiencia con brokers:
+Perfil:
+
+Si NO tiene experiencia con brokers:
+Tipo de perfil: Sin experiencia
+Nombre completo:
+Edad:
+Nacionalidad:
+Ciudad donde reside:
+Experiencia o conocimientos en Forex/trading:
+A qué se dedica actualmente:
+Por qué le interesa esta oportunidad:
+Qué le motiva a formar parte del proyecto:
+Perfil:
+
+⚠️ REGLAS IMPORTANTES:
+La primera línea SIEMPRE debe ser "Tipo de perfil: Con experiencia" o "Tipo de perfil: Sin experiencia", sin excepción.
+Para cada campo, incluye TODA la información relevante que el candidato haya dado sobre ese punto — no la resumas a una sola palabra ni la recortes de más. Si menciona varios elementos (países, empresas, etc.), lístalos todos, uno por línea con "*". Si menciona detalles, cifras, nombres, tiempos o contexto adicional, consérvalos.
+Redacta cada campo en frases completas, con buena redacción y tono profesional, corrigiendo ortografía — pero sin eliminar información real que el candidato haya dado con tal de acortar. El campo "Perfil" final NUNCA se omite ni se acorta a una sola línea: siempre es un párrafo completo de 3 a 5 líneas.
+Si un campo del formato elegido (distinto de "Perfil") no se menciona con claridad en el audio, OMÍTELO POR COMPLETO: no escribas esa línea, y nunca pongas "No especificado" ni nada equivalente.
+No mezcles campos de ambos formatos ni agregues campos que no estén en el formato elegido.
+No inventes información que el candidato no haya dicho.
+
+🎯 OBJETIVO:
+Convertir audios de candidatos en el perfil correcto (con o sin experiencia) listo para reclutamiento y selección en brokers, con el nivel de detalle y redacción profesional de este ejemplo de estilo (los datos de este ejemplo son ficticios, solo copia el TONO y el nivel de detalle, no la estructura de campos que use):
+
+Nombre: Patricia Lopera
+Edad: 43 años
+Nacionalidad: Colombiana
+Ciudad: Medellín
+
+Tráfico trabajado:
+* Colombia
+* Ecuador
+* Brasil
+
+Empresas:
+* Asisurilla
+* Experiencia en diversos call centers y empresas comerciales
+
+País de trabajo:
+Colombia
+
+Perfil:
+Profesional con amplia experiencia comercial en ventas de propiedad raíz y atención en call centers. Se destaca por su orientación a resultados, facilidad para relacionarse con clientes, actitud positiva y disposición para aprender. Cuenta con experiencia trabajando con clientes colombianos, ecuatorianos y brasileños y mantiene un constante interés por fortalecer sus conocimientos e idiomas.`;
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Método no permitido" });
     return;
   }
 
-  try {
-    const { messages } = req.body;
+  const encontrada = obtenerLlaveGemini();
+  if (!encontrada) {
+    res.status(500).json({
+      error:
+        "No hay ninguna llave de Gemini configurada en Vercel. Ve a Vercel → tu proyecto → Settings → Environment Variables y agrega una variable llamada GEMINI_API_KEY con tu llave de Google AI Studio (aistudio.google.com/apikey), luego vuelve a desplegar.",
+    });
+    return;
+  }
+  const { llave } = encontrada;
 
-    const contents = messages.map((m) => ({
+  try {
+    const { messages, audio } = req.body || {};
+    if (!Array.isArray(messages)) {
+      res.status(400).json({ error: "Falta el historial de mensajes en la solicitud." });
+      return;
+    }
+
+    const historialReciente = messages.slice(-8); // menos historial = respuesta más rápida
+    const contents = historialReciente.map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.content }],
     }));
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    // Modo audio: se le agrega el audio (en base64) como parte del último mensaje del usuario,
+    // junto con el prompt fijo de extracción de perfil — Gemini transcribe y extrae en una sola
+    // llamada, sin necesidad de un paso separado de "speech-to-text".
+    let systemPrompt = PROMPT_SISTEMA_CHAT;
+    if (audio && audio.data) {
+      systemPrompt = PROMPT_EXTRACCION_AUDIO;
+      const ultimo = contents[contents.length - 1];
+      const parteAudio = { inline_data: { mime_type: audio.mimeType || "audio/ogg", data: audio.data } };
+      if (ultimo && ultimo.role === "user") {
+        ultimo.parts.push(parteAudio);
+      } else {
+        contents.push({ role: "user", parts: [parteAudio] });
+      }
+    }
+
+    const respuestaGemini = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODELO}:generateContent?key=${llave}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          system_instruction: {
-            parts: [{ text: "Eres Cúpula AI, la asistente virtual interna de La Cúpula (NYC 420 Style), una plataforma de gestión para un equipo de ventas de un líder y cinco agentes. Ayudas con dudas de reclutamiento, ventas, redacción de mensajes, organización de tareas y preguntas generales. Sé breve, directa y con un tono profesional pero cercano, en español." }],
-          },
+          system_instruction: { parts: [{ text: systemPrompt }] },
           contents,
         }),
       }
     );
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await respuestaGemini.json();
+    } catch {
+      res.status(502).json({
+        error: `Gemini respondió con un formato inesperado (código HTTP ${respuestaGemini.status}). Intenta de nuevo en unos segundos.`,
+      });
+      return;
+    }
 
-    if (data.error) {
-      res.status(500).json({ error: data.error.message || "Error de la API de Gemini" });
+    if (!respuestaGemini.ok || data.error) {
+      const mensaje = data?.error?.message || `Error HTTP ${respuestaGemini.status} al llamar a Gemini.`;
+      res.status(502).json({ error: mensaje });
       return;
     }
 
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "(sin respuesta)";
     res.status(200).json({ text });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: `Error interno del servidor: ${String(err && err.message ? err.message : err)}` });
   }
 }
