@@ -4811,24 +4811,39 @@ function NoHagaSinoJogarView({ user, onVolver }) {
 // se descompone esa velocidad en componente frontal y lateral con producto punto, y se le aplica
 // fricción fuerte a la lateral (agarre/grip); si la lateral se dispara al girar fuerte, el auto
 // entra en derrape temporal antes de volver a alinearse. Fuera de pista la fricción sube mucho y
-// la velocidad tope baja un 60%.
+// la velocidad tope baja un 60%. Colisiones auto-auto: RESOLUCIÓN ELÁSTICA (ver
+// resolverColisionesGP) — se separan las hitboxes al toque y se intercambia velocidad a lo largo
+// del vector de choque con un coeficiente de restitución, en vez de solo frenarlos y dejarlos
+// empujándose sin rebotar (eso es lo que los "pegaba"). Un golpe fuerte además tira al auto
+// golpeado a un derrape forzado, simulando perder el control un instante.
 //
 // Detección de pista: en vez de un mapa de píxeles (getImageData) sobre dos imágenes separadas —
 // que depende de subir 2 archivos grandes más, y ya nos costó bastante que las imágenes lleguen
-// bien a GitHub — se usa el equivalente vectorial: el circuito es una curva cerrada de puntos
-// (GP_CENTERLINE) y cada auto mide su distancia al punto más cercano de esa curva cada cuadro; si
-// se pasa de la mitad del ancho de pista, está fuera. Es matemáticamente el mismo resultado
-// (fricción sube, tope baja un 60%) pero no depende de ningún PNG — funciona ya mismo, y si más
-// adelante se sube una imagen de pista real (GP_ASSET_MANIFEST.pistaVisual) se dibuja encima sin
-// tocar la física. El circuito en sí es un óvalo con dos rectas y dos curvas de 180° — simple a
-// propósito para que nunca se cruce a sí mismo (una pista que se cruza rompe la detección).
+// bien a GitHub — se usa el equivalente vectorial: cada circuito es una curva cerrada de puntos
+// (pista.centerline) y cada auto mide su distancia al punto más cercano de esa curva cada cuadro;
+// si se pasa de la mitad del ancho de pista, está fuera. Es matemáticamente el mismo resultado
+// (fricción sube, tope baja un 60%) pero no depende de ningún PNG.
+//
+// 8 circuitos (GP_PISTAS): en vez de dibujar 8 mapas gigantes a mano o depender de más imágenes,
+// se generan matemáticamente con dos técnicas, ambas garantizadas para nunca autointersecarse
+// (una pista que se cruza rompe toda la detección de fuera-de-pista y el conteo de vueltas):
+//  · Rectangular (construirCircuitoRectangular): dos rectas + dos semicírculos de 180°, como el
+//    óvalo original — da rectas de verdad y curvas de 180° cerradas (ideal para horquillas).
+//  · Spline Catmull-Rom sobre puntos de control en coordenadas polares, siempre con el mismo
+//    ángulo creciente alrededor de un centro (construirControlesPolaresGP + construirPistaSplineGP)
+//    — al ser "estrella-convexa" (un solo radio por ángulo, sin achatar en x/y) queda matemáticamente
+//    garantizado que la curva nunca se cruza a sí misma, sin importar qué tan ondulada sea — así
+//    se pueden generar curvas, eses y sectores más técnicos con total seguridad.
+// Las 8 pistas están escaladas para ~30s de vuelta a la velocidad tope actual.
 //
 // IA: 15 bots (+ 1 jugador = 16, exactos para la grilla 4x4 del spritesheet de autos) siguen la
 // curva del circuito con waypoints (mirando un punto un poco más adelante en la curva con
-// Math.atan2), frenan antes de curvas cerradas, tienen variación aleatoria de velocidad/agarre y
-// un offset lateral propio (su "línea de carrera") para no ir todos en fila india, más un
-// rubber-banding leve según qué tan lejos están del jugador. Chocan entre sí y con el jugador
-// (colisión de círculos simple, se empujan y transfieren algo de velocidad).
+// Math.atan2), frenan antes de curvas cerradas y aceleran a fondo ("boost") en rectas, tienen
+// variación aleatoria de velocidad/agarre (con tope igual o por encima del jugador) y un offset
+// lateral propio (su "línea de carrera") para no ir todos en fila india, más rubber-banding leve
+// y 3 sensores tipo raycast (frente + 2 diagonales, ver sensorGP/entradaBotGP) para detectar autos
+// cerca y esquivar/adelantar en vez de solo seguir la línea ciega a la pista. Chocan entre sí y con
+// el jugador con física elástica real (ver arriba).
 
 const GP_TRACK_ANCHO = 170;
 const GP_TRACK_MITAD = GP_TRACK_ANCHO / 2;
@@ -4837,19 +4852,24 @@ const GP_AUTO_LARGO = 34;
 const GP_AUTO_ANCHO = 18;
 const GP_RADIO_COLISION = 15;
 const GP_VUELTAS_OPCIONES = [3, 5, 10, 20];
-const GP_VEL_MAX_BASE = 260; // px/s de mundo, a plena pista
-const GP_FUERZA_MOTOR = 210;
-const GP_FUERZA_FRENO = 320;
-const GP_RESISTENCIA = 0.35; // resistencia al rodar (rolling resistance), siempre activa
-const GP_GIRO_MAX = 2.6; // rad/s de referencia a velocidad de crucero
-const GP_UMBRAL_DERRAPE = 70; // velocidad lateral (px/s) a partir de la cual se considera derrape
-const GP_DERRAPE_MS = 320; // cuánto se mantiene el estado de derrape una vez disparado
-const GP_CAMARA_LOOKAHEAD = 90;
+const GP_VEL_MAX_BASE = 420; // px/s de mundo, a plena pista — velocidad extrema, sensación de carrera rápida
+const GP_FUERZA_MOTOR = 340;
+const GP_FUERZA_FRENO = 420;
+const GP_RESISTENCIA = 0.3; // resistencia al rodar (rolling resistance), siempre activa
+const GP_GIRO_MAX = 2.8; // rad/s de referencia a velocidad de crucero
+const GP_UMBRAL_DERRAPE = 110; // velocidad lateral (px/s) a partir de la cual se considera derrape
+const GP_DERRAPE_MS = 380; // cuánto se mantiene el estado de derrape una vez disparado
+const GP_CAMARA_LOOKAHEAD = 130;
 const GP_CAMARA_SUAVIDAD = 0.00002; // más chico = cámara más "pegada"; se usa como base de un lerp exponencial independiente del framerate
+const GP_RESTITUCION = 0.78; // "bounciness" de los choques auto-auto (0 = se pegan, 1 = rebote elástico total)
+const GP_EMPUJE_MINIMO = 55; // separación garantizada (px/s) al chocar, aunque ambos autos lleven la misma velocidad
+const GP_GOLPE_DERRAPE_UMBRAL = 95; // velocidad relativa lateral de impacto a partir de la cual el golpe fuerza un derrape
+const GP_RAYCAST_DIST = 130; // alcance de las 3 "antenas" de los bots
+const GP_RAYCAST_ANGULO = 0.5; // rad de apertura de las antenas diagonales respecto al frente
+const GP_BOOST_RECTA = 1.32; // multiplicador de fuerza de motor de los bots en recta despejada
 
-// Circuito: óvalo simple (dos rectas + dos semicírculos de 180°) — no se autointersecta nunca.
-function construirCircuitoGP() {
-  const recta = 900, radio = 260;
+// Circuito rectangular: dos rectas + dos semicírculos de 180° — nunca se autointersecta.
+function construirCircuitoRectangular(recta, radio) {
   const nRecta = 44, nCurva = 46;
   const pts = [];
   for (let i = 0; i < nRecta; i++) {
@@ -4870,27 +4890,48 @@ function construirCircuitoGP() {
   }
   return pts;
 }
-const GP_CENTERLINE = construirCircuitoGP();
-const GP_N_PUNTOS = GP_CENTERLINE.length;
-const GP_LONGITUDES = (() => {
-  const arr = [0];
-  for (let i = 1; i <= GP_N_PUNTOS; i++) {
-    const a = GP_CENTERLINE[i - 1];
-    const b = GP_CENTERLINE[i % GP_N_PUNTOS];
-    arr.push(arr[i - 1] + Math.hypot(b.x - a.x, b.y - a.y));
+
+// Spline Catmull-Rom (pasa exactamente por cada punto de control, a diferencia de Bézier) — genera
+// una curva cerrada suave uniendo N puntos de control en secuencia.
+function evaluarCatmullRomGP(p0, p1, p2, p3, t) {
+  const t2 = t * t, t3 = t2 * t;
+  const x = 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3);
+  const y = 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3);
+  return { x, y };
+}
+function construirPistaSplineGP(controlPoints, segmentosPorTramo) {
+  const n = controlPoints.length;
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const p0 = controlPoints[(i - 1 + n) % n], p1 = controlPoints[i], p2 = controlPoints[(i + 1) % n], p3 = controlPoints[(i + 2) % n];
+    for (let s = 0; s < segmentosPorTramo; s++) {
+      pts.push(evaluarCatmullRomGP(p0, p1, p2, p3, s / segmentosPorTramo));
+    }
   }
-  return arr;
-})();
-const GP_LARGO_VUELTA = GP_LONGITUDES[GP_N_PUNTOS];
+  return pts;
+}
+// Puntos de control en coordenadas polares con ángulo SIEMPRE creciente alrededor de un centro
+// (radio = base + dos armónicos senoidales) — matemáticamente "estrella-convexa": un único radio
+// por ángulo, así la curva jamás puede cruzarse a sí misma sin importar qué tan ondulada quede.
+function construirControlesPolaresGP(nCtrl, base, a1, k1, fase1, a2, k2, fase2) {
+  const pts = [];
+  for (let i = 0; i < nCtrl; i++) {
+    const ang = (Math.PI * 2 * i) / nCtrl;
+    const r = base + a1 * Math.sin(k1 * ang + fase1) + a2 * Math.sin(k2 * ang + fase2);
+    pts.push({ x: r * Math.cos(ang), y: r * Math.sin(ang) });
+  }
+  return pts;
+}
 
 // Índice del punto de la curva más cercano a (x,y), buscando en una ventana alrededor del último
-// índice conocido (mucho más barato que recorrer los ~180 puntos enteros cada cuadro, para 16 autos).
-function indiceCercanoGP(x, y, idxAprox) {
-  const N = GP_N_PUNTOS;
+// índice conocido (mucho más barato que recorrer los ~200-300 puntos enteros cada cuadro, para 16
+// autos). "pista" es el circuito activo de esta carrera (uno de GP_PISTAS).
+function indiceCercanoGP(pista, x, y, idxAprox) {
+  const N = pista.nPuntos;
   let mejorIdx = idxAprox, mejorD = Infinity;
   for (let d = -18; d <= 18; d++) {
     const i = ((idxAprox + d) % N + N) % N;
-    const p = GP_CENTERLINE[i];
+    const p = pista.centerline[i];
     const dx = p.x - x, dy = p.y - y;
     const dist = dx * dx + dy * dy;
     if (dist < mejorD) { mejorD = dist; mejorIdx = i; }
@@ -4899,10 +4940,10 @@ function indiceCercanoGP(x, y, idxAprox) {
 }
 
 // Vector perpendicular a la curva en un punto (para offsets de línea de carrera de los bots).
-function lateralEnGP(idx) {
-  const N = GP_N_PUNTOS;
-  const a = GP_CENTERLINE[(idx - 1 + N) % N];
-  const b = GP_CENTERLINE[(idx + 1) % N];
+function lateralEnGP(pista, idx) {
+  const N = pista.nPuntos;
+  const a = pista.centerline[(idx - 1 + N) % N];
+  const b = pista.centerline[(idx + 1) % N];
   const dx = b.x - a.x, dy = b.y - a.y;
   const len = Math.hypot(dx, dy) || 1;
   return { x: -dy / len, y: dx / len };
@@ -4914,14 +4955,14 @@ function lateralEnGP(idx) {
 // elemento sale de su índice, así siempre queda igual entre partidas (nada parpadea ni se reubica
 // solo). Inspirado en las convenciones visuales típicas de juegos de carreras top-down (asfalto
 // gris con pianito rojo/blanco, pasto con franjas de corte, gradas y banderas de colores).
-function construirDecoracionesGP() {
+function construirDecoracionesGP(pista) {
   const decos = [];
-  const paso = 7; // cada cuántos puntos de la curva (de ~180) va un elemento
-  for (let i = 0; i < GP_N_PUNTOS; i += paso) {
-    const p = GP_CENTERLINE[i];
-    const lat = lateralEnGP(i);
+  const paso = 7; // cada cuántos puntos de la curva va un elemento
+  for (let i = 0; i < pista.nPuntos; i += paso) {
+    const p = pista.centerline[i];
+    const lat = lateralEnGP(pista, i);
     const cicloTipo = Math.floor(i / paso) % 5;
-    // Rectas (donde y = ±radio aprox.) llevan más gradas; curvas llevan más neumáticos/árboles.
+    // Rectas llevan más gradas; curvas llevan más neumáticos/árboles.
     let tipo;
     if (cicloTipo === 0) tipo = "grada";
     else if (cicloTipo === 1 || cicloTipo === 3) tipo = "arbol";
@@ -4939,7 +4980,6 @@ function construirDecoracionesGP() {
   }
   return decos;
 }
-const GP_DECORACIONES = construirDecoracionesGP();
 
 function dibujarArbolGP(ctx, x, y) {
   ctx.save();
@@ -5023,12 +5063,13 @@ function dibujarDecoracionGP(ctx, deco, idx) {
 // Curbs tipo "pianito": bloques cortos alternados rojo/blanco pegados a cada borde de la pista,
 // orientados con la tangente de la curva en ese punto — más parecido a un circuito real que una
 // simple línea punteada.
-function dibujarCurbsGP(ctx) {
+function dibujarCurbsGP(ctx, pista) {
   const pasoCurb = 2;
-  for (let i = 0; i < GP_N_PUNTOS; i += pasoCurb) {
-    const p = GP_CENTERLINE[i];
-    const lat = lateralEnGP(i);
-    const tangRot = Math.atan2(GP_CENTERLINE[(i + 1) % GP_N_PUNTOS].y - p.y, GP_CENTERLINE[(i + 1) % GP_N_PUNTOS].x - p.x);
+  for (let i = 0; i < pista.nPuntos; i += pasoCurb) {
+    const p = pista.centerline[i];
+    const lat = lateralEnGP(pista, i);
+    const sig = pista.centerline[(i + 1) % pista.nPuntos];
+    const tangRot = Math.atan2(sig.y - p.y, sig.x - p.x);
     const color = Math.floor(i / pasoCurb) % 2 === 0 ? "#E23B3B" : "#EDEDED";
     ctx.fillStyle = color;
     [1, -1].forEach((lado) => {
@@ -5057,14 +5098,50 @@ function obtenerPatronPastoGP(ctx) {
   return GP_PATRON_PASTO_CACHE;
 }
 
-function crearAutoGP({ esBot, skinIndex, idxInicial }) {
-  const p = GP_CENTERLINE[idxInicial];
-  const lat = lateralEnGP(idxInicial);
+// Arma el objeto completo de un circuito a partir de su curva de puntos ya generada: longitud
+// acumulada punto a punto (para medir progreso/posiciones), largo total de vuelta y la
+// ambientación (gradas/árboles/neumáticos/banderas) calculada una sola vez.
+function construirPistaGP(id, nombre, centerline) {
+  const nPuntos = centerline.length;
+  const longitudes = [0];
+  for (let i = 1; i <= nPuntos; i++) {
+    const a = centerline[i - 1];
+    const b = centerline[i % nPuntos];
+    longitudes.push(longitudes[i - 1] + Math.hypot(b.x - a.x, b.y - a.y));
+  }
+  const pista = { id, nombre, centerline, nPuntos, longitudes, largoVuelta: longitudes[nPuntos] };
+  pista.decoraciones = construirDecoracionesGP(pista);
+  return pista;
+}
+
+// 8 circuitos épicos: 4 rectangulares (rectas reales + curvas de 180°, buenos para horquillas y
+// rectas largas) y 4 generados con spline Catmull-Rom sobre puntos de control polares (curvas más
+// orgánicas, eses y sectores técnicos) — todos escalados para ~30s de vuelta a GP_VEL_MAX_BASE.
+const GP_PISTAS = [
+  construirPistaGP("ovalo", "Óvalo Clásico", construirCircuitoRectangular(2477, 716)),
+  construirPistaGP("autodromo", "Autódromo Norte", construirCircuitoRectangular(3172, 595)),
+  construirPistaGP("estadio", "Estadio Doble", construirCircuitoRectangular(587, 1017)),
+  construirPistaGP("granrecta", "Gran Recta Cúpula", construirCircuitoRectangular(4063, 271)),
+  construirPistaGP("serpiente", "Circuito Serpiente", construirPistaSplineGP(
+    construirControlesPolaresGP(20, 1248, 225, 3, 0.3, 75, 7, 1.1), 14
+  )),
+  construirPistaGP("herradura", "Herradura Brava", construirPistaSplineGP(
+    construirControlesPolaresGP(16, 1009, 283, 2, 0.0, 71, 5, 0.6), 14
+  )),
+  construirPistaGP("zigzag", "Zigzag Costero", construirPistaSplineGP(
+    construirControlesPolaresGP(24, 983, 138, 4, 0.5, 98, 9, 0.2), 14
+  )),
+  construirPistaGP("volcan", "Anillo Volcán", construirPistaSplineGP(
+    construirControlesPolaresGP(14, 1436, 144, 1, 0.0, 57, 3, 0.4), 14
+  )),
+];
+
+function crearAutoGP({ esBot, skinIndex, idxInicial }, pista) {
+  const p = pista.centerline[idxInicial];
+  const lat = lateralEnGP(pista, idxInicial);
   const offsetSalida = esBot ? (Math.random() * 2 - 1) * GP_TRACK_MITAD * 0.5 : 0;
-  const anguloInicial = Math.atan2(
-    GP_CENTERLINE[(idxInicial + 1) % GP_N_PUNTOS].y - p.y,
-    GP_CENTERLINE[(idxInicial + 1) % GP_N_PUNTOS].x - p.x
-  );
+  const sig = pista.centerline[(idxInicial + 1) % pista.nPuntos];
+  const anguloInicial = Math.atan2(sig.y - p.y, sig.x - p.x);
   return {
     esBot, skinIndex,
     x: p.x + lat.x * offsetSalida, y: p.y + lat.y * offsetSalida,
@@ -5072,40 +5149,89 @@ function crearAutoGP({ esBot, skinIndex, idxInicial }) {
     idxCercano: idxInicial, offRoad: false,
     enDerrape: false, derrapeHasta: 0,
     vueltas: -1, ultimaVueltaMs: 0, // -1 porque cruzar la salida al arrancar no debe contar
-    velMaxBase: GP_VEL_MAX_BASE * (esBot ? 0.9 + Math.random() * 0.16 : 1),
+    // Los bots corren igual o levemente más rápido que el jugador (0.98x-1.12x) — bots "entrenados",
+    // no relleno lento; el rubber-banding en entradaBotGP se encarga de que no se escapen solos.
+    velMaxBase: GP_VEL_MAX_BASE * (esBot ? 0.98 + Math.random() * 0.14 : 1),
     offsetLinea: esBot ? (Math.random() * 2 - 1) * GP_TRACK_MITAD * 0.55 : 0,
     faseOffset: Math.random() * Math.PI * 2,
     lookahead: 9 + Math.floor(Math.random() * 6),
   };
 }
 
-function progresoGP(auto) {
-  return Math.max(0, auto.vueltas) * GP_LARGO_VUELTA + GP_LONGITUDES[auto.idxCercano];
+function progresoGP(auto, pista) {
+  return Math.max(0, auto.vueltas) * pista.largoVuelta + pista.longitudes[auto.idxCercano];
+}
+
+// Sensor tipo raycast: ¿hay otro auto dentro de "distMax" a lo largo del rayo que sale de "auto" en
+// dirección heading+anguloOffset? Se proyecta la posición relativa de cada otro auto sobre esa
+// dirección (distancia hacia adelante) y sobre la perpendicular (qué tan centrado está en el "haz"
+// del sensor, ancho fijo ~2x el radio de colisión). Devuelve el más cercano detectado o null — son
+// las "3 antenas" (frente + 2 diagonales) que le dan a los bots ojos para esquivar/adelantar en vez
+// de solo seguir la línea de la pista a ciegas.
+function sensorGP(auto, anguloOffset, autos, distMax) {
+  const ang = auto.heading + anguloOffset;
+  const dirX = Math.cos(ang), dirY = Math.sin(ang);
+  let masCercano = null, distMasCercana = Infinity;
+  for (const otro of autos) {
+    if (otro === auto) continue;
+    const dx = otro.x - auto.x, dy = otro.y - auto.y;
+    const adelante = dx * dirX + dy * dirY;
+    if (adelante <= 0 || adelante > distMax) continue;
+    const lateral = Math.abs(-dy * dirX + dx * dirY);
+    if (lateral > GP_RADIO_COLISION * 2.4) continue;
+    if (adelante < distMasCercana) { distMasCercana = adelante; masCercano = otro; }
+  }
+  return masCercano;
 }
 
 // Le arma la entrada (acelerar/frenar/girar) a un bot mirando un punto más adelante en la curva,
-// con su propio offset lateral (línea de carrera) para no ir todos pegados al centro.
-function entradaBotGP(bot, autos) {
-  const objIdx = (bot.idxCercano + bot.lookahead) % GP_N_PUNTOS;
-  const lat = lateralEnGP(objIdx);
+// con su propio offset lateral (línea de carrera) para no ir todos pegados al centro, más:
+//  · 3 sensores raycast (frente + 2 diagonales) para detectar autos cerca y esquivar/adelantar.
+//  · Boost al 100% en recta despejada (curvatura baja y nada detectado adelante).
+//  · Rubber-banding: si va bastante atrás del líder, un empujón extra de fuerza.
+function entradaBotGP(bot, autos, pista) {
+  const objIdx = (bot.idxCercano + bot.lookahead) % pista.nPuntos;
+  const lat = lateralEnGP(pista, objIdx);
   const offsetVivo = bot.offsetLinea * (0.7 + 0.3 * Math.sin(Date.now() / 1400 + bot.faseOffset));
-  const obj = { x: GP_CENTERLINE[objIdx].x + lat.x * offsetVivo, y: GP_CENTERLINE[objIdx].y + lat.y * offsetVivo };
+  const obj = { x: pista.centerline[objIdx].x + lat.x * offsetVivo, y: pista.centerline[objIdx].y + lat.y * offsetVivo };
   let diff = Math.atan2(obj.y - bot.y, obj.x - bot.x) - bot.heading;
   while (diff > Math.PI) diff -= Math.PI * 2;
   while (diff < -Math.PI) diff += Math.PI * 2;
-  const dir = Math.max(-1, Math.min(1, diff * 2.4));
+  let dir = Math.max(-1, Math.min(1, diff * 2.4));
 
   // Curvatura más adelante, para frenar antes de curvas cerradas.
-  const objLejosIdx = (bot.idxCercano + bot.lookahead * 3) % GP_N_PUNTOS;
+  const objLejosIdx = (bot.idxCercano + bot.lookahead * 3) % pista.nPuntos;
   const anguloAhora = Math.atan2(obj.y - bot.y, obj.x - bot.x);
-  const objLejos = GP_CENTERLINE[objLejosIdx];
+  const objLejos = pista.centerline[objLejosIdx];
   let diffCurva = Math.atan2(objLejos.y - bot.y, objLejos.x - bot.x) - anguloAhora;
   while (diffCurva > Math.PI) diffCurva -= Math.PI * 2;
   while (diffCurva < -Math.PI) diffCurva += Math.PI * 2;
   const curvatura = Math.abs(diffCurva);
   const velActual = Math.hypot(bot.vx, bot.vy);
-  const freno = curvatura > 0.85 && velActual > bot.velMaxBase * 0.55;
-  return { accel: !freno, freno, dir };
+  let freno = curvatura > 0.85 && velActual > bot.velMaxBase * 0.55;
+
+  // Sensores: si hay algo justo al frente, esquivar hacia el lado que las antenas diagonales ven
+  // despejado (adelantar) — si ambos lados también están bloqueados, frenar un poco en vez de
+  // empujar contra el tráfico.
+  const frente = sensorGP(bot, 0, autos, GP_RAYCAST_DIST);
+  if (frente) {
+    const libreIzq = !sensorGP(bot, -GP_RAYCAST_ANGULO, autos, GP_RAYCAST_DIST * 0.8);
+    const libreDer = !sensorGP(bot, GP_RAYCAST_ANGULO, autos, GP_RAYCAST_DIST * 0.8);
+    if (libreIzq && (!libreDer || bot.offsetLinea <= 0)) dir = Math.max(-1, dir - 0.7);
+    else if (libreDer) dir = Math.min(1, dir + 0.7);
+    else freno = true;
+  }
+
+  // Boost: recta despejada (poca curvatura adelante y nada detectado por el sensor frontal).
+  const boost = !freno && !frente && curvatura < 0.18;
+
+  // Rubber-banding leve: si va bastante atrás de la punta, un empujón de fuerza para no perder la
+  // carrera por completo (los líderes no reciben ayuda extra).
+  const punta = Math.max(...autos.map((a) => progresoGP(a, pista)));
+  const atras = punta - progresoGP(bot, pista);
+  const rubberBand = atras > pista.largoVuelta * 0.12;
+
+  return { accel: !freno, freno, dir, boost: boost || rubberBand };
 }
 
 // Rebufo: si hay otro auto justo adelante (dentro de ~90 unidades, casi alineado con el heading),
@@ -5135,10 +5261,12 @@ function actualizarFisicaAutoGP(auto, dt, entrada, rebufo) {
   const ahora = Date.now();
   if (Math.abs(vLateral) > GP_UMBRAL_DERRAPE) auto.derrapeHasta = ahora + GP_DERRAPE_MS;
   auto.enDerrape = ahora < auto.derrapeHasta;
-  const amortLateral = auto.enDerrape ? amortLateralBase * 0.32 : amortLateralBase;
+  // Durante el derrape el agarre lateral baja mucho más que antes — el auto resbala de verdad hacia
+  // afuera de la curva en vez de solo "sentirse" un poco suelto.
+  const amortLateral = auto.enDerrape ? amortLateralBase * 0.2 : amortLateralBase;
 
   let fuerza = 0;
-  if (entrada.accel) fuerza += GP_FUERZA_MOTOR * (rebufo ? 1.15 : 1);
+  if (entrada.accel) fuerza += GP_FUERZA_MOTOR * (rebufo ? 1.15 : 1) * (entrada.boost ? GP_BOOST_RECTA : 1);
   if (entrada.freno) fuerza -= GP_FUERZA_FRENO;
 
   let nuevoVAdelante = vAdelante + fuerza * dt;
@@ -5161,46 +5289,82 @@ function actualizarFisicaAutoGP(auto, dt, entrada, rebufo) {
   auto.y += auto.vy * dt;
 }
 
+// Colisión elástica real (anti-"pegado"): se separan las hitboxes al toque (posición) y se
+// intercambia velocidad a lo largo del vector normal del choque con un coeficiente de restitución
+// (masas iguales para los 16 autos) — a diferencia de solo frenarlos y mezclar velocidades sin
+// rebote, esto SIEMPRE produce una velocidad de separación real a lo largo del normal, así que dos
+// autos no pueden quedar empujándose en bucle infinito. Además hay un empuje mínimo garantizado
+// (GP_EMPUJE_MINIMO) para el caso límite de dos autos yendo en paralelo a la misma velocidad, donde
+// la velocidad relativa de acercamiento es casi cero y aun así hay que separarlos de verdad. Un
+// golpe fuerte (velocidad relativa alta) además tira a ambos autos a un derrape forzado con un
+// pequeño giro brusco — "salen proyectados" en vez de solo detenerse.
 function resolverColisionesGP(autos) {
+  const minDist = GP_RADIO_COLISION * 2;
   for (let i = 0; i < autos.length; i++) {
     for (let j = i + 1; j < autos.length; j++) {
       const a = autos[i], b = autos[j];
       const dx = b.x - a.x, dy = b.y - a.y;
       const dist = Math.hypot(dx, dy);
-      const minDist = GP_RADIO_COLISION * 2;
       if (dist > 0.001 && dist < minDist) {
-        const nx = dx / dist, ny = dy / dist;
-        const solape = (minDist - dist) / 2;
+        const nx = dx / dist, ny = dy / dist; // normal de a hacia b
+        const tx = -ny, ty = nx; // tangente (perpendicular al normal)
+
+        // 1) Separación posicional inmediata — nunca deja overlap residual.
+        const solape = (minDist - dist) / 2 + 0.5;
         a.x -= nx * solape; a.y -= ny * solape;
         b.x += nx * solape; b.y += ny * solape;
-        const impulso = 0.45;
-        const avx = a.vx, avy = a.vy;
-        a.vx = a.vx * (1 - impulso) + b.vx * impulso * 0.6;
-        a.vy = a.vy * (1 - impulso) + b.vy * impulso * 0.6;
-        b.vx = b.vx * (1 - impulso) + avx * impulso * 0.6;
-        b.vy = b.vy * (1 - impulso) + avy * impulso * 0.6;
+
+        // 2) Intercambio elástico de velocidad a lo largo del normal (masas iguales).
+        const vnA = a.vx * nx + a.vy * ny, vnB = b.vx * nx + b.vy * ny;
+        const vtA = a.vx * tx + a.vy * ty, vtB = b.vx * tx + b.vy * ty;
+        const relVn = vnA - vnB; // >0 = se están acercando a lo largo del normal
+        let vnA2 = vnA, vnB2 = vnB;
+        if (relVn > 0) {
+          const impulso = ((1 + GP_RESTITUCION) / 2) * relVn;
+          vnA2 = vnA - impulso;
+          vnB2 = vnB + impulso;
+        }
+        // Empuje mínimo garantizado, aunque no se estén acercando (autos yendo en paralelo a la
+        // misma velocidad) — sin esto, ese caso puntual no genera ninguna velocidad de separación.
+        vnA2 -= GP_EMPUJE_MINIMO / 2;
+        vnB2 += GP_EMPUJE_MINIMO / 2;
+
+        a.vx = vnA2 * nx + vtA * tx; a.vy = vnA2 * ny + vtA * ty;
+        b.vx = vnB2 * nx + vtB * tx; b.vy = vnB2 * ny + vtB * ty;
+
+        // 3) Golpe fuerte → derrape forzado + pequeño giro brusco en ambos, simulando perder el
+        // control un instante (choque real de carreras, no solo un frenón).
+        const relSpeed = Math.hypot(a.vx - b.vx, a.vy - b.vy);
+        if (relVn > GP_GOLPE_DERRAPE_UMBRAL || relSpeed > GP_GOLPE_DERRAPE_UMBRAL) {
+          const ahora = Date.now();
+          a.derrapeHasta = ahora + GP_DERRAPE_MS; a.enDerrape = true;
+          b.derrapeHasta = ahora + GP_DERRAPE_MS; b.enDerrape = true;
+          const giro = 0.18 + Math.random() * 0.16;
+          a.heading -= giro; b.heading += giro;
+        }
       }
     }
   }
 }
 
-function crearEstadoGP(skinJugador, totalVueltas) {
+function crearEstadoGP(skinJugador, totalVueltas, pistaId) {
+  const pista = GP_PISTAS.find((p) => p.id === pistaId) || GP_PISTAS[0];
   const autos = [];
   // Grilla de largada: todos arrancan un poco antes del índice 0 (la línea de meta), en filas
   // escalonadas para no aparecer superpuestos.
-  const idxSalida = GP_N_PUNTOS - 6;
+  const idxSalida = pista.nPuntos - 6;
   const orden = [{ esBot: false, skinIndex: skinJugador }];
   const skinsBots = [];
   for (let i = 0; i < GP_NUM_BOTS; i++) skinsBots.push((skinJugador + 1 + i) % 16);
   for (const s of skinsBots) orden.push({ esBot: true, skinIndex: s });
   orden.forEach((o, i) => {
-    const idx = (idxSalida - Math.floor(i / 2) * 3 + GP_N_PUNTOS) % GP_N_PUNTOS;
-    const auto = crearAutoGP({ esBot: o.esBot, skinIndex: o.skinIndex, idxInicial: idx });
+    const idx = (idxSalida - Math.floor(i / 2) * 3 + pista.nPuntos) % pista.nPuntos;
+    const auto = crearAutoGP({ esBot: o.esBot, skinIndex: o.skinIndex, idxInicial: idx }, pista);
     if (o.esBot) auto.offsetLinea = (i % 2 === 0 ? 1 : -1) * GP_TRACK_MITAD * 0.4;
     autos.push(auto);
   });
   return {
-    autos, jugador: autos[0], totalVueltas,
+    pista, autos, jugador: autos[0], totalVueltas,
     inicioMs: Date.now(), terminado: false, posicionFinalJugador: 0,
     marcasDerrape: [], particulas: [], camara: { x: autos[0].x, y: autos[0].y },
     cuentaRegresiva: 3.2,
@@ -5212,33 +5376,39 @@ function actualizarGP(st, dt, entrada) {
     st.cuentaRegresiva -= dt;
     return;
   }
+  const pista = st.pista;
   for (const auto of st.autos) {
-    const cercano = indiceCercanoGP(auto.x, auto.y, auto.idxCercano);
+    const cercano = indiceCercanoGP(pista, auto.x, auto.y, auto.idxCercano);
     const idxPrevio = auto.idxCercano;
     auto.idxCercano = cercano.idx;
     auto.offRoad = cercano.dist > GP_TRACK_MITAD;
 
     // Vuelta: el índice más cercano pasa de estar cerca del final (N-1) a cerca del arranque (0).
-    if (idxPrevio > GP_N_PUNTOS * 0.75 && auto.idxCercano < GP_N_PUNTOS * 0.25) {
+    if (idxPrevio > pista.nPuntos * 0.75 && auto.idxCercano < pista.nPuntos * 0.25) {
       auto.vueltas += 1;
       auto.ultimaVueltaMs = Date.now();
       if (!auto.esBot && auto.vueltas >= st.totalVueltas && !st.terminado) {
         st.terminado = true;
-        const ordenados = [...st.autos].sort((a, b) => progresoGP(b) - progresoGP(a));
+        const ordenados = [...st.autos].sort((a, b) => progresoGP(b, pista) - progresoGP(a, pista));
         st.posicionFinalJugador = ordenados.indexOf(st.jugador) + 1;
       }
     }
 
-    const entradaAuto = auto.esBot ? entradaBotGP(auto, st.autos) : entrada;
+    const entradaAuto = auto.esBot ? entradaBotGP(auto, st.autos, pista) : entrada;
     const rebufo = hayRebufoGP(auto, st.autos);
     actualizarFisicaAutoGP(auto, dt, entradaAuto, rebufo);
 
-    if (auto.enDerrape && Math.random() < 0.6) {
+    // Marcas de derrape continuas (sin sorteo) mientras dure el estado — un derrape de verdad deja
+    // un rastro negro parejo en el asfalto, no puntitos intermitentes.
+    if (auto.enDerrape) {
       st.marcasDerrape.push({ x: auto.x, y: auto.y, vida: 2.2, vidaMax: 2.2 });
     }
   }
   resolverColisionesGP(st.autos);
   st.marcasDerrape = st.marcasDerrape.filter((m) => (m.vida -= dt) > 0);
+  // Tope defensivo de rendimiento: con hasta 16 autos derrapando a la vez de forma continua el
+  // arreglo podría crecer mucho — se descartan las marcas más viejas primero.
+  if (st.marcasDerrape.length > 500) st.marcasDerrape.splice(0, st.marcasDerrape.length - 500);
 
   // Cámara: sigue al jugador con un adelanto en la dirección en que se está moviendo (no
   // necesariamente hacia donde mira el auto — durante un derrape puede ser distinto).
@@ -5305,6 +5475,7 @@ function dibujarAutoGP(ctx, assets, auto, ancho, alto) {
 
 function dibujarGP(ctx, st, assets, dimensiones) {
   const canvas = ctx.canvas;
+  const pista = st.pista;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
   // Cielo/fondo: degradé sutil detrás de todo (en vez de un verde plano), le da profundidad a la
@@ -5328,7 +5499,7 @@ function dibujarGP(ctx, st, assets, dimensiones) {
   ctx.fillRect(st.camara.x - medioAnchoMundo, st.camara.y - medioAltoMundo, medioAnchoMundo * 2, medioAltoMundo * 2);
 
   // Ambientación: gradas, árboles, banderas y pilas de neumáticos alrededor del circuito.
-  GP_DECORACIONES.forEach((deco, idx) => dibujarDecoracionGP(ctx, deco, idx));
+  pista.decoraciones.forEach((deco, idx) => dibujarDecoracionGP(ctx, deco, idx));
 
   const pistaImg = assets.get("pistaVisual");
   if (pistaImg) {
@@ -5340,9 +5511,9 @@ function dibujarGP(ctx, st, assets, dimensiones) {
     ctx.lineCap = "round";
     const trazarCurva = () => {
       ctx.beginPath();
-      ctx.moveTo(GP_CENTERLINE[0].x, GP_CENTERLINE[0].y);
-      for (let i = 1; i <= GP_N_PUNTOS; i++) {
-        const p = GP_CENTERLINE[i % GP_N_PUNTOS];
+      ctx.moveTo(pista.centerline[0].x, pista.centerline[0].y);
+      for (let i = 1; i <= pista.nPuntos; i++) {
+        const p = pista.centerline[i % pista.nPuntos];
         ctx.lineTo(p.x, p.y);
       }
     };
@@ -5360,11 +5531,11 @@ function dibujarGP(ctx, st, assets, dimensiones) {
     trazarCurva(); ctx.stroke();
     ctx.setLineDash([]);
 
-    dibujarCurbsGP(ctx);
+    dibujarCurbsGP(ctx, pista);
 
     // Línea de meta: cuadriculado ancho perpendicular a la pista, más un arco/pórtico simple encima.
-    const p0 = GP_CENTERLINE[0];
-    const lat = lateralEnGP(0);
+    const p0 = pista.centerline[0];
+    const lat = lateralEnGP(pista, 0);
     const filas = 6, altoCasilla = GP_TRACK_ANCHO / filas;
     for (let i = 0; i < filas; i++) {
       ctx.fillStyle = i % 2 === 0 ? "#EDEDED" : "#171922";
@@ -5492,6 +5663,7 @@ function CupulaGPView({ user, onVolver }) {
   const [fase, setFase] = useState("menu"); // menu | jugando | terminado
   const [skinElegida, setSkinElegida] = useState(0);
   const [vueltasElegidas, setVueltasElegidas] = useState(5);
+  const [pistaElegidaId, setPistaElegidaId] = useState(GP_PISTAS[0].id);
   const [hud, setHud] = useState({ vuelta: 0, posicion: 1, velocidad: 0 });
   const [posicionFinal, setPosicionFinal] = useState(0);
 
@@ -5529,10 +5701,10 @@ function CupulaGPView({ user, onVolver }) {
   }, []);
 
   const empezarCarrera = useCallback(() => {
-    estadoRef.current = crearEstadoGP(skinElegida, vueltasElegidas);
+    estadoRef.current = crearEstadoGP(skinElegida, vueltasElegidas, pistaElegidaId);
     setHud({ vuelta: 0, posicion: GP_NUM_BOTS + 1, velocidad: 0 });
     setFase("jugando");
-  }, [skinElegida, vueltasElegidas]);
+  }, [skinElegida, vueltasElegidas, pistaElegidaId]);
 
   useEffect(() => {
     if (fase !== "jugando") return;
@@ -5554,7 +5726,7 @@ function CupulaGPView({ user, onVolver }) {
       actualizarGP(st, dt, { accel: in_.acel, freno: in_.freno, dir: dirTotal });
 
       const vueltaMostrar = Math.max(0, st.jugador.vueltas);
-      const ordenados = [...st.autos].sort((a, b) => progresoGP(b) - progresoGP(a));
+      const ordenados = [...st.autos].sort((a, b) => progresoGP(b, st.pista) - progresoGP(a, st.pista));
       const posicion = ordenados.indexOf(st.jugador) + 1;
       const velocidad = Math.round(Math.hypot(st.jugador.vx, st.jugador.vy));
       if (vueltaMostrar !== vueltaPrev || posicion !== posPrev || Math.abs(velocidad - velPrev) > 2) {
@@ -5593,6 +5765,24 @@ function CupulaGPView({ user, onVolver }) {
               }} />
             ))}
           </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>ELEGÍ LA PISTA</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+            {GP_PISTAS.map((p) => {
+              const activa = pistaElegidaId === p.id;
+              return (
+                <button key={p.id} onClick={() => setPistaElegidaId(p.id)} style={{
+                  padding: "8px 14px", borderRadius: 8, cursor: "pointer", textAlign: "left",
+                  background: activa ? "rgba(47,168,255,0.15)" : "rgba(255,255,255,0.04)",
+                  border: activa ? `2px solid ${COLORS.neonBlue}` : "1px solid rgba(255,255,255,0.12)",
+                  boxShadow: activa ? `0 0 14px ${COLORS.neonBlue}55` : "none",
+                  color: COLORS.white, fontFamily: FONT_MONO,
+                }}>
+                  <div style={{ fontSize: 12, letterSpacing: 0.5 }}>{p.nombre}</div>
+                  <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>{Math.round(p.largoVuelta)}m de vuelta</div>
+                </button>
+              );
+            })}
+          </div>
           <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>VUELTAS</div>
           <div style={{ display: "flex", gap: 10, marginBottom: 22 }}>
             {GP_VUELTAS_OPCIONES.map((v) => (
@@ -5629,6 +5819,7 @@ function CupulaGPView({ user, onVolver }) {
       </div>
 
       <div style={{ position: "absolute", top: 14, left: 14, zIndex: 20, fontFamily: FONT_MONO, color: COLORS.white, background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "8px 14px", border: `1px solid ${COLORS.neonBlue}55` }}>
+        <div style={{ fontSize: 9, letterSpacing: 1, color: COLORS.textMuted, marginBottom: 3 }}>{(estadoRef.current && estadoRef.current.pista.nombre) || ""}</div>
         <div style={{ fontSize: 12, letterSpacing: 1 }}>VUELTA {hud.vuelta}/{vueltasElegidas}</div>
         <div style={{ fontSize: 12, letterSpacing: 1 }}>POS {hud.posicion}°/{GP_NUM_BOTS + 1}</div>
       </div>
@@ -5659,7 +5850,7 @@ function CupulaGPView({ user, onVolver }) {
 const CUPULA_GAMES_LISTA = [
   { id: "happyweed", nombre: "Happy Weed", desc: "Estilo Flappy Bird: esquiva los portales neón con tu propia foto convertida en pajarito.", color: COLORS.neonRed },
   { id: "cabezones", nombre: "No haga sino Jogar", desc: "Fútbol de cabezones estilo arcade: corre, salta y patea/cabecea para meter más goles que tu rival, solo contra el computador o en línea 1 contra 1 con los de la cúpula. Tiene power-ups y récord histórico.", color: COLORS.neonMagenta },
-  { id: "cupulagp", nombre: "Cúpula GP", desc: "Carreras de circuito cerrado estilo F1 visto desde arriba: elige tu auto y el número de vueltas, y compite contra hasta 15 bots con físicas reales de derrape, rebufo y colisiones.", color: COLORS.neonBlue },
+  { id: "cupulagp", nombre: "Cúpula GP", desc: "Carreras de circuito cerrado estilo F1 visto desde arriba: elige tu auto, una de 8 pistas y el número de vueltas, y compite contra hasta 15 bots agresivos (con sensores para esquivar/adelantar) con derrape, rebufo y choques con física elástica real.", color: COLORS.neonBlue },
 ];
 
 function CupulaGamesView({ user }) {
