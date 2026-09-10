@@ -2600,17 +2600,19 @@ function HappyWeedView({ user, onVolver }) {
   }, [jugando, user.id]);
 
   return (
-    <div>
-      <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver a Cúpula Games</button>
-      <SectionTitle>Happy Weed</SectionTitle>
-      <Card style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-        <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, marginBottom: 10 }}>
+    <div style={{ position: "fixed", inset: 0, background: "#05070d", zIndex: 100, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ flexShrink: 0, padding: "12px 14px 4px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <button onClick={onVolver} style={{ ...ESTILO_BOTON_VOLVER, marginBottom: 0 }}>← Volver a Cúpula Games</button>
+        <div style={{ fontFamily: FONT_DISPLAY, fontSize: 16, letterSpacing: 1, color: COLORS.white, textShadow: `0 0 10px ${COLORS.neonRed}` }}>HAPPY WEED</div>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>
           Puntaje: <span style={{ color: COLORS.neonRed, fontWeight: 700 }}>{score}</span> · Mejor: <span style={{ color: COLORS.neonAmber, fontWeight: 700 }}>{mejorPuntaje}</span>
         </div>
-        <div style={{ position: "relative", width: HW_ANCHO, maxWidth: "100%" }}>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 14px" }}>
+        <div style={{ position: "relative", maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", aspectRatio: `${HW_ANCHO} / ${HW_ALTO}` }}>
           <canvas
             ref={canvasRef} width={HW_ANCHO} height={HW_ALTO} onClick={saltar}
-            style={{ width: "100%", height: "auto", display: "block", background: "#05070d", border: `2px solid ${COLORS.neonRed}`, borderRadius: 8, boxShadow: `0 0 26px ${COLORS.neonRed}55, inset 0 0 40px #00000088`, cursor: "pointer" }}
+            style={{ width: "100%", height: "100%", display: "block", background: "#05070d", border: `2px solid ${COLORS.neonRed}`, borderRadius: 8, boxShadow: `0 0 26px ${COLORS.neonRed}55, inset 0 0 40px #00000088`, cursor: "pointer" }}
           />
           {!jugando && (
             <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, background: "rgba(5,7,13,0.8)", borderRadius: 8 }}>
@@ -2622,86 +2624,19 @@ function HappyWeedView({ user, onVolver }) {
             </div>
           )}
         </div>
-        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginTop: 10, textAlign: "center" }}>
-          Presiona Espacio o haz clic sobre el juego para impulsarte.
-        </div>
-      </Card>
+      </div>
+      <div style={{ flexShrink: 0, fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, padding: "0 14px 14px", textAlign: "center" }}>
+        Presiona Espacio o haz clic sobre el juego para impulsarte.
+      </div>
     </div>
   );
 }
 
-// ---- 2) Car Crash (carrera de supervivencia infinita, vista desde arriba) ----
-// La "cámara" avanza sola a una velocidad que sube con la distancia y el tiempo vivo, expresada
-// como un % de dificultad que arranca en 50% y escala hasta un techo de 95% (nunca 100%, para que
-// siempre quede matemáticamente una vía de escape: el auto del jugador es más rápido en punta que
-// la cámara y el tráfico, así que rebasar siempre es posible). Esa dificultad mueve tres cosas a la
-// vez: la velocidad de cámara, la frecuencia de aparición de tráfico y la agilidad de los NPCs.
-// El jugador tiene su propia velocidad (con inercia hacia una velocidad objetivo: crucero
-// automático + acelerón opcional de PC - freno - penalización por derrape) y si se queda por detrás
-// de la cámara empieza a "atrasarse" en pantalla; si el auto llega a salirse del borde inferior de
-// la pantalla, pierde. Chocar con tráfico no mata de una — le pega un frenazo brusco a la velocidad
-// (más riesgo de atrasarse) y una breve invulnerabilidad para no encadenar golpes.
-//
-// Assets gráficos: el juego se dibuja con formas vectoriales por defecto (como hasta ahora), pero
-// el AssetManager de más abajo ya está listo para reemplazar cada forma por un PNG real apenas se
-// suba — no hace falta tocar el motor de física ni de colisiones para eso (ver "Regla de oro" en
-// CC_ASSET_MANIFEST). Las hitboxes son siempre un 12% más chicas que el sprite dibujado, sea forma
-// o imagen, así queda margen para roces cerrados sin que se sienta injusto.
-//
-// Canvas responsive: el tablero de juego sigue siendo una resolución lógica fija (CC_ANCHO x
-// CC_ALTO) — toda la física/física de colisión trabaja en esas coordenadas, sin cambios — pero el
-// <canvas> real se redimensiona con un ResizeObserver al tamaño del contenedor que lo envuelve, y
-// al dibujar se aplica una escala + centrado (letterbox) para que la resolución lógica siempre
-// entre completa, sin recortarse y sin deformar nada, ocupando el máximo posible del contenedor.
-
-const CC_ANCHO = 420;
-const CC_ALTO = 620;
-const CC_CARRIL_ANCHO = CC_ANCHO * 0.7;
-const CC_CARRIL_X0 = (CC_ANCHO - CC_CARRIL_ANCHO) / 2;
-const CC_JUGADOR_Y = CC_ALTO * 0.76;
-const CC_JUGADOR_ANCHO = 30;
-const CC_JUGADOR_ALTO = 50;
-
-// Curva de dificultad: 50% al arrancar, sube con distancia + tiempo vivo, techo real en 95% (nunca
-// llega a 100% — ver nota de "vía de escape" más arriba).
-const CC_DIFICULTAD_MIN = 0.5;
-const CC_DIFICULTAD_MAX = 0.95;
-const CC_DIFICULTAD_ESCALA_DIST = 1 / 2600;
-const CC_DIFICULTAD_ESCALA_TIEMPO = 1 / 95;
-function dificultadActualCarCrash(st) {
-  const factor = 1 - Math.exp(-(st.distancia * CC_DIFICULTAD_ESCALA_DIST + st.tiempoVivo * CC_DIFICULTAD_ESCALA_TIEMPO));
-  return CC_DIFICULTAD_MIN + (CC_DIFICULTAD_MAX - CC_DIFICULTAD_MIN) * Math.min(1, Math.max(0, factor));
-}
-
-const CC_VCAM_EN_DIFICULTAD_0 = 120; // referencia hipotética a dificultad 0 (nunca se llega, solo para la interpolación)
-const CC_VCAM_EN_DIFICULTAD_1 = 480; // referencia hipotética a dificultad 1 (el techo real de 95% se queda un poco por debajo)
-const CC_VCAM_BASE = CC_VCAM_EN_DIFICULTAD_0 + CC_DIFICULTAD_MIN * (CC_VCAM_EN_DIFICULTAD_1 - CC_VCAM_EN_DIFICULTAD_0); // velocidad de cámara al 50% (arranque)
-
-// El crucero automático (y sobre todo el boost de PC) quedan siempre por encima de la velocidad de
-// cámara máxima real (dificultad 95%) para que rebasar tráfico sea siempre posible, nunca opcional.
-const CC_VCAM_MAX_REAL = CC_VCAM_EN_DIFICULTAD_0 + CC_DIFICULTAD_MAX * (CC_VCAM_EN_DIFICULTAD_1 - CC_VCAM_EN_DIFICULTAD_0);
-const CC_CRUCERO = CC_VCAM_MAX_REAL * 1.12;
-const CC_BOOST = 190;
-const CC_FRENO = 140;
-const CC_DRIFT_PENALIZACION = 65;
-const CC_INERCIA = 3.4; // aceleración/frenado del auto — alto a propósito, para que se sienta ágil y "fulminante"
-const CC_DIRECCION_NORMAL = 330;
-const CC_DIRECCION_DRIFT = 480;
-const CC_GIRO_RESPUESTA_NORMAL = 10; // qué tan rápido el auto llega a su velocidad lateral objetivo (más alto = menos "input lag")
-const CC_GIRO_RESPUESTA_DRIFT = 14;
-// Límite de atraso derivado directamente del layout: el juego termina justo cuando el auto se sale
-// por completo del borde inferior de la pantalla lógica (literal a lo pedido, no una fracción arbitraria).
-const CC_LIMITE_ATRASO = CC_ALTO - CC_JUGADOR_Y + CC_JUGADOR_ALTO / 2;
-const CC_GOLPE_FACTOR = 0.4;
-const CC_INVULNERABLE_MS = 700;
-const CC_DIST_POR_BIOMA = 1400;
-const CC_ACHIQUE_HITBOX = 0.88; // hitboxes ~12% más chicas que el sprite dibujado (sea forma o PNG)
-
-// ── AssetManager: precarga PNGs por clave y expone get(clave). Si una imagen falta o falla (404,
-// archivo vacío, etc.) simplemente no se usa y el dibujado cae de vuelta a las formas vectoriales
-// actuales — el juego nunca se rompe por assets faltantes, y apenas el archivo exista en la ruta
-// del manifest empieza a usarse solo, sin tocar ni una línea de código. ──
-class AssetManagerCarCrash {
+// ── AssetManager compartido: precarga PNGs por clave y expone get(clave). Si una imagen falta o
+// falla (404, archivo vacío, etc.) simplemente no se usa y el dibujado cae de vuelta a las formas
+// vectoriales — el juego nunca se rompe por assets faltantes, y apenas el archivo exista en la
+// ruta del manifest empieza a usarse solo, sin tocar ni una línea de código. Usado por Cúpula GP. ──
+class AssetManagerJuegos {
   constructor() {
     this.imagenes = {};
     this.listo = false;
@@ -2721,756 +2656,8 @@ class AssetManagerCarCrash {
     return this.imagenes[clave] || null;
   }
 }
-// Manifest de rutas esperadas: directo dentro de la carpeta /public/ del proyecto (SIN subcarpeta
-// nueva) — así Vercel las sirve como archivos estáticos en la raíz del sitio. Se eligió así a
-// propósito, sin subcarpeta /games/carcrash/: subir archivos sueltos a una carpeta que YA existe
-// (public) es mucho menos propenso a error desde GitHub web que tener que crear una subcarpeta
-// nueva primero. Regla de oro: subir estos PNGs directo dentro de /public/ con estos nombres
-// exactos alcanza para que el juego los use — no requiere ningún cambio de código.
-const CC_ASSET_MANIFEST = {
-  // Un PNG del auto del jugador por cada color del garage (PALETA_CARCRASH) — así el color elegido
-  // se ve reflejado en el sprite real, no solo en la forma de respaldo. "gris" (color gratis por
-  // defecto) no tiene PNG todavía y usa la forma vectorial tintada a su color, como todo lo demás
-  // que falte en el manifest.
-  autoJugador_azul: "/auto_jugador_azul.png",
-  autoJugador_rojo: "/auto_jugador_rojo.png",
-  autoJugador_amber: "/auto_jugador_amber.png",
-  autoJugador_verde: "/auto_jugador_verde.png",
-  autoJugador_magenta: "/auto_jugador_magenta.png",
-  autoJugador_morado: "/auto_jugador_morado.png",
-  autoJugador_dorado: "/auto_jugador_dorado.png",
-  taxi: "/taxi.png",
-  autoEbrio: "/auto_ebrio.png",
-  camion: "/camion.png",
-  moto: "/moto.png",
-  moneda: "/moneda.png",
-  pistaCiudad: "/pista_ciudad.png",
-  pistaDesierto: "/pista_desierto.png",
-  pistaNieve: "/pista_nieve.png",
-  pistaFuego: "/pista_fuego.png",
-};
 
-const CC_BIOMAS = [
-  { nombre: "Ciudad Neón", clima: "lluvia", cielo: ["#050512", "#0c0c1c"], pista: "#15151f", banquina: "#0a0a12", linea: COLORS.neonBlue, pistaImg: "pistaCiudad" },
-  { nombre: "Desierto", clima: "arena", cielo: ["#2a1608", "#120a04"], pista: "#3a2414", banquina: "#1c1108", linea: COLORS.neonAmber, pistaImg: "pistaDesierto" },
-  { nombre: "Hielo", clima: "nieve", cielo: ["#0a1a24", "#040c12"], pista: "#1a2e38", banquina: "#0c1820", linea: "#BFEFFF", pistaImg: "pistaNieve" },
-  { nombre: "Volcán", clima: "brasas", cielo: ["#240404", "#0c0202"], pista: "#2c0e0e", banquina: "#160606", linea: COLORS.neonRed, pistaImg: "pistaFuego" },
-];
-
-// cierre = velocidad relativa (px/s) a la que se acerca al jugador en pantalla a dificultad base;
-// estatica: true ignora "cierre" y se acerca siempre a la velocidad de la cámara (no se mueve por
-// sí sola). "diagonal" marca a las motos, que además de zigzaguear saltan de carril de golpe.
-const CC_TIPOS_TRAFICO = {
-  civil: { cierre: 60, ancho: 30, alto: 48, lateral: 0, color: "#5A6270", estatica: false, asset: "taxi" },
-  ebrio: { cierre: 75, ancho: 30, alto: 48, lateral: 60, color: COLORS.neonMagenta, estatica: false, asset: "autoEbrio" },
-  moto: { cierre: 170, ancho: 16, alto: 32, lateral: 40, diagonal: true, color: COLORS.neonAmber, estatica: false, asset: "moto" },
-  camion: { cierre: 40, ancho: 46, alto: 78, lateral: 0, color: "#3A3E46", estatica: false, asset: "camion" },
-  barricada: { cierre: 0, ancho: 120, alto: 36, lateral: 0, color: COLORS.neonRed, estatica: true, asset: null },
-};
-
-const CC_PLANTILLAS_MISION = [
-  { id: "distancia", tipo: "distancia", base_meta: 140, variacion: 60, texto: (m) => `Recorre ${m}m` },
-  { id: "monedas", tipo: "monedas", base_meta: 5, variacion: 4, texto: (m) => `Junta ${m} monedas` },
-  { id: "esquives", tipo: "esquives", base_meta: 4, variacion: 3, texto: (m) => `Esquiva ${m} de cerca` },
-  { id: "tiempo", tipo: "tiempo", base_meta: 15, variacion: 10, texto: (m) => `Sobrevive ${m}s sin chocar` },
-];
-
-// ── Garage: solo el color del auto (se guarda local por usuario, igual que en cabezones) ──
-const PALETA_CARCRASH = [
-  { id: "gris", hex: "#7B7F87", costo: 0 },
-  { id: "azul", hex: COLORS.neonBlue, costo: 0 },
-  { id: "rojo", hex: COLORS.neonRed, costo: 30 },
-  { id: "amber", hex: COLORS.neonAmber, costo: 60 },
-  { id: "verde", hex: COLORS.neonSuccess, costo: 90 },
-  { id: "magenta", hex: COLORS.neonMagenta, costo: 120 },
-  { id: "morado", hex: "#9B5CFF", costo: 160 },
-  { id: "dorado", hex: "#E8C468", costo: 220 },
-];
-function colorCarCrashGuardado(userId) {
-  try {
-    const raw = localStorage.getItem(`cupula_carcrash_color_${userId}`);
-    if (raw && PALETA_CARCRASH.some((c) => c.id === raw)) return raw;
-  } catch (e) {}
-  return PALETA_CARCRASH[0].id;
-}
-function guardarColorCarCrashLocal(userId, colorId) {
-  try { localStorage.setItem(`cupula_carcrash_color_${userId}`, colorId); } catch (e) {}
-}
-function hexColorCarCrash(colorId) {
-  return (PALETA_CARCRASH.find((c) => c.id === colorId) || PALETA_CARCRASH[0]).hex;
-}
-function desbloqueadosCarCrashGuardado(userId) {
-  try {
-    const raw = localStorage.getItem(`cupula_carcrash_desbloqueados_${userId}`);
-    if (raw) {
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr) && arr.length) return arr;
-    }
-  } catch (e) {}
-  return PALETA_CARCRASH.filter((c) => c.costo === 0).map((c) => c.id);
-}
-function guardarDesbloqueadosCarCrashLocal(userId, arr) {
-  try { localStorage.setItem(`cupula_carcrash_desbloqueados_${userId}`, JSON.stringify(arr)); } catch (e) {}
-}
-
-function crearEstadoCarCrash() {
-  return {
-    vivo: true, motivoFin: null,
-    x: CC_CARRIL_X0 + CC_CARRIL_ANCHO / 2, vx: 0, vAdelante: CC_CRUCERO, yOffset: 0, drift: false,
-    invulnerableHasta: 0, shake: 0,
-    distancia: 0, tiempoVivo: 0,
-    trafico: [], monedas: [], particulas: [], particulasClima: [],
-    proxSpawnTrafico: 0.6, proxSpawnMoneda: 1.2, proxExhaust: 0, proxMarca: 0, proxClima: 0,
-    monedasSesion: 0, esquivesSesion: 0,
-    mision: null,
-    toastTexto: null, toastHasta: 0,
-  };
-}
-
-function biomaEnDistancia(distancia) {
-  const ciclo = distancia / CC_DIST_POR_BIOMA;
-  const idx = Math.floor(ciclo) % CC_BIOMAS.length;
-  const idxSig = (idx + 1) % CC_BIOMAS.length;
-  const progreso = ciclo - Math.floor(ciclo);
-  return { actual: CC_BIOMAS[idx], siguiente: CC_BIOMAS[idxSig], progreso };
-}
-function lerpHexCarCrash(hexA, hexB, t) {
-  const a = parseInt(hexA.slice(1), 16), b = parseInt(hexB.slice(1), 16);
-  const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
-  const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
-  const r = Math.round(ar + (br - ar) * t), g = Math.round(ag + (bg - ag) * t), bl = Math.round(ab + (bb - ab) * t);
-  return `rgb(${r},${g},${bl})`;
-}
-
-function valorBaseMisionCarCrash(st, tipo) {
-  if (tipo === "distancia") return st.distancia;
-  if (tipo === "monedas") return st.monedasSesion;
-  if (tipo === "esquives") return st.esquivesSesion;
-  if (tipo === "tiempo") return st.tiempoVivo;
-  return 0;
-}
-function progresoMisionCarCrash(st) {
-  const m = st.mision;
-  if (!m) return 0;
-  if (m.tipo === "distancia") return (st.distancia - m.base) / 8;
-  if (m.tipo === "monedas") return st.monedasSesion - m.base;
-  if (m.tipo === "esquives") return st.esquivesSesion - m.base;
-  if (m.tipo === "tiempo") return st.tiempoVivo - m.base;
-  return 0;
-}
-function elegirMisionCarCrash(st) {
-  const opciones = CC_PLANTILLAS_MISION.filter((p) => !st.mision || p.id !== st.mision.id);
-  const plantilla = opciones[Math.floor(Math.random() * opciones.length)];
-  const meta = plantilla.base_meta + Math.floor(Math.random() * plantilla.variacion);
-  st.mision = { id: plantilla.id, tipo: plantilla.tipo, meta, texto: plantilla.texto(meta), base: valorBaseMisionCarCrash(st, plantilla.tipo) };
-}
-
-function intervaloSpawnTraficoCarCrash(dificultad) {
-  const t = (dificultad - CC_DIFICULTAD_MIN) / (CC_DIFICULTAD_MAX - CC_DIFICULTAD_MIN);
-  return 1.3 - t * 0.88 + Math.random() * 0.22;
-}
-function spawnTraficoCarCrash(st) {
-  const pesos = [["civil", 5], ["ebrio", 3], ["moto", 3], ["camion", 2], ["barricada", 1]];
-  const total = pesos.reduce((s, p) => s + p[1], 0);
-  let r = Math.random() * total, tipoId = "civil";
-  for (const [id, w] of pesos) { if (r < w) { tipoId = id; break; } r -= w; }
-  const def = CC_TIPOS_TRAFICO[tipoId];
-  const min = CC_CARRIL_X0 + def.ancho / 2 + 4, max = CC_CARRIL_X0 + CC_CARRIL_ANCHO - def.ancho / 2 - 4;
-  st.trafico.push({ tipo: tipoId, x: min + Math.random() * (max - min), xObjetivo: null, y: -70, fase: Math.random() * Math.PI * 2, pasado: false, chocado: false });
-}
-function spawnMonedaCarCrash(st) {
-  const min = CC_CARRIL_X0 + 20, max = CC_CARRIL_X0 + CC_CARRIL_ANCHO - 20;
-  st.monedas.push({ x: min + Math.random() * (max - min), y: -30, fase: Math.random() * Math.PI * 2 });
-}
-
-// Único punto que mueve toda la física/economía un cuadro (dt en segundos). Muta "st" directamente
-// (mismo estilo que el resto de los motores del juego en este archivo) — el componente solo lo llama
-// y después dibuja/lee lo que corresponda.
-function actualizarCarCrash(st, dt, entrada) {
-  if (!st.vivo) return;
-  st.tiempoVivo += dt;
-  const dificultad = dificultadActualCarCrash(st);
-  const camaraV = CC_VCAM_EN_DIFICULTAD_0 + dificultad * (CC_VCAM_EN_DIFICULTAD_1 - CC_VCAM_EN_DIFICULTAD_0);
-  st.distancia += camaraV * dt;
-
-  let objetivo = CC_CRUCERO;
-  if (entrada.acel) objetivo += CC_BOOST;
-  if (entrada.freno) objetivo -= CC_FRENO;
-  st.drift = !!entrada.drift && (entrada.izq || entrada.der);
-  if (st.drift) objetivo -= CC_DRIFT_PENALIZACION;
-  objetivo = Math.max(50, objetivo);
-  st.vAdelante += (objetivo - st.vAdelante) * Math.min(1, CC_INERCIA * dt);
-
-  st.yOffset += (camaraV - st.vAdelante) * dt;
-  st.yOffset = Math.max(-50, Math.min(CC_LIMITE_ATRASO, st.yOffset));
-  if (st.yOffset >= CC_LIMITE_ATRASO) { st.vivo = false; st.motivoFin = "atraso"; return; }
-
-  let dirObjetivo = 0;
-  if (entrada.izq) dirObjetivo -= 1;
-  if (entrada.der) dirObjetivo += 1;
-  const velLateralMax = st.drift ? CC_DIRECCION_DRIFT : CC_DIRECCION_NORMAL;
-  const factorGiro = st.drift ? CC_GIRO_RESPUESTA_DRIFT : CC_GIRO_RESPUESTA_NORMAL;
-  st.vx += (dirObjetivo * velLateralMax - st.vx) * Math.min(1, factorGiro * dt);
-  st.x += st.vx * dt;
-  const margenX1 = CC_CARRIL_X0 + CC_JUGADOR_ANCHO / 2 + 4, margenX2 = CC_CARRIL_X0 + CC_CARRIL_ANCHO - CC_JUGADOR_ANCHO / 2 - 4;
-  if (st.x < margenX1) { st.x = margenX1; st.vx = Math.max(0, st.vx); }
-  if (st.x > margenX2) { st.x = margenX2; st.vx = Math.min(0, st.vx); }
-
-  const playerY = CC_JUGADOR_Y + st.yOffset;
-
-  st.proxExhaust -= dt;
-  if (st.proxExhaust <= 0) {
-    st.proxExhaust = 0.06;
-    st.particulas.push({ x: st.x + (Math.random() * 8 - 4), y: playerY + CC_JUGADOR_ALTO / 2, vx: Math.random() * 20 - 10, vy: 40, vida: 0.4, vidaMax: 0.4, color: "#9aa0aa", radio: 3, tipo: "escape" });
-  }
-  if (st.drift && Math.abs(st.vx) > 30) {
-    st.proxMarca -= dt;
-    if (st.proxMarca <= 0) {
-      st.proxMarca = 0.025;
-      const lado = st.vx > 0 ? -1 : 1;
-      st.particulas.push({ x: st.x + lado * CC_JUGADOR_ANCHO * 0.32, y: playerY + CC_JUGADOR_ALTO * 0.4, vx: 0, vy: camaraV, vida: 1.4, vidaMax: 1.4, color: "#000000", radio: 2.4, tipo: "marca" });
-    }
-  }
-
-  // Clima ambiental del bioma actual — puramente decorativo, no interactúa con colisiones/misiones.
-  const bioma = biomaEnDistancia(st.distancia).actual;
-  st.proxClima -= dt;
-  if (st.proxClima <= 0) {
-    st.proxClima = 0.08;
-    if (bioma.clima === "nieve") {
-      st.particulasClima.push({ x: Math.random() * CC_ANCHO, y: -10, vx: (Math.random() * 20 - 10), vy: 55 + Math.random() * 35, vida: 4, vidaMax: 4, color: "#ffffff", radio: 1.6 + Math.random() * 1.6, tipo: "clima" });
-    } else if (bioma.clima === "brasas") {
-      st.particulasClima.push({ x: CC_CARRIL_X0 + Math.random() * CC_CARRIL_ANCHO, y: CC_ALTO + 10, vx: (Math.random() * 30 - 15), vy: -(40 + Math.random() * 50), vida: 2.2, vidaMax: 2.2, color: Math.random() < 0.5 ? COLORS.neonAmber : COLORS.neonRed, radio: 1.4 + Math.random() * 1.4, tipo: "clima" });
-    } else if (bioma.clima === "arena") {
-      st.particulasClima.push({ x: -10, y: Math.random() * CC_ALTO, vx: 90 + Math.random() * 60, vy: (Math.random() * 20 - 10), vida: 3, vidaMax: 3, color: "#d8b877", radio: 1.2 + Math.random(), tipo: "clima" });
-    } else if (bioma.clima === "lluvia") {
-      st.particulasClima.push({ x: Math.random() * CC_ANCHO, y: -10, vx: -18, vy: 260 + Math.random() * 60, vida: 0.9, vidaMax: 0.9, color: COLORS.neonBlue + "aa", radio: 1, tipo: "climaLluvia" });
-    }
-  }
-
-  st.particulas.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.vida -= dt; });
-  st.particulas = st.particulas.filter((p) => p.vida > 0 && p.y < CC_ALTO + 40);
-  st.particulasClima.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.vida -= dt; });
-  st.particulasClima = st.particulasClima.filter((p) => p.vida > 0 && p.y > -20 && p.y < CC_ALTO + 20 && p.x > -20 && p.x < CC_ANCHO + 20);
-  st.shake = Math.max(0, st.shake - dt * 26);
-
-  st.proxSpawnTrafico -= dt;
-  if (st.proxSpawnTrafico <= 0) { spawnTraficoCarCrash(st); st.proxSpawnTrafico = intervaloSpawnTraficoCarCrash(dificultad); }
-  st.proxSpawnMoneda -= dt;
-  if (st.proxSpawnMoneda <= 0) { spawnMonedaCarCrash(st); st.proxSpawnMoneda = 1.5 + Math.random() * 1.4; }
-
-  // Agilidad de los NPC también escala con la dificultad (0.6 a dificultad mínima, 1 a la máxima).
-  const agilidad = 0.6 + ((dificultad - CC_DIFICULTAD_MIN) / (CC_DIFICULTAD_MAX - CC_DIFICULTAD_MIN)) * 0.4;
-  st.trafico.forEach((e) => {
-    const def = CC_TIPOS_TRAFICO[e.tipo];
-    const cierre = def.estatica ? camaraV : def.cierre * (camaraV / CC_VCAM_BASE);
-    e.y += cierre * dt;
-    if (def.diagonal) {
-      // Motos: saltos de carril agresivos en diagonal en vez de solo zigzag continuo.
-      const min = CC_CARRIL_X0 + def.ancho / 2 + 4, max = CC_CARRIL_X0 + CC_CARRIL_ANCHO - def.ancho / 2 - 4;
-      if (e.xObjetivo === null || Math.abs(e.x - e.xObjetivo) < 4) {
-        e.xObjetivo = min + Math.random() * (max - min);
-      }
-      e.x += Math.sign(e.xObjetivo - e.x) * def.lateral * agilidad * 2.2 * dt;
-      e.x = Math.max(min, Math.min(max, e.x));
-    } else if (def.lateral) {
-      e.fase += dt * 2.2 * agilidad;
-      e.x += Math.sin(e.fase) * def.lateral * agilidad * dt;
-      const min = CC_CARRIL_X0 + def.ancho / 2 + 4, max = CC_CARRIL_X0 + CC_CARRIL_ANCHO - def.ancho / 2 - 4;
-      e.x = Math.max(min, Math.min(max, e.x));
-    }
-  });
-
-  const ahoraMs = Date.now();
-  st.trafico.forEach((e) => {
-    const def = CC_TIPOS_TRAFICO[e.tipo];
-    if (!e.chocado) {
-      const cerca = Math.abs(e.y - playerY) < (def.alto + CC_JUGADOR_ALTO) / 2;
-      if (cerca) {
-        const mitadX = (def.ancho * CC_ACHIQUE_HITBOX + CC_JUGADOR_ANCHO * CC_ACHIQUE_HITBOX) / 2;
-        const mitadY = (def.alto * CC_ACHIQUE_HITBOX + CC_JUGADOR_ALTO * CC_ACHIQUE_HITBOX) / 2;
-        if (Math.abs(e.x - st.x) < mitadX && Math.abs(e.y - playerY) < mitadY && ahoraMs >= st.invulnerableHasta) {
-          e.chocado = true;
-          st.vAdelante *= CC_GOLPE_FACTOR;
-          st.invulnerableHasta = ahoraMs + CC_INVULNERABLE_MS;
-          st.shake = 10;
-          if (st.mision && st.mision.tipo === "tiempo") st.mision.base = st.tiempoVivo;
-          for (let i = 0; i < 10; i++) {
-            const ang = Math.random() * Math.PI * 2, vel = 60 + Math.random() * 90;
-            st.particulas.push({ x: st.x, y: playerY, vx: Math.cos(ang) * vel, vy: Math.sin(ang) * vel, vida: 0.5, vidaMax: 0.5, color: COLORS.neonAmber, radio: 3, tipo: "chispa" });
-          }
-        }
-      }
-    }
-    if (!e.pasado && e.y > playerY + 20) { e.pasado = true; if (!e.chocado) st.esquivesSesion += 1; }
-  });
-  st.trafico = st.trafico.filter((e) => e.y < CC_ALTO + 80);
-
-  st.monedas.forEach((m) => { m.y += camaraV * dt; m.fase += dt * 6; });
-  st.monedas = st.monedas.filter((m) => {
-    const dx = m.x - st.x, dy = m.y - playerY;
-    if (Math.sqrt(dx * dx + dy * dy) < 24) {
-      st.monedasSesion += 1;
-      st.particulas.push({ x: m.x, y: m.y, vx: 0, vy: -30, vida: 0.4, vidaMax: 0.4, color: COLORS.neonAmber, radio: 4, tipo: "escape" });
-      return false;
-    }
-    return m.y < CC_ALTO + 30;
-  });
-
-  if (!st.mision) {
-    elegirMisionCarCrash(st);
-  } else {
-    const progreso = progresoMisionCarCrash(st);
-    if (progreso >= st.mision.meta) {
-      st.monedasSesion += 15;
-      st.toastTexto = "¡Misión cumplida! +15 monedas";
-      st.toastHasta = ahoraMs + 1800;
-      elegirMisionCarCrash(st);
-    }
-  }
-}
-
-// Dibuja una entidad (tráfico o jugador) con su PNG si el AssetManager ya lo tiene cargado, o si no
-// cae de vuelta a la forma vectorial de siempre — la hitbox real (más chica, ver CC_ACHIQUE_HITBOX)
-// nunca depende de esto, es puramente visual.
-function dibujarConAssetOForma(ctx, assets, clave, ancho, alto, dibujarForma) {
-  const img = clave ? assets.get(clave) : null;
-  if (img) {
-    ctx.drawImage(img, -ancho / 2, -alto / 2, ancho, alto);
-  } else {
-    dibujarForma();
-  }
-}
-
-function dibujarCarCrash(ctx, st, colorAuto, colorIdAuto, bioma, assets) {
-  const canvas = ctx.canvas;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  // Escala + letterbox: la resolución lógica (CC_ANCHO x CC_ALTO) siempre entra completa dentro del
-  // canvas físico (que puede tener cualquier proporción, según el contenedor), centrada, sin
-  // recortarse ni deformarse — el resto de esta función dibuja siempre en coordenadas lógicas fijas.
-  const escala = Math.min(canvas.width / CC_ANCHO, canvas.height / CC_ALTO);
-  const offsetX = (canvas.width - CC_ANCHO * escala) / 2;
-  const offsetY = (canvas.height - CC_ALTO * escala) / 2;
-  ctx.fillStyle = "#000000";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.setTransform(escala, 0, 0, escala, offsetX, offsetY);
-
-  ctx.save();
-  if (st.shake > 0) {
-    const s = Math.min(6, st.shake * 0.5);
-    ctx.translate((Math.random() * 2 - 1) * s, (Math.random() * 2 - 1) * s);
-  }
-  const M = 14;
-  const cieloA = lerpHexCarCrash(bioma.actual.cielo[0], bioma.siguiente.cielo[0], bioma.progreso);
-  const cieloB = lerpHexCarCrash(bioma.actual.cielo[1], bioma.siguiente.cielo[1], bioma.progreso);
-  const colorPista = lerpHexCarCrash(bioma.actual.pista, bioma.siguiente.pista, bioma.progreso);
-  const colorBanquina = lerpHexCarCrash(bioma.actual.banquina, bioma.siguiente.banquina, bioma.progreso);
-  const colorLinea = lerpHexCarCrash(bioma.actual.linea, bioma.siguiente.linea, bioma.progreso);
-
-  const grad = ctx.createLinearGradient(0, 0, 0, CC_ALTO);
-  grad.addColorStop(0, cieloA);
-  grad.addColorStop(1, cieloB);
-  ctx.fillStyle = grad;
-  ctx.fillRect(-M, -M, CC_ANCHO + 2 * M, CC_ALTO + 2 * M);
-  ctx.fillStyle = colorBanquina;
-  ctx.fillRect(-M, -M, CC_ANCHO + 2 * M, CC_ALTO + 2 * M);
-
-  // Pista: PNG en mosaico vertical con scroll si ya está cargado el de este bioma, si no el
-  // rectángulo de color plano de siempre.
-  const pistaImg = assets.get(bioma.actual.pistaImg);
-  if (pistaImg) {
-    const alto = pistaImg.height * (CC_CARRIL_ANCHO / pistaImg.width);
-    const offset = st.distancia % alto;
-    for (let y = -alto + offset; y < CC_ALTO + alto; y += alto) {
-      ctx.drawImage(pistaImg, CC_CARRIL_X0, y, CC_CARRIL_ANCHO, alto);
-    }
-  } else {
-    ctx.fillStyle = colorPista;
-    ctx.fillRect(CC_CARRIL_X0, -M, CC_CARRIL_ANCHO, CC_ALTO + 2 * M);
-    ctx.strokeStyle = colorLinea + "99";
-    ctx.lineWidth = 2;
-    ctx.setLineDash([18, 16]);
-    const offsetLinea = st.distancia % 34;
-    [CC_CARRIL_X0 + CC_CARRIL_ANCHO / 3, CC_CARRIL_X0 + (CC_CARRIL_ANCHO * 2) / 3].forEach((lx) => {
-      ctx.beginPath();
-      ctx.moveTo(lx, -offsetLinea);
-      ctx.lineTo(lx, CC_ALTO);
-      ctx.stroke();
-    });
-    ctx.setLineDash([]);
-  }
-  ctx.strokeStyle = colorLinea;
-  ctx.lineWidth = 2;
-  ctx.strokeRect(CC_CARRIL_X0, 0, CC_CARRIL_ANCHO, CC_ALTO);
-
-  st.particulas.filter((p) => p.tipo === "marca").forEach((p) => {
-    ctx.globalAlpha = Math.max(0, p.vida / p.vidaMax) * 0.6;
-    ctx.fillStyle = "#000000";
-    ctx.fillRect(p.x - 1.4, p.y - 4, 2.8, 8);
-  });
-  ctx.globalAlpha = 1;
-
-  // Clima ambiental (nieve/brasas/arena/lluvia), como capa atmosférica sobre la pista.
-  st.particulasClima.forEach((p) => {
-    ctx.globalAlpha = Math.max(0, p.vida / p.vidaMax);
-    if (p.tipo === "climaLluvia") {
-      ctx.strokeStyle = p.color;
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.moveTo(p.x, p.y);
-      ctx.lineTo(p.x + 3, p.y + 12);
-      ctx.stroke();
-    } else {
-      ctx.fillStyle = p.color;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.radio, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  });
-  ctx.globalAlpha = 1;
-
-  st.monedas.forEach((m) => {
-    const pulso = 1 + Math.sin(m.fase) * 0.18;
-    ctx.save();
-    ctx.translate(m.x, m.y);
-    ctx.scale(pulso, pulso);
-    dibujarConAssetOForma(ctx, assets, "moneda", 20, 20, () => {
-      ctx.shadowColor = COLORS.neonAmber;
-      ctx.shadowBlur = 10 + Math.sin(m.fase) * 4;
-      ctx.fillStyle = COLORS.neonAmber;
-      ctx.beginPath();
-      ctx.arc(0, 0, 8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.shadowBlur = 0;
-      ctx.fillStyle = "#1a1206";
-      ctx.font = "700 10px 'Courier New', monospace";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText("$", 0, 1);
-    });
-    ctx.restore();
-  });
-  ctx.textBaseline = "alphabetic";
-
-  st.trafico.forEach((e) => {
-    const def = CC_TIPOS_TRAFICO[e.tipo];
-    ctx.save();
-    ctx.translate(e.x, e.y);
-    if (e.tipo === "ebrio") ctx.rotate(Math.sin(e.fase) * 0.18);
-    dibujarConAssetOForma(ctx, assets, def.asset, def.ancho, def.alto, () => {
-      ctx.shadowColor = def.color;
-      ctx.shadowBlur = 8;
-      ctx.fillStyle = def.color;
-      ctx.fillRect(-def.ancho / 2, -def.alto / 2, def.ancho, def.alto);
-      ctx.shadowBlur = 0;
-      if (e.tipo === "barricada") {
-        ctx.strokeStyle = "#000";
-        ctx.lineWidth = 4;
-        ctx.setLineDash([10, 8]);
-        ctx.strokeRect(-def.ancho / 2 + 4, -def.alto / 2 + 4, def.ancho - 8, def.alto - 8);
-        ctx.setLineDash([]);
-      }
-      if (e.tipo === "moto") {
-        ctx.fillStyle = "#111";
-        ctx.fillRect(-def.ancho / 2, -def.alto / 2 - 4, def.ancho, 4);
-        ctx.fillRect(-def.ancho / 2, def.alto / 2, def.ancho, 4);
-      }
-      if (e.tipo === "camion") {
-        ctx.fillStyle = "#16181c";
-        ctx.fillRect(-def.ancho / 2 + 3, -def.alto / 2 + 6, def.ancho - 6, def.alto * 0.32);
-      }
-    });
-    ctx.restore();
-  });
-
-  const playerY = CC_JUGADOR_Y + st.yOffset;
-  const invulnerable = Date.now() < st.invulnerableHasta;
-  ctx.save();
-  ctx.globalAlpha = invulnerable && Math.floor(Date.now() / 90) % 2 === 0 ? 0.35 : 1;
-  ctx.translate(st.x, playerY);
-  ctx.rotate(Math.max(-0.35, Math.min(0.35, st.vx / 700)));
-  dibujarConAssetOForma(ctx, assets, `autoJugador_${colorIdAuto}`, CC_JUGADOR_ANCHO, CC_JUGADOR_ALTO, () => {
-    ctx.shadowColor = colorAuto;
-    ctx.shadowBlur = 12;
-    ctx.fillStyle = colorAuto;
-    ctx.fillRect(-CC_JUGADOR_ANCHO / 2, -CC_JUGADOR_ALTO / 2, CC_JUGADOR_ANCHO, CC_JUGADOR_ALTO);
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "rgba(10,10,12,0.8)";
-    ctx.fillRect(-CC_JUGADOR_ANCHO / 2 + 4, -CC_JUGADOR_ALTO / 2 + 8, CC_JUGADOR_ANCHO - 8, CC_JUGADOR_ALTO * 0.4);
-    ctx.shadowColor = "#fff8d6";
-    ctx.shadowBlur = 6;
-    ctx.fillStyle = "#fff8d6";
-    ctx.fillRect(-CC_JUGADOR_ANCHO / 2 + 2, -CC_JUGADOR_ALTO / 2 - 2, 5, 4);
-    ctx.fillRect(CC_JUGADOR_ANCHO / 2 - 7, -CC_JUGADOR_ALTO / 2 - 2, 5, 4);
-  });
-  ctx.restore();
-
-  st.particulas.filter((p) => p.tipo !== "marca").forEach((p) => {
-    ctx.globalAlpha = Math.max(0, p.vida / p.vidaMax);
-    ctx.fillStyle = p.color;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.radio, 0, Math.PI * 2);
-    ctx.fill();
-  });
-  ctx.globalAlpha = 1;
-
-  if (st.toastTexto && Date.now() < st.toastHasta) {
-    ctx.save();
-    ctx.globalAlpha = Math.max(0, Math.min(1, (st.toastHasta - Date.now()) / 1800));
-    ctx.font = "700 16px 'Courier New', monospace";
-    ctx.textAlign = "center";
-    ctx.fillStyle = COLORS.neonSuccess;
-    ctx.shadowColor = COLORS.neonSuccess;
-    ctx.shadowBlur = 10;
-    ctx.fillText(st.toastTexto, CC_ANCHO / 2, 90);
-    ctx.restore();
-  }
-
-  ctx.restore();
-}
-
-function GarageCarCrash({ colorId, desbloqueados, monedasTotales, onSeleccionar, onDesbloquear, onCerrar }) {
-  return (
-    <Card style={{ marginTop: 14 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: COLORS.white, letterSpacing: 1 }}>Garage</div>
-        <button onClick={onCerrar} style={{ ...ESTILO_BOTON_VOLVER, marginBottom: 0 }}>Cerrar</button>
-      </div>
-      <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.neonAmber, marginBottom: 12 }}>Monedas disponibles: {monedasTotales}</div>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        {PALETA_CARCRASH.map((c) => {
-          const desbloqueado = desbloqueados.includes(c.id);
-          return (
-            <div key={c.id} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, width: 80 }}>
-              <div
-                onClick={() => desbloqueado && onSeleccionar(c.id)}
-                style={{
-                  width: 54, height: 34, borderRadius: 8, background: c.hex,
-                  border: colorId === c.id ? `2px solid ${COLORS.white}` : `2px solid ${COLORS.border}`,
-                  boxShadow: colorId === c.id ? `0 0 12px ${c.hex}aa` : "none",
-                  cursor: desbloqueado ? "pointer" : "not-allowed", opacity: desbloqueado ? 1 : 0.4,
-                }}
-              />
-              {desbloqueado ? (
-                <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: colorId === c.id ? COLORS.white : COLORS.textMuted }}>
-                  {colorId === c.id ? "Elegido" : "Listo"}
-                </span>
-              ) : (
-                <NeonButton small disabled={monedasTotales < c.costo} onClick={() => onDesbloquear(c.id, c.costo)}>
-                  {c.costo}🪙
-                </NeonButton>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </Card>
-  );
-}
-
-function CarCrashView({ user, onVolver }) {
-  const contenedorRef = useRef(null);
-  const canvasRef = useRef(null);
-  const estadoRef = useRef(null);
-  const rafRef = useRef(null);
-  const assetsRef = useRef(null);
-  const inputRef = useRef({ izq: false, der: false, acel: false, freno: false, drift: false });
-
-  const [jugando, setJugando] = useState(false);
-  const [terminado, setTerminado] = useState(false);
-  const [mostrarGarage, setMostrarGarage] = useState(false);
-  const [distanciaMostrada, setDistanciaMostrada] = useState(0);
-  const [monedasSesion, setMonedasSesion] = useState(0);
-  const [mejorDistancia, setMejorDistancia] = useState(0);
-  const [monedasTotales, setMonedasTotales] = useState(0);
-  const [colorId, setColorId] = useState(() => colorCarCrashGuardado(user.id));
-  const [desbloqueados, setDesbloqueados] = useState(() => desbloqueadosCarCrashGuardado(user.id));
-  const [misionInfo, setMisionInfo] = useState(null);
-
-  useEffect(() => {
-    setMejorDistancia(Number(localStorage.getItem(`cupula_carcrash_mejor_${user.id}`)) || 0);
-    setMonedasTotales(Number(localStorage.getItem(`cupula_carcrash_monedas_${user.id}`)) || 0);
-    setColorId(colorCarCrashGuardado(user.id));
-    setDesbloqueados(desbloqueadosCarCrashGuardado(user.id));
-  }, [user.id]);
-
-  // AssetManager: se crea y precarga una sola vez por montaje del componente. Si algún PNG del
-  // manifest no existe todavía (404), no pasa nada — ese elemento sigue dibujándose con la forma
-  // vectorial hasta que el archivo aparezca directo dentro de /public/.
-  useEffect(() => {
-    const mgr = new AssetManagerCarCrash();
-    assetsRef.current = mgr;
-    mgr.cargar(CC_ASSET_MANIFEST);
-  }, []);
-
-  // Canvas responsive: el <canvas> ocupa 100% del contenedor que lo envuelve, y su resolución real
-  // en píxeles se ajusta con un ResizeObserver cada vez que ese contenedor cambia de tamaño — el
-  // dibujado (dibujarCarCrash) se encarga de escalar/centrar la resolución lógica fija adentro.
-  useEffect(() => {
-    const contenedor = contenedorRef.current;
-    const canvas = canvasRef.current;
-    if (!contenedor || !canvas) return;
-    const ajustar = () => {
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
-      const w = Math.max(1, Math.round(contenedor.clientWidth * dpr));
-      const h = Math.max(1, Math.round(contenedor.clientHeight * dpr));
-      if (canvas.width !== w) canvas.width = w;
-      if (canvas.height !== h) canvas.height = h;
-    };
-    ajustar();
-    const ro = new ResizeObserver(ajustar);
-    ro.observe(contenedor);
-    return () => ro.disconnect();
-  }, []);
-
-  const iniciar = useCallback(() => {
-    estadoRef.current = crearEstadoCarCrash();
-    setDistanciaMostrada(0);
-    setMonedasSesion(0);
-    setMisionInfo(null);
-    setTerminado(false);
-    setJugando(true);
-  }, []);
-
-  useEffect(() => {
-    const TECLAS = { arrowleft: "izq", a: "izq", arrowright: "der", d: "der", arrowup: "acel", w: "acel", arrowdown: "freno", s: "freno", " ": "drift", shift: "drift" };
-    const onDown = (e) => { const a = TECLAS[e.key.toLowerCase()]; if (a) { e.preventDefault(); inputRef.current[a] = true; } };
-    const onUp = (e) => { const a = TECLAS[e.key.toLowerCase()]; if (a) inputRef.current[a] = false; };
-    window.addEventListener("keydown", onDown);
-    window.addEventListener("keyup", onUp);
-    return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
-  }, []);
-
-  useEffect(() => {
-    if (!jugando) return;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
-    let ultimoTs = null;
-    let distPrev = -1, monedasPrev = -1, misionPrevId = null, misionPrevProgreso = -1;
-
-    const loop = (ts) => {
-      const st = estadoRef.current;
-      if (!st || !st.vivo) return;
-      if (ultimoTs === null) ultimoTs = ts;
-      const dt = Math.min(0.05, Math.max(0, (ts - ultimoTs) / 1000));
-      ultimoTs = ts;
-
-      actualizarCarCrash(st, dt, inputRef.current);
-
-      const distMetros = Math.floor(st.distancia / 8);
-      if (distMetros !== distPrev) { distPrev = distMetros; setDistanciaMostrada(distMetros); }
-      if (st.monedasSesion !== monedasPrev) { monedasPrev = st.monedasSesion; setMonedasSesion(st.monedasSesion); }
-      if (st.mision) {
-        const progreso = Math.min(st.mision.meta, Math.max(0, Math.floor(progresoMisionCarCrash(st))));
-        if (st.mision.id !== misionPrevId || progreso !== misionPrevProgreso) {
-          misionPrevId = st.mision.id; misionPrevProgreso = progreso;
-          setMisionInfo({ texto: st.mision.texto, meta: st.mision.meta, progreso });
-        }
-      }
-
-      dibujarCarCrash(ctx, st, hexColorCarCrash(colorId), colorId, biomaEnDistancia(st.distancia), assetsRef.current);
-
-      if (!st.vivo) {
-        const totalPrevio = Number(localStorage.getItem(`cupula_carcrash_monedas_${user.id}`)) || 0;
-        const totalNuevo = totalPrevio + st.monedasSesion;
-        try { localStorage.setItem(`cupula_carcrash_monedas_${user.id}`, String(totalNuevo)); } catch (e) {}
-        setMonedasTotales(totalNuevo);
-        const mejorPrevio = Number(localStorage.getItem(`cupula_carcrash_mejor_${user.id}`)) || 0;
-        if (distMetros > mejorPrevio) {
-          try { localStorage.setItem(`cupula_carcrash_mejor_${user.id}`, String(distMetros)); } catch (e) {}
-          setMejorDistancia(distMetros);
-        }
-        setTerminado(true);
-        setJugando(false);
-        return;
-      }
-      rafRef.current = requestAnimationFrame(loop);
-    };
-    rafRef.current = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(rafRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jugando, user.id, colorId]);
-
-  const seleccionarColor = (id) => {
-    setColorId(id);
-    guardarColorCarCrashLocal(user.id, id);
-  };
-  const desbloquearColor = (id, costo) => {
-    if (desbloqueados.includes(id) || monedasTotales < costo) return;
-    const nuevos = [...desbloqueados, id];
-    const restante = monedasTotales - costo;
-    setDesbloqueados(nuevos);
-    setMonedasTotales(restante);
-    setColorId(id);
-    guardarDesbloqueadosCarCrashLocal(user.id, nuevos);
-    guardarColorCarCrashLocal(user.id, id);
-    try { localStorage.setItem(`cupula_carcrash_monedas_${user.id}`, String(restante)); } catch (e) {}
-  };
-
-  return (
-    <div>
-      <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver a Cúpula Games</button>
-      <SectionTitle>Car Crash</SectionTitle>
-      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-        <Badge color={COLORS.neonAmber}>📏 {distanciaMostrada}m</Badge>
-        <Badge color={COLORS.neonSuccess}>🪙 {monedasSesion}</Badge>
-        <Badge color={COLORS.textMuted}>Mejor: {mejorDistancia}m</Badge>
-        <Badge color={COLORS.neonMagenta}>Monedas: {monedasTotales}</Badge>
-      </div>
-      {jugando && misionInfo && (
-        <div style={{ marginBottom: 10 }}>
-          <Badge color={COLORS.neonBlue}>🎯 {misionInfo.texto} ({misionInfo.progreso}/{misionInfo.meta})</Badge>
-        </div>
-      )}
-      <Card style={{ padding: 6, marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center" }}>
-        <div ref={contenedorRef} style={{ position: "relative", width: "100%", maxWidth: 640, aspectRatio: `${CC_ANCHO} / ${CC_ALTO}` }}>
-          <canvas
-            ref={canvasRef}
-            style={{ width: "100%", height: "100%", display: "block", background: "#000000", border: `2px solid ${COLORS.neonAmber}`, borderRadius: 8, boxShadow: `0 0 26px ${COLORS.neonAmber}55, inset 0 0 40px #00000088` }}
-          />
-          {!jugando && (
-            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, background: "rgba(5,7,13,0.85)", borderRadius: 8, padding: 16, textAlign: "center" }}>
-              <div style={{ fontFamily: FONT_DISPLAY, fontSize: 24, color: COLORS.white, letterSpacing: 2, textShadow: `0 0 12px ${COLORS.neonAmber}` }}>
-                {terminado ? "TE ATRAPARON" : "CAR CRASH"}
-              </div>
-              {terminado && (
-                <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: COLORS.neonAmber }}>
-                  {distanciaMostrada}m · +{monedasSesion} monedas
-                </div>
-              )}
-              <NeonButton active onClick={iniciar}>{terminado ? "Reintentar" : "Jugar"}</NeonButton>
-              <NeonButton onClick={() => setMostrarGarage(true)}>Garage</NeonButton>
-            </div>
-          )}
-        </div>
-      </Card>
-      {jugando && (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ display: "flex", gap: 8 }}>
-            <BotonAccionCabezones color={COLORS.neonBlue} onPress={() => { inputRef.current.izq = true; }} onRelease={() => { inputRef.current.izq = false; }}>◀</BotonAccionCabezones>
-            <BotonAccionCabezones color={COLORS.neonBlue} onPress={() => { inputRef.current.der = true; }} onRelease={() => { inputRef.current.der = false; }}>▶</BotonAccionCabezones>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <BotonAccionCabezones color={COLORS.neonAmber} ancho={100} onPress={() => { inputRef.current.drift = true; }} onRelease={() => { inputRef.current.drift = false; }}>DERRAPE</BotonAccionCabezones>
-          </div>
-        </div>
-      )}
-      <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginTop: 10, textAlign: "center" }}>
-        PC: flechas/AD para moverte, W/↑ acelera, S/↓ frena, Espacio derrapa. Celular: usa los botones de abajo.
-      </div>
-      {mostrarGarage && (
-        <GarageCarCrash
-          colorId={colorId} desbloqueados={desbloqueados} monedasTotales={monedasTotales}
-          onSeleccionar={seleccionarColor} onDesbloquear={desbloquearColor} onCerrar={() => setMostrarGarage(false)}
-        />
-      )}
-    </div>
-  );
-}
-
-// ---- 3) No haga sino Jogar (fútbol de cabezones — 1 vs bot o en línea 1v1 con los de la cúpula) ----
+// ---- 2) No haga sino Jogar (fútbol de cabezones — 1 vs bot o en línea 1v1 con los de la cúpula) ----
 // Vista lateral estilo "Head Soccer" / "Big Head Football": cada quien mueve a su cabezón,
 // salta y patea/cabecea el balón hacia el arco rival. Se puede jugar solo contra un bot, o en
 // línea contra otro de los 5 de la cúpula. La física (gravedad, saltos, patadas, rebotes, goles
@@ -4895,18 +4082,17 @@ function PartidaBotCabezones({ user, colorLocal, config, dificultad, onVolver, o
   const soltar = (accion) => { entradaLocalRef.current[accion] = false; };
 
   return (
-    <div>
-      <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver</button>
-      <SectionTitle>No haga sino Jogar — vs. Computador</SectionTitle>
-      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+    <div style={{ position: "fixed", inset: 0, background: "#05070d", zIndex: 100, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ flexShrink: 0, padding: "12px 14px 4px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <button onClick={onVolver} style={{ ...ESTILO_BOTON_VOLVER, marginBottom: 0 }}>← Volver</button>
         <Badge color={COLORS.neonBlue}>Tú {marcador.golesIzq} - {marcador.golesDer} Computador</Badge>
         <Badge color={COLORS.textMuted}>⏱ {Math.ceil(marcador.tiempoRestante)}s</Badge>
         <Badge color={(DIFICULTADES_BOT_UI.find((d) => d.id === dificultad) || DIFICULTADES_BOT_UI[1]).color}>
           {(DIFICULTADES_BOT_UI.find((d) => d.id === dificultad) || DIFICULTADES_BOT_UI[1]).etiqueta}
         </Badge>
       </div>
-      <Card style={{ padding: 6, marginBottom: 14 }}>
-        <div style={{ position: "relative", width: "100%", aspectRatio: `${CABEZONES_ANCHO} / ${CABEZONES_ALTO}`, borderRadius: 8, overflow: "hidden", border: `2px solid ${COLORS.neonMagenta}`, boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
+      <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 14px" }}>
+        <div style={{ position: "relative", maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", aspectRatio: `${CABEZONES_ANCHO} / ${CABEZONES_ALTO}`, borderRadius: 8, overflow: "hidden", border: `2px solid ${COLORS.neonMagenta}`, boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
           <MotorCabezones
             esHost
             ladoLocal="izquierda"
@@ -4933,8 +4119,8 @@ function PartidaBotCabezones({ user, colorLocal, config, dificultad, onVolver, o
             </div>
           )}
         </div>
-      </Card>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", opacity: marcador.fase === "terminado" ? 0.35 : 1, pointerEvents: marcador.fase === "terminado" ? "none" : "auto" }}>
+      </div>
+      <div style={{ flexShrink: 0, padding: "6px 14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", opacity: marcador.fase === "terminado" ? 0.35 : 1, pointerEvents: marcador.fase === "terminado" ? "none" : "auto" }}>
         <div style={{ display: "flex", gap: 8 }}>
           <BotonAccionCabezones color={COLORS.neonBlue} onPress={() => presionar("izq")} onRelease={() => soltar("izq")}>◀</BotonAccionCabezones>
           <BotonAccionCabezones color={COLORS.neonBlue} onPress={() => presionar("der")} onRelease={() => soltar("der")}>▶</BotonAccionCabezones>
@@ -5336,16 +4522,15 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
   const colorDer = soyJugador2 ? hexColorCabezones(colorLocal) : COLORS.neonRed;
 
   return (
-    <div>
-      <button onClick={salirDeLaSala} style={ESTILO_BOTON_VOLVER}>← Volver</button>
-      <SectionTitle>No haga sino Jogar — vs. {oponente.nombre}</SectionTitle>
-      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+    <div style={{ position: "fixed", inset: 0, background: "#05070d", zIndex: 100, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ flexShrink: 0, padding: "12px 14px 4px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <button onClick={salirDeLaSala} style={{ ...ESTILO_BOTON_VOLVER, marginBottom: 0 }}>← Volver</button>
         <Badge color={COLORS.neonBlue}>{nombreIzq} {marcador.golesIzq} - {marcador.golesDer} {nombreDer}</Badge>
         <Badge color={COLORS.textMuted}>⏱ {Math.ceil(marcador.tiempoRestante)}s</Badge>
         <Badge color={COLORS.neonMagenta}>{soyJugador1 ? "Jugador 1" : "Jugador 2"}</Badge>
       </div>
-      <Card style={{ padding: 6, marginBottom: 14 }}>
-        <div style={{ position: "relative", width: "100%", aspectRatio: `${CABEZONES_ANCHO} / ${CABEZONES_ALTO}`, borderRadius: 8, overflow: "hidden", border: `2px solid ${COLORS.neonMagenta}`, boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
+      <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 14px" }}>
+        <div style={{ position: "relative", maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", aspectRatio: `${CABEZONES_ANCHO} / ${CABEZONES_ALTO}`, borderRadius: 8, overflow: "hidden", border: `2px solid ${COLORS.neonMagenta}`, boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
           <MotorCabezones
             esHost={false}
             modoServidor
@@ -5380,8 +4565,8 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
             </div>
           )}
         </div>
-      </Card>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", opacity: marcador.fase === "terminado" ? 0.35 : 1, pointerEvents: marcador.fase === "terminado" ? "none" : "auto" }}>
+      </div>
+      <div style={{ flexShrink: 0, padding: "6px 14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", opacity: marcador.fase === "terminado" ? 0.35 : 1, pointerEvents: marcador.fase === "terminado" ? "none" : "auto" }}>
         <div style={{ display: "flex", gap: 8 }}>
           <BotonAccionCabezones color={COLORS.neonBlue} onPress={() => presionar("izq")} onRelease={() => soltar("izq")}>◀</BotonAccionCabezones>
           <BotonAccionCabezones color={COLORS.neonBlue} onPress={() => presionar("der")} onRelease={() => soltar("der")}>▶</BotonAccionCabezones>
@@ -5619,11 +4804,862 @@ function NoHagaSinoJogarView({ user, onVolver }) {
   );
 }
 
+// ---- 3) Cúpula GP (carreras de circuito cerrado, físicas vectoriales estilo F1) ----
+// Motor de carreras top-down con circuito cerrado, con ambientación (gradas, árboles, pianito,
+// pasto con franjas) dibujada con formas vectoriales — no depende de ningún PNG de pista.
+// Físicas: cada auto tiene un "heading" (ángulo al que apunta) y una velocidad real (vx, vy) —
+// se descompone esa velocidad en componente frontal y lateral con producto punto, y se le aplica
+// fricción fuerte a la lateral (agarre/grip); si la lateral se dispara al girar fuerte, el auto
+// entra en derrape temporal antes de volver a alinearse. Fuera de pista la fricción sube mucho y
+// la velocidad tope baja un 60%.
+//
+// Detección de pista: en vez de un mapa de píxeles (getImageData) sobre dos imágenes separadas —
+// que depende de subir 2 archivos grandes más, y ya nos costó bastante que las imágenes lleguen
+// bien a GitHub — se usa el equivalente vectorial: el circuito es una curva cerrada de puntos
+// (GP_CENTERLINE) y cada auto mide su distancia al punto más cercano de esa curva cada cuadro; si
+// se pasa de la mitad del ancho de pista, está fuera. Es matemáticamente el mismo resultado
+// (fricción sube, tope baja un 60%) pero no depende de ningún PNG — funciona ya mismo, y si más
+// adelante se sube una imagen de pista real (GP_ASSET_MANIFEST.pistaVisual) se dibuja encima sin
+// tocar la física. El circuito en sí es un óvalo con dos rectas y dos curvas de 180° — simple a
+// propósito para que nunca se cruce a sí mismo (una pista que se cruza rompe la detección).
+//
+// IA: 15 bots (+ 1 jugador = 16, exactos para la grilla 4x4 del spritesheet de autos) siguen la
+// curva del circuito con waypoints (mirando un punto un poco más adelante en la curva con
+// Math.atan2), frenan antes de curvas cerradas, tienen variación aleatoria de velocidad/agarre y
+// un offset lateral propio (su "línea de carrera") para no ir todos en fila india, más un
+// rubber-banding leve según qué tan lejos están del jugador. Chocan entre sí y con el jugador
+// (colisión de círculos simple, se empujan y transfieren algo de velocidad).
+
+const GP_TRACK_ANCHO = 170;
+const GP_TRACK_MITAD = GP_TRACK_ANCHO / 2;
+const GP_NUM_BOTS = 15;
+const GP_AUTO_LARGO = 34;
+const GP_AUTO_ANCHO = 18;
+const GP_RADIO_COLISION = 15;
+const GP_VUELTAS_OPCIONES = [3, 5, 10, 20];
+const GP_VEL_MAX_BASE = 260; // px/s de mundo, a plena pista
+const GP_FUERZA_MOTOR = 210;
+const GP_FUERZA_FRENO = 320;
+const GP_RESISTENCIA = 0.35; // resistencia al rodar (rolling resistance), siempre activa
+const GP_GIRO_MAX = 2.6; // rad/s de referencia a velocidad de crucero
+const GP_UMBRAL_DERRAPE = 70; // velocidad lateral (px/s) a partir de la cual se considera derrape
+const GP_DERRAPE_MS = 320; // cuánto se mantiene el estado de derrape una vez disparado
+const GP_CAMARA_LOOKAHEAD = 90;
+const GP_CAMARA_SUAVIDAD = 0.00002; // más chico = cámara más "pegada"; se usa como base de un lerp exponencial independiente del framerate
+
+// Circuito: óvalo simple (dos rectas + dos semicírculos de 180°) — no se autointersecta nunca.
+function construirCircuitoGP() {
+  const recta = 900, radio = 260;
+  const nRecta = 44, nCurva = 46;
+  const pts = [];
+  for (let i = 0; i < nRecta; i++) {
+    const t = i / nRecta;
+    pts.push({ x: -recta / 2 + t * recta, y: -radio });
+  }
+  for (let i = 0; i < nCurva; i++) {
+    const ang = -Math.PI / 2 + (i / nCurva) * Math.PI;
+    pts.push({ x: recta / 2 + Math.cos(ang) * radio, y: Math.sin(ang) * radio });
+  }
+  for (let i = 0; i < nRecta; i++) {
+    const t = i / nRecta;
+    pts.push({ x: recta / 2 - t * recta, y: radio });
+  }
+  for (let i = 0; i < nCurva; i++) {
+    const ang = Math.PI / 2 + (i / nCurva) * Math.PI;
+    pts.push({ x: -recta / 2 + Math.cos(ang) * radio, y: Math.sin(ang) * radio });
+  }
+  return pts;
+}
+const GP_CENTERLINE = construirCircuitoGP();
+const GP_N_PUNTOS = GP_CENTERLINE.length;
+const GP_LONGITUDES = (() => {
+  const arr = [0];
+  for (let i = 1; i <= GP_N_PUNTOS; i++) {
+    const a = GP_CENTERLINE[i - 1];
+    const b = GP_CENTERLINE[i % GP_N_PUNTOS];
+    arr.push(arr[i - 1] + Math.hypot(b.x - a.x, b.y - a.y));
+  }
+  return arr;
+})();
+const GP_LARGO_VUELTA = GP_LONGITUDES[GP_N_PUNTOS];
+
+// Índice del punto de la curva más cercano a (x,y), buscando en una ventana alrededor del último
+// índice conocido (mucho más barato que recorrer los ~180 puntos enteros cada cuadro, para 16 autos).
+function indiceCercanoGP(x, y, idxAprox) {
+  const N = GP_N_PUNTOS;
+  let mejorIdx = idxAprox, mejorD = Infinity;
+  for (let d = -18; d <= 18; d++) {
+    const i = ((idxAprox + d) % N + N) % N;
+    const p = GP_CENTERLINE[i];
+    const dx = p.x - x, dy = p.y - y;
+    const dist = dx * dx + dy * dy;
+    if (dist < mejorD) { mejorD = dist; mejorIdx = i; }
+  }
+  return { idx: mejorIdx, dist: Math.sqrt(mejorD) };
+}
+
+// Vector perpendicular a la curva en un punto (para offsets de línea de carrera de los bots).
+function lateralEnGP(idx) {
+  const N = GP_N_PUNTOS;
+  const a = GP_CENTERLINE[(idx - 1 + N) % N];
+  const b = GP_CENTERLINE[(idx + 1) % N];
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  return { x: -dy / len, y: dx / len };
+}
+
+// Ambientación del circuito: gradas, árboles, banderas y pilas de neumáticos ubicados a intervalos
+// fijos alrededor del óvalo (por fuera del ancho de pista), todo dibujado con formas vectoriales —
+// no depende de ningún PNG. Se calcula una sola vez (el circuito no cambia) y el tipo de cada
+// elemento sale de su índice, así siempre queda igual entre partidas (nada parpadea ni se reubica
+// solo). Inspirado en las convenciones visuales típicas de juegos de carreras top-down (asfalto
+// gris con pianito rojo/blanco, pasto con franjas de corte, gradas y banderas de colores).
+function construirDecoracionesGP() {
+  const decos = [];
+  const paso = 7; // cada cuántos puntos de la curva (de ~180) va un elemento
+  for (let i = 0; i < GP_N_PUNTOS; i += paso) {
+    const p = GP_CENTERLINE[i];
+    const lat = lateralEnGP(i);
+    const cicloTipo = Math.floor(i / paso) % 5;
+    // Rectas (donde y = ±radio aprox.) llevan más gradas; curvas llevan más neumáticos/árboles.
+    let tipo;
+    if (cicloTipo === 0) tipo = "grada";
+    else if (cicloTipo === 1 || cicloTipo === 3) tipo = "arbol";
+    else if (cicloTipo === 2) tipo = "neumaticos";
+    else tipo = "bandera";
+    const lado = (Math.floor(i / paso) % 2 === 0) ? 1 : -1;
+    const offset = GP_TRACK_MITAD + 46 + (tipo === "grada" ? 30 : 0) + (Math.sin(i * 0.7) * 12);
+    decos.push({
+      tipo,
+      x: p.x + lat.x * offset * lado,
+      y: p.y + lat.y * offset * lado,
+      rot: Math.atan2(lat.y, lat.x) * lado,
+      lado,
+    });
+  }
+  return decos;
+}
+const GP_DECORACIONES = construirDecoracionesGP();
+
+function dibujarArbolGP(ctx, x, y) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = "rgba(0,0,0,0.28)";
+  ctx.beginPath(); ctx.ellipse(2, 4, 12, 5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#3D2A16";
+  ctx.fillRect(-2.5, -6, 5, 12);
+  const copas = [[-6, -18, 11], [6, -20, 12], [0, -28, 13]];
+  copas.forEach(([cx, cy, r], idx) => {
+    ctx.fillStyle = idx % 2 === 0 ? "#1F7A3A" : "#238C42";
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.restore();
+}
+
+function dibujarGradaGP(ctx, x, y, rot) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  const ancho = 64, alto = 26;
+  ctx.fillStyle = "rgba(0,0,0,0.3)";
+  ctx.fillRect(-ancho / 2, 6, ancho, 6);
+  // Estructura del techo/soporte.
+  ctx.fillStyle = "#2A2E38";
+  ctx.fillRect(-ancho / 2 - 4, -alto / 2 - 6, ancho + 8, 6);
+  // Gradas escalonadas con "espectadores" como puntos de color.
+  const filas = 4;
+  for (let f = 0; f < filas; f++) {
+    const fy = -alto / 2 + f * (alto / filas) + 2;
+    ctx.fillStyle = f % 2 === 0 ? "#3A3F4C" : "#31353F";
+    ctx.fillRect(-ancho / 2, fy, ancho, alto / filas - 1);
+    for (let s = 0; s < 9; s++) {
+      const sx = -ancho / 2 + 4 + s * (ancho - 8) / 8;
+      const hue = (s * 53 + f * 97) % 360;
+      ctx.fillStyle = `hsl(${hue}, 65%, ${55 + (f % 2) * 8}%)`;
+      ctx.beginPath(); ctx.arc(sx, fy + (alto / filas) / 2, 1.6, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function dibujarNeumaticosGP(ctx, x, y, rot) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  const posiciones = [[-8, 0], [8, 0], [0, -9], [-8, -14], [8, -14]];
+  posiciones.forEach(([px, py]) => {
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.beginPath(); ctx.ellipse(px + 1, py + 6, 7, 3, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#1A1A1E";
+    ctx.beginPath(); ctx.arc(px, py, 6.5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#EDEDED";
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(px, py, 6.5, 0, Math.PI * 2); ctx.stroke();
+  });
+  ctx.restore();
+}
+
+function dibujarBanderaGP(ctx, x, y, rot, colorId) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.strokeStyle = "#8A8E98";
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, 10); ctx.lineTo(0, -26); ctx.stroke();
+  const colores = ["#E23B3B", COLORS.neonAmber, COLORS.neonBlue, "#EDEDED"];
+  ctx.fillStyle = colores[colorId % colores.length];
+  ctx.beginPath();
+  ctx.moveTo(0, -26); ctx.lineTo(16, -21); ctx.lineTo(0, -16);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function dibujarDecoracionGP(ctx, deco, idx) {
+  if (deco.tipo === "arbol") dibujarArbolGP(ctx, deco.x, deco.y);
+  else if (deco.tipo === "grada") dibujarGradaGP(ctx, deco.x, deco.y, deco.rot);
+  else if (deco.tipo === "neumaticos") dibujarNeumaticosGP(ctx, deco.x, deco.y, deco.rot);
+  else dibujarBanderaGP(ctx, deco.x, deco.y, deco.rot, idx);
+}
+
+// Curbs tipo "pianito": bloques cortos alternados rojo/blanco pegados a cada borde de la pista,
+// orientados con la tangente de la curva en ese punto — más parecido a un circuito real que una
+// simple línea punteada.
+function dibujarCurbsGP(ctx) {
+  const pasoCurb = 2;
+  for (let i = 0; i < GP_N_PUNTOS; i += pasoCurb) {
+    const p = GP_CENTERLINE[i];
+    const lat = lateralEnGP(i);
+    const tangRot = Math.atan2(GP_CENTERLINE[(i + 1) % GP_N_PUNTOS].y - p.y, GP_CENTERLINE[(i + 1) % GP_N_PUNTOS].x - p.x);
+    const color = Math.floor(i / pasoCurb) % 2 === 0 ? "#E23B3B" : "#EDEDED";
+    ctx.fillStyle = color;
+    [1, -1].forEach((lado) => {
+      const cx = p.x + lat.x * GP_TRACK_MITAD * lado;
+      const cy = p.y + lat.y * GP_TRACK_MITAD * lado;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(tangRot);
+      ctx.fillRect(-1, -8, 10, 16);
+      ctx.restore();
+    });
+  }
+}
+
+let GP_PATRON_PASTO_CACHE = null;
+function obtenerPatronPastoGP(ctx) {
+  if (GP_PATRON_PASTO_CACHE) return GP_PATRON_PASTO_CACHE;
+  const tile = document.createElement("canvas");
+  tile.width = 96; tile.height = 96;
+  const tctx = tile.getContext("2d");
+  tctx.fillStyle = "#123A1C";
+  tctx.fillRect(0, 0, 96, 96);
+  tctx.fillStyle = "#173F20";
+  tctx.fillRect(0, 0, 96, 48);
+  GP_PATRON_PASTO_CACHE = ctx.createPattern(tile, "repeat");
+  return GP_PATRON_PASTO_CACHE;
+}
+
+function crearAutoGP({ esBot, skinIndex, idxInicial }) {
+  const p = GP_CENTERLINE[idxInicial];
+  const lat = lateralEnGP(idxInicial);
+  const offsetSalida = esBot ? (Math.random() * 2 - 1) * GP_TRACK_MITAD * 0.5 : 0;
+  const anguloInicial = Math.atan2(
+    GP_CENTERLINE[(idxInicial + 1) % GP_N_PUNTOS].y - p.y,
+    GP_CENTERLINE[(idxInicial + 1) % GP_N_PUNTOS].x - p.x
+  );
+  return {
+    esBot, skinIndex,
+    x: p.x + lat.x * offsetSalida, y: p.y + lat.y * offsetSalida,
+    heading: anguloInicial, vx: 0, vy: 0,
+    idxCercano: idxInicial, offRoad: false,
+    enDerrape: false, derrapeHasta: 0,
+    vueltas: -1, ultimaVueltaMs: 0, // -1 porque cruzar la salida al arrancar no debe contar
+    velMaxBase: GP_VEL_MAX_BASE * (esBot ? 0.9 + Math.random() * 0.16 : 1),
+    offsetLinea: esBot ? (Math.random() * 2 - 1) * GP_TRACK_MITAD * 0.55 : 0,
+    faseOffset: Math.random() * Math.PI * 2,
+    lookahead: 9 + Math.floor(Math.random() * 6),
+  };
+}
+
+function progresoGP(auto) {
+  return Math.max(0, auto.vueltas) * GP_LARGO_VUELTA + GP_LONGITUDES[auto.idxCercano];
+}
+
+// Le arma la entrada (acelerar/frenar/girar) a un bot mirando un punto más adelante en la curva,
+// con su propio offset lateral (línea de carrera) para no ir todos pegados al centro.
+function entradaBotGP(bot, autos) {
+  const objIdx = (bot.idxCercano + bot.lookahead) % GP_N_PUNTOS;
+  const lat = lateralEnGP(objIdx);
+  const offsetVivo = bot.offsetLinea * (0.7 + 0.3 * Math.sin(Date.now() / 1400 + bot.faseOffset));
+  const obj = { x: GP_CENTERLINE[objIdx].x + lat.x * offsetVivo, y: GP_CENTERLINE[objIdx].y + lat.y * offsetVivo };
+  let diff = Math.atan2(obj.y - bot.y, obj.x - bot.x) - bot.heading;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  const dir = Math.max(-1, Math.min(1, diff * 2.4));
+
+  // Curvatura más adelante, para frenar antes de curvas cerradas.
+  const objLejosIdx = (bot.idxCercano + bot.lookahead * 3) % GP_N_PUNTOS;
+  const anguloAhora = Math.atan2(obj.y - bot.y, obj.x - bot.x);
+  const objLejos = GP_CENTERLINE[objLejosIdx];
+  let diffCurva = Math.atan2(objLejos.y - bot.y, objLejos.x - bot.x) - anguloAhora;
+  while (diffCurva > Math.PI) diffCurva -= Math.PI * 2;
+  while (diffCurva < -Math.PI) diffCurva += Math.PI * 2;
+  const curvatura = Math.abs(diffCurva);
+  const velActual = Math.hypot(bot.vx, bot.vy);
+  const freno = curvatura > 0.85 && velActual > bot.velMaxBase * 0.55;
+  return { accel: !freno, freno, dir };
+}
+
+// Rebufo: si hay otro auto justo adelante (dentro de ~90 unidades, casi alineado con el heading),
+// da un 15% extra de fuerza de motor — beneficia a quien va detrás, sea el jugador o un bot.
+function hayRebufoGP(auto, autos) {
+  const dirH = { x: Math.cos(auto.heading), y: Math.sin(auto.heading) };
+  for (const otro of autos) {
+    if (otro === auto) continue;
+    const dx = otro.x - auto.x, dy = otro.y - auto.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 85 || dist < 1) continue;
+    const alineacion = (dx * dirH.x + dy * dirH.y) / dist;
+    if (alineacion > 0.92) return true;
+  }
+  return false;
+}
+
+function actualizarFisicaAutoGP(auto, dt, entrada, rebufo) {
+  const dirH = { x: Math.cos(auto.heading), y: Math.sin(auto.heading) };
+  const dirL = { x: -dirH.y, y: dirH.x };
+  const vAdelante = auto.vx * dirH.x + auto.vy * dirH.y;
+  const vLateral = auto.vx * dirL.x + auto.vy * dirL.y;
+
+  const factorSuperficie = auto.offRoad ? 0.4 : 1;
+  const amortLateralBase = auto.offRoad ? 11 : 6.2;
+
+  const ahora = Date.now();
+  if (Math.abs(vLateral) > GP_UMBRAL_DERRAPE) auto.derrapeHasta = ahora + GP_DERRAPE_MS;
+  auto.enDerrape = ahora < auto.derrapeHasta;
+  const amortLateral = auto.enDerrape ? amortLateralBase * 0.32 : amortLateralBase;
+
+  let fuerza = 0;
+  if (entrada.accel) fuerza += GP_FUERZA_MOTOR * (rebufo ? 1.15 : 1);
+  if (entrada.freno) fuerza -= GP_FUERZA_FRENO;
+
+  let nuevoVAdelante = vAdelante + fuerza * dt;
+  nuevoVAdelante *= Math.max(0, 1 - GP_RESISTENCIA * dt);
+  const velMaxEfectiva = auto.velMaxBase * factorSuperficie;
+  nuevoVAdelante = Math.max(-velMaxEfectiva * 0.45, Math.min(velMaxEfectiva, nuevoVAdelante));
+
+  const nuevoVLateral = vLateral * Math.max(0, 1 - amortLateral * dt * 8);
+
+  const velAbs = Math.hypot(auto.vx, auto.vy);
+  if (velAbs > 6) {
+    const factorVel = Math.min(1, velAbs / 130);
+    const signo = nuevoVAdelante < 0 ? -1 : 1;
+    auto.heading += entrada.dir * GP_GIRO_MAX * factorVel * dt * signo;
+  }
+
+  auto.vx = dirH.x * nuevoVAdelante + dirL.x * nuevoVLateral;
+  auto.vy = dirH.y * nuevoVAdelante + dirL.y * nuevoVLateral;
+  auto.x += auto.vx * dt;
+  auto.y += auto.vy * dt;
+}
+
+function resolverColisionesGP(autos) {
+  for (let i = 0; i < autos.length; i++) {
+    for (let j = i + 1; j < autos.length; j++) {
+      const a = autos[i], b = autos[j];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.hypot(dx, dy);
+      const minDist = GP_RADIO_COLISION * 2;
+      if (dist > 0.001 && dist < minDist) {
+        const nx = dx / dist, ny = dy / dist;
+        const solape = (minDist - dist) / 2;
+        a.x -= nx * solape; a.y -= ny * solape;
+        b.x += nx * solape; b.y += ny * solape;
+        const impulso = 0.45;
+        const avx = a.vx, avy = a.vy;
+        a.vx = a.vx * (1 - impulso) + b.vx * impulso * 0.6;
+        a.vy = a.vy * (1 - impulso) + b.vy * impulso * 0.6;
+        b.vx = b.vx * (1 - impulso) + avx * impulso * 0.6;
+        b.vy = b.vy * (1 - impulso) + avy * impulso * 0.6;
+      }
+    }
+  }
+}
+
+function crearEstadoGP(skinJugador, totalVueltas) {
+  const autos = [];
+  // Grilla de largada: todos arrancan un poco antes del índice 0 (la línea de meta), en filas
+  // escalonadas para no aparecer superpuestos.
+  const idxSalida = GP_N_PUNTOS - 6;
+  const orden = [{ esBot: false, skinIndex: skinJugador }];
+  const skinsBots = [];
+  for (let i = 0; i < GP_NUM_BOTS; i++) skinsBots.push((skinJugador + 1 + i) % 16);
+  for (const s of skinsBots) orden.push({ esBot: true, skinIndex: s });
+  orden.forEach((o, i) => {
+    const idx = (idxSalida - Math.floor(i / 2) * 3 + GP_N_PUNTOS) % GP_N_PUNTOS;
+    const auto = crearAutoGP({ esBot: o.esBot, skinIndex: o.skinIndex, idxInicial: idx });
+    if (o.esBot) auto.offsetLinea = (i % 2 === 0 ? 1 : -1) * GP_TRACK_MITAD * 0.4;
+    autos.push(auto);
+  });
+  return {
+    autos, jugador: autos[0], totalVueltas,
+    inicioMs: Date.now(), terminado: false, posicionFinalJugador: 0,
+    marcasDerrape: [], particulas: [], camara: { x: autos[0].x, y: autos[0].y },
+    cuentaRegresiva: 3.2,
+  };
+}
+
+function actualizarGP(st, dt, entrada) {
+  if (st.cuentaRegresiva > 0) {
+    st.cuentaRegresiva -= dt;
+    return;
+  }
+  for (const auto of st.autos) {
+    const cercano = indiceCercanoGP(auto.x, auto.y, auto.idxCercano);
+    const idxPrevio = auto.idxCercano;
+    auto.idxCercano = cercano.idx;
+    auto.offRoad = cercano.dist > GP_TRACK_MITAD;
+
+    // Vuelta: el índice más cercano pasa de estar cerca del final (N-1) a cerca del arranque (0).
+    if (idxPrevio > GP_N_PUNTOS * 0.75 && auto.idxCercano < GP_N_PUNTOS * 0.25) {
+      auto.vueltas += 1;
+      auto.ultimaVueltaMs = Date.now();
+      if (!auto.esBot && auto.vueltas >= st.totalVueltas && !st.terminado) {
+        st.terminado = true;
+        const ordenados = [...st.autos].sort((a, b) => progresoGP(b) - progresoGP(a));
+        st.posicionFinalJugador = ordenados.indexOf(st.jugador) + 1;
+      }
+    }
+
+    const entradaAuto = auto.esBot ? entradaBotGP(auto, st.autos) : entrada;
+    const rebufo = hayRebufoGP(auto, st.autos);
+    actualizarFisicaAutoGP(auto, dt, entradaAuto, rebufo);
+
+    if (auto.enDerrape && Math.random() < 0.6) {
+      st.marcasDerrape.push({ x: auto.x, y: auto.y, vida: 2.2, vidaMax: 2.2 });
+    }
+  }
+  resolverColisionesGP(st.autos);
+  st.marcasDerrape = st.marcasDerrape.filter((m) => (m.vida -= dt) > 0);
+
+  // Cámara: sigue al jugador con un adelanto en la dirección en que se está moviendo (no
+  // necesariamente hacia donde mira el auto — durante un derrape puede ser distinto).
+  const j = st.jugador;
+  const velAbs = Math.hypot(j.vx, j.vy);
+  const dirCam = velAbs > 25
+    ? { x: j.vx / velAbs, y: j.vy / velAbs }
+    : { x: Math.cos(j.heading), y: Math.sin(j.heading) };
+  const factor = Math.min(1, velAbs / GP_VEL_MAX_BASE);
+  const objX = j.x + dirCam.x * GP_CAMARA_LOOKAHEAD * factor;
+  const objY = j.y + dirCam.y * GP_CAMARA_LOOKAHEAD * factor;
+  const suavidad = 1 - Math.pow(GP_CAMARA_SUAVIDAD, dt);
+  st.camara.x += (objX - st.camara.x) * suavidad;
+  st.camara.y += (objY - st.camara.y) * suavidad;
+}
+
+// Recorta y dibuja un auto de la grilla 4x4 del spritesheet (16 celdas: [0] jugador, [1..15] bots).
+// El sprite original mira "hacia arriba" (como casi todo asset top-down de autos) — como nuestro
+// heading=0 apunta "hacia la derecha", se rota heading+90° para alinear el morro del auto.
+function dibujarSombraAutoGP(ctx, auto, ancho, alto) {
+  ctx.save();
+  ctx.translate(auto.x + 3, auto.y + 4);
+  ctx.rotate(auto.heading + Math.PI / 2);
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.beginPath();
+  ctx.ellipse(0, 0, ancho * 0.62, alto * 0.55, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function dibujarAutoGP(ctx, assets, auto, ancho, alto) {
+  const img = assets.get("autos");
+  ctx.save();
+  ctx.translate(auto.x, auto.y);
+  ctx.rotate(auto.heading + Math.PI / 2);
+  if (img) {
+    const cols = 4, filas = 4;
+    const cw = img.width / cols, ch = img.height / filas;
+    const col = auto.skinIndex % cols, fila = Math.floor(auto.skinIndex / cols);
+    ctx.drawImage(img, col * cw, fila * ch, cw, ch, -ancho / 2, -alto / 2, ancho, alto);
+  } else {
+    const hue = (auto.skinIndex * 47) % 360;
+    ctx.shadowColor = `hsl(${hue},90%,55%)`;
+    ctx.shadowBlur = auto.esBot ? 4 : 10;
+    ctx.fillStyle = `hsl(${hue},80%,50%)`;
+    ctx.beginPath();
+    ctx.moveTo(0, -alto / 2);
+    ctx.lineTo(ancho / 2, alto / 2);
+    ctx.lineTo(-ancho / 2, alto / 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+  // Luces traseras neón (freno) — un par de rectángulos brillantes atrás del auto.
+  const frenando = !auto.esBot ? undefined : undefined;
+  ctx.shadowColor = auto.enDerrape ? COLORS.neonAmber : COLORS.neonRed;
+  ctx.shadowBlur = auto.enDerrape ? 14 : 7;
+  ctx.fillStyle = auto.enDerrape ? COLORS.neonAmber : "#FF2A2A";
+  ctx.fillRect(-ancho / 2 + 2, alto / 2 - 3, 4, 3);
+  ctx.fillRect(ancho / 2 - 6, alto / 2 - 3, 4, 3);
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+function dibujarGP(ctx, st, assets, dimensiones) {
+  const canvas = ctx.canvas;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // Cielo/fondo: degradé sutil detrás de todo (en vez de un verde plano), le da profundidad a la
+  // ambientación general aunque la cámara nunca se aleja lo suficiente para verlo directamente.
+  const cieloGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  cieloGrad.addColorStop(0, "#0d2414");
+  cieloGrad.addColorStop(1, "#081a0e");
+  ctx.fillStyle = cieloGrad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const velAbs = Math.hypot(st.jugador.vx, st.jugador.vy);
+  const escalaZoom = 1 - Math.min(1, velAbs / GP_VEL_MAX_BASE) * 0.12;
+  const cx = canvas.width / 2, cy = canvas.height / 2;
+  ctx.setTransform(escalaZoom, 0, 0, escalaZoom, cx - st.camara.x * escalaZoom, cy - st.camara.y * escalaZoom);
+
+  // Pasto: patrón con franjas de corte (como una cancha/circuito real recién cortado) cubriendo el
+  // área visible alrededor de la cámara, en vez de un relleno liso.
+  const medioAnchoMundo = (canvas.width / escalaZoom) / 2 + 120;
+  const medioAltoMundo = (canvas.height / escalaZoom) / 2 + 120;
+  ctx.fillStyle = obtenerPatronPastoGP(ctx);
+  ctx.fillRect(st.camara.x - medioAnchoMundo, st.camara.y - medioAltoMundo, medioAnchoMundo * 2, medioAltoMundo * 2);
+
+  // Ambientación: gradas, árboles, banderas y pilas de neumáticos alrededor del circuito.
+  GP_DECORACIONES.forEach((deco, idx) => dibujarDecoracionGP(ctx, deco, idx));
+
+  const pistaImg = assets.get("pistaVisual");
+  if (pistaImg) {
+    ctx.drawImage(pistaImg, -pistaImg.width / 2, -pistaImg.height / 2);
+  } else {
+    // Pista vectorial: curva cerrada dibujada como un trazo grueso (asfalto) con pianito rojo/blanco
+    // (bloques, no solo una línea punteada) pegado a cada borde.
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    const trazarCurva = () => {
+      ctx.beginPath();
+      ctx.moveTo(GP_CENTERLINE[0].x, GP_CENTERLINE[0].y);
+      for (let i = 1; i <= GP_N_PUNTOS; i++) {
+        const p = GP_CENTERLINE[i % GP_N_PUNTOS];
+        ctx.lineTo(p.x, p.y);
+      }
+    };
+    // Asfalto con un leve degradé transversal simulando textura (dos pasadas de gris a distinto
+    // ancho, en vez de un solo tono plano).
+    ctx.strokeStyle = "#1B1E26";
+    ctx.lineWidth = GP_TRACK_ANCHO + 4;
+    trazarCurva(); ctx.stroke();
+    ctx.strokeStyle = "#23262F";
+    ctx.lineWidth = GP_TRACK_ANCHO - 30;
+    trazarCurva(); ctx.stroke();
+    ctx.setLineDash([14, 14]);
+    ctx.strokeStyle = "#5A5E6A";
+    ctx.lineWidth = 3;
+    trazarCurva(); ctx.stroke();
+    ctx.setLineDash([]);
+
+    dibujarCurbsGP(ctx);
+
+    // Línea de meta: cuadriculado ancho perpendicular a la pista, más un arco/pórtico simple encima.
+    const p0 = GP_CENTERLINE[0];
+    const lat = lateralEnGP(0);
+    const filas = 6, altoCasilla = GP_TRACK_ANCHO / filas;
+    for (let i = 0; i < filas; i++) {
+      ctx.fillStyle = i % 2 === 0 ? "#EDEDED" : "#171922";
+      const off = -GP_TRACK_MITAD + i * altoCasilla;
+      ctx.fillRect(p0.x + lat.x * off - 4, p0.y + lat.y * off - 4, 8, altoCasilla + 4);
+    }
+    ctx.strokeStyle = "#8A8E98";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(p0.x - lat.x * (GP_TRACK_MITAD + 20), p0.y - lat.y * (GP_TRACK_MITAD + 20));
+    ctx.lineTo(p0.x + lat.x * (GP_TRACK_MITAD + 20), p0.y + lat.y * (GP_TRACK_MITAD + 20));
+    ctx.stroke();
+  }
+
+  st.marcasDerrape.forEach((m) => {
+    ctx.globalAlpha = Math.max(0, m.vida / m.vidaMax) * 0.5;
+    ctx.fillStyle = "#000000";
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  const ordenDibujo = [...st.autos].sort((a, b) => a.y - b.y);
+  ordenDibujo.forEach((auto) => dibujarSombraAutoGP(ctx, auto, GP_AUTO_ANCHO, GP_AUTO_LARGO));
+  ordenDibujo.forEach((auto) => dibujarAutoGP(ctx, assets, auto, GP_AUTO_ANCHO, GP_AUTO_LARGO));
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (st.cuentaRegresiva > 0) {
+    ctx.textAlign = "center";
+    ctx.fillStyle = COLORS.white;
+    ctx.shadowColor = COLORS.neonAmber;
+    ctx.shadowBlur = 20;
+    ctx.font = "800 64px 'Courier New', monospace";
+    const n = Math.ceil(st.cuentaRegresiva);
+    ctx.fillText(n > 0 ? String(n) : "¡YA!", canvas.width / 2, canvas.height / 2);
+    ctx.shadowBlur = 0;
+  }
+}
+
+// Clase de audio mínima, lista para engancharle archivos .mp3 más adelante (rutas en /public/).
+// Nunca revienta si el archivo no existe todavía — playSound() simplemente no hace nada.
+class AudioManagerGP {
+  constructor() {
+    this.buffers = {};
+    this.motorSonando = false;
+  }
+  _obtener(nombre, loop) {
+    if (this.buffers[nombre]) return this.buffers[nombre];
+    try {
+      const audio = new Audio(`/gp_sonido_${nombre}.mp3`);
+      audio.loop = !!loop;
+      audio.volume = nombre === "motor" ? 0.25 : 0.5;
+      this.buffers[nombre] = audio;
+      return audio;
+    } catch (e) { return null; }
+  }
+  playSound(nombre) {
+    const audio = this._obtener(nombre, nombre === "motor");
+    if (!audio) return;
+    try { audio.currentTime = nombre === "motor" ? audio.currentTime : 0; audio.play().catch(() => {}); } catch (e) {}
+  }
+  stopSound(nombre) {
+    const audio = this.buffers[nombre];
+    if (audio) { try { audio.pause(); } catch (e) {} }
+  }
+}
+
+// Rutas planas dentro de /public/ (sin subcarpeta) — es el método que sí funcionó para subir
+// archivos a GitHub en este proyecto.
+const GP_ASSET_MANIFEST = {
+  autos: "/cars_spritesheet.png",
+  pistaVisual: "/gp_pista_visual.png",
+};
+
+const GP_JOYSTICK_RADIO = 46;
+function JoystickGP({ onCambio }) {
+  const baseRef = useRef(null);
+  const [activo, setActivo] = useState(false);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+
+  const manejarMovimiento = (clientX, clientY) => {
+    const base = baseRef.current;
+    if (!base) return;
+    const rect = base.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+    let dx = clientX - cx, dy = clientY - cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist > GP_JOYSTICK_RADIO) { dx = (dx / dist) * GP_JOYSTICK_RADIO; dy = (dy / dist) * GP_JOYSTICK_RADIO; }
+    setPos({ x: dx, y: dy });
+    onCambio(Math.max(-1, Math.min(1, dx / GP_JOYSTICK_RADIO)));
+  };
+  const soltar = () => { setActivo(false); setPos({ x: 0, y: 0 }); onCambio(0); };
+
+  return (
+    <div
+      ref={baseRef}
+      onPointerDown={(e) => { setActivo(true); manejarMovimiento(e.clientX, e.clientY); e.currentTarget.setPointerCapture(e.pointerId); }}
+      onPointerMove={(e) => { if (activo) manejarMovimiento(e.clientX, e.clientY); }}
+      onPointerUp={soltar}
+      onPointerCancel={soltar}
+      style={{
+        position: "absolute", left: 22, bottom: 22, width: GP_JOYSTICK_RADIO * 2, height: GP_JOYSTICK_RADIO * 2,
+        borderRadius: "50%", background: "rgba(10,10,16,0.55)", border: `2px solid ${COLORS.neonBlue}55`,
+        touchAction: "none", userSelect: "none", zIndex: 20,
+      }}
+    >
+      <div style={{
+        position: "absolute", left: "50%", top: "50%", width: 40, height: 40, borderRadius: "50%",
+        background: COLORS.neonBlue, boxShadow: `0 0 14px ${COLORS.neonBlue}`,
+        transform: `translate(${pos.x - 20}px, ${pos.y - 20}px)`,
+      }} />
+    </div>
+  );
+}
+
+function CupulaGPView({ user, onVolver }) {
+  const contenedorRef = useRef(null);
+  const canvasRef = useRef(null);
+  const estadoRef = useRef(null);
+  const rafRef = useRef(null);
+  const assetsRef = useRef(null);
+  const inputRef = useRef({ izq: false, der: false, acel: false, freno: false, joystick: 0 });
+
+  const [fase, setFase] = useState("menu"); // menu | jugando | terminado
+  const [skinElegida, setSkinElegida] = useState(0);
+  const [vueltasElegidas, setVueltasElegidas] = useState(5);
+  const [hud, setHud] = useState({ vuelta: 0, posicion: 1, velocidad: 0 });
+  const [posicionFinal, setPosicionFinal] = useState(0);
+
+  useEffect(() => {
+    const mgr = new AssetManagerJuegos();
+    assetsRef.current = mgr;
+    mgr.cargar(GP_ASSET_MANIFEST);
+  }, []);
+
+  useEffect(() => {
+    if (fase !== "jugando" && fase !== "terminado") return;
+    const contenedor = contenedorRef.current;
+    const canvas = canvasRef.current;
+    if (!contenedor || !canvas) return;
+    const ajustar = () => {
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const w = Math.max(1, Math.round(contenedor.clientWidth * dpr));
+      const h = Math.max(1, Math.round(contenedor.clientHeight * dpr));
+      if (canvas.width !== w) canvas.width = w;
+      if (canvas.height !== h) canvas.height = h;
+    };
+    ajustar();
+    const ro = new ResizeObserver(ajustar);
+    ro.observe(contenedor);
+    return () => ro.disconnect();
+  }, [fase]);
+
+  useEffect(() => {
+    const TECLAS = { arrowleft: "izq", a: "izq", arrowright: "der", d: "der", arrowup: "acel", w: "acel", arrowdown: "freno", s: "freno" };
+    const onDown = (e) => { const a = TECLAS[e.key.toLowerCase()]; if (a) { e.preventDefault(); inputRef.current[a] = true; } };
+    const onUp = (e) => { const a = TECLAS[e.key.toLowerCase()]; if (a) inputRef.current[a] = false; };
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
+  }, []);
+
+  const empezarCarrera = useCallback(() => {
+    estadoRef.current = crearEstadoGP(skinElegida, vueltasElegidas);
+    setHud({ vuelta: 0, posicion: GP_NUM_BOTS + 1, velocidad: 0 });
+    setFase("jugando");
+  }, [skinElegida, vueltasElegidas]);
+
+  useEffect(() => {
+    if (fase !== "jugando") return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    let ultimoTs = null;
+    let vueltaPrev = -1, posPrev = -1, velPrev = -1;
+
+    const loop = (ts) => {
+      const st = estadoRef.current;
+      if (!st) return;
+      if (ultimoTs === null) ultimoTs = ts;
+      const dt = Math.min(0.05, Math.max(0, (ts - ultimoTs) / 1000));
+      ultimoTs = ts;
+
+      const in_ = inputRef.current;
+      const dirTeclado = (in_.izq ? -1 : 0) + (in_.der ? 1 : 0);
+      const dirTotal = Math.max(-1, Math.min(1, dirTeclado + in_.joystick));
+      actualizarGP(st, dt, { accel: in_.acel, freno: in_.freno, dir: dirTotal });
+
+      const vueltaMostrar = Math.max(0, st.jugador.vueltas);
+      const ordenados = [...st.autos].sort((a, b) => progresoGP(b) - progresoGP(a));
+      const posicion = ordenados.indexOf(st.jugador) + 1;
+      const velocidad = Math.round(Math.hypot(st.jugador.vx, st.jugador.vy));
+      if (vueltaMostrar !== vueltaPrev || posicion !== posPrev || Math.abs(velocidad - velPrev) > 2) {
+        vueltaPrev = vueltaMostrar; posPrev = posicion; velPrev = velocidad;
+        setHud({ vuelta: vueltaMostrar, posicion, velocidad });
+      }
+
+      dibujarGP(ctx, st, assetsRef.current);
+
+      if (st.terminado) {
+        setPosicionFinal(st.posicionFinalJugador);
+        setFase("terminado");
+        return;
+      }
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [fase]);
+
+  if (fase === "menu") {
+    const skins = Array.from({ length: 16 }, (_, i) => i);
+    return (
+      <div>
+        <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver a Cúpula Games</button>
+        <SectionTitle>Cúpula GP</SectionTitle>
+        <Card>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>ELEGÍ TU AUTO</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+            {skins.map((s) => (
+              <button key={s} onClick={() => setSkinElegida(s)} style={{
+                width: 42, height: 42, borderRadius: 8, cursor: "pointer",
+                background: `hsl(${(s * 47) % 360},80%,50%)`,
+                border: skinElegida === s ? `3px solid ${COLORS.white}` : "2px solid transparent",
+                boxShadow: skinElegida === s ? `0 0 14px ${COLORS.neonBlue}` : "none",
+              }} />
+            ))}
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>VUELTAS</div>
+          <div style={{ display: "flex", gap: 10, marginBottom: 22 }}>
+            {GP_VUELTAS_OPCIONES.map((v) => (
+              <NeonButton key={v} active={vueltasElegidas === v} onClick={() => setVueltasElegidas(v)}>{v}</NeonButton>
+            ))}
+          </div>
+          <NeonButton active onClick={empezarCarrera}>🏁 Empezar Carrera</NeonButton>
+        </Card>
+      </div>
+    );
+  }
+
+  if (fase === "terminado") {
+    return (
+      <div>
+        <SectionTitle>Cúpula GP — Carrera terminada</SectionTitle>
+        <Card>
+          <div style={{ fontFamily: FONT_DISPLAY, fontSize: 28, color: COLORS.white, marginBottom: 10 }}>
+            Llegaste {posicionFinal}° de {GP_NUM_BOTS + 1}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <NeonButton active onClick={() => setFase("menu")}>Volver al menú</NeonButton>
+            <NeonButton onClick={onVolver}>Salir a Cúpula Games</NeonButton>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#000", zIndex: 100 }}>
+      <div ref={contenedorRef} style={{ position: "absolute", inset: 0 }}>
+        <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+      </div>
+
+      <div style={{ position: "absolute", top: 14, left: 14, zIndex: 20, fontFamily: FONT_MONO, color: COLORS.white, background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "8px 14px", border: `1px solid ${COLORS.neonBlue}55` }}>
+        <div style={{ fontSize: 12, letterSpacing: 1 }}>VUELTA {hud.vuelta}/{vueltasElegidas}</div>
+        <div style={{ fontSize: 12, letterSpacing: 1 }}>POS {hud.posicion}°/{GP_NUM_BOTS + 1}</div>
+      </div>
+      <div style={{ position: "absolute", top: 14, right: 14, zIndex: 20, fontFamily: FONT_MONO, color: COLORS.neonAmber, background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "8px 14px", border: `1px solid ${COLORS.neonAmber}55`, fontSize: 20, fontWeight: 700 }}>
+        {hud.velocidad} <span style={{ fontSize: 10, color: COLORS.textMuted }}>km/h</span>
+      </div>
+
+      <JoystickGP onCambio={(v) => { inputRef.current.joystick = v; }} />
+      <div style={{ position: "absolute", right: 22, bottom: 22, display: "flex", gap: 10, zIndex: 20 }}>
+        <BotonAccionCabezones
+          etiqueta="FRENO"
+          color={COLORS.neonRed}
+          onPress={() => { inputRef.current.freno = true; }}
+          onRelease={() => { inputRef.current.freno = false; }}
+        />
+        <BotonAccionCabezones
+          etiqueta="GAS"
+          color={COLORS.neonSuccess}
+          onPress={() => { inputRef.current.acel = true; }}
+          onRelease={() => { inputRef.current.acel = false; }}
+        />
+      </div>
+    </div>
+  );
+}
+
 // ---- Menú "Cúpula Games" ----
 const CUPULA_GAMES_LISTA = [
   { id: "happyweed", nombre: "Happy Weed", desc: "Estilo Flappy Bird: esquiva los portales neón con tu propia foto convertida en pajarito.", color: COLORS.neonRed },
   { id: "cabezones", nombre: "No haga sino Jogar", desc: "Fútbol de cabezones estilo arcade: corre, salta y patea/cabecea para meter más goles que tu rival, solo contra el computador o en línea 1 contra 1 con los de la cúpula. Tiene power-ups y récord histórico.", color: COLORS.neonMagenta },
-  { id: "carcrash", nombre: "Car Crash", desc: "Carrera de supervivencia infinita vista desde arriba: esquiva tráfico, motos y barricadas, junta monedas, cumple misiones y desbloquea autos nuevos en el garage.", color: COLORS.neonAmber },
+  { id: "cupulagp", nombre: "Cúpula GP", desc: "Carreras de circuito cerrado estilo F1 visto desde arriba: elige tu auto y el número de vueltas, y compite contra hasta 15 bots con físicas reales de derrape, rebufo y colisiones.", color: COLORS.neonBlue },
 ];
 
 function CupulaGamesView({ user }) {
@@ -5631,7 +5667,7 @@ function CupulaGamesView({ user }) {
 
   if (juegoActivo === "happyweed") return <HappyWeedView user={user} onVolver={() => setJuegoActivo(null)} />;
   if (juegoActivo === "cabezones") return <NoHagaSinoJogarView user={user} onVolver={() => setJuegoActivo(null)} />;
-  if (juegoActivo === "carcrash") return <CarCrashView user={user} onVolver={() => setJuegoActivo(null)} />;
+  if (juegoActivo === "cupulagp") return <CupulaGPView user={user} onVolver={() => setJuegoActivo(null)} />;
 
   return (
     <div>
