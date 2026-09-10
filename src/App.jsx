@@ -4920,6 +4920,16 @@ const GP_COFRE_RADIO = 24;
 const GP_COFRE_RESPAWN_MS = 7000;
 const GP_TIPOS_PODER = ["turbo", "escudo", "aceite", "rayo"];
 const GP_ICONOS_PODER = { turbo: "🚀", escudo: "🛡️", aceite: "🛢️", rayo: "⚡" };
+// Valla física: nadie puede alejarse del centro de la pista más que esto — al tocarla, rebota de
+// vuelta en vez de poder seguir de largo hacia el pasto infinito. Dentro de este margen (65 unidades
+// de "escape" más allá del borde de la pista) todavía se puede cortar una curva por afuera con
+// normalidad, como en cualquier juego de carreras.
+const GP_MURO_DIST = GP_TRACK_MITAD + 65;
+const GP_MURO_REBOTE = 1.35; // cuánto rebota la velocidad que iba "hacia afuera" al pegar contra la valla
+// F1-style: puntos por posición final de cada carrera de un torneo (11° en adelante no suma).
+const GP_PUNTOS_TORNEO = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1];
+function puntosParaPosicionGP(pos) { return GP_PUNTOS_TORNEO[pos - 1] || 0; }
+const GP_OPCIONES_TORNEO = [3, 5, 8];
 const GP_NOMBRES_PODER = { turbo: "TURBO", escudo: "ESCUDO", aceite: "ACEITE", rayo: "RAYO" };
 
 // Ambientación distinta por pista: paleta de cielo/terreno, colores de pianito y qué mezcla de
@@ -5169,6 +5179,64 @@ function dibujarCurbsGP(ctx, pista) {
   }
 }
 
+// Valla: raya tipo bandera de carreras (rojo/blanco a rayas) dibujada en el límite físico real
+// (GP_MURO_DIST) a cada lado de la pista — así el jugador VE dónde está el límite antes de pegar
+// contra él, no es una pared invisible.
+function dibujarVallaGP(ctx, pista) {
+  const trazar = (signo) => {
+    ctx.beginPath();
+    for (let i = 0; i <= pista.nPuntos; i++) {
+      const idx = i % pista.nPuntos;
+      const p = pista.centerline[idx];
+      const lat = lateralEnGP(pista, idx);
+      const x = p.x + lat.x * GP_MURO_DIST * signo, y = p.y + lat.y * GP_MURO_DIST * signo;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+  };
+  ctx.save();
+  ctx.lineWidth = 6;
+  ctx.lineJoin = "round";
+  [1, -1].forEach((signo) => {
+    ctx.setLineDash([18, 18]);
+    ctx.strokeStyle = "#E23B3B";
+    trazar(signo); ctx.stroke();
+    ctx.setLineDash([18, 18]);
+    ctx.lineDashOffset = 18;
+    ctx.strokeStyle = "#EDEDED";
+    trazar(signo); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+  ctx.lineDashOffset = 0;
+  ctx.restore();
+}
+
+function dibujarParticulaGP(ctx, p) {
+  const vidaFrac = Math.max(0, p.vida / p.vidaMax);
+  ctx.save();
+  if (p.tipo === "chispa") {
+    ctx.globalAlpha = vidaFrac;
+    ctx.fillStyle = COLORS.neonAmber;
+    ctx.shadowColor = COLORS.neonAmber;
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (p.tipo === "humo") {
+    ctx.globalAlpha = vidaFrac * 0.35;
+    ctx.fillStyle = "#CCCCCC";
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3 + (1 - vidaFrac) * 6, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.globalAlpha = vidaFrac * 0.3;
+    ctx.fillStyle = "#8A6B3D";
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2 + (1 - vidaFrac) * 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 const GP_PATRON_PASTO_CACHE = {};
 function obtenerPatronPastoGP(ctx, tema) {
   const t = tema || GP_TEMAS.ovalo;
@@ -5247,6 +5315,20 @@ const GP_PISTAS = [
     construirControlesPolaresGP(14, 1436, 144, 1, 0.0, 57, 3, 0.4), 14
   )),
 ];
+
+// Modo Torneo: arma una secuencia de "cantidad" pistas al azar (sistema de "bolsa" — se baraja el
+// set completo de las 8 y se va sacando una por una; si el torneo pide más carreras que pistas
+// existen, se vuelve a barajar en vez de repetir siempre en el mismo orden).
+function pistasAleatoriasGP(cantidad) {
+  const ids = GP_PISTAS.map((p) => p.id);
+  const resultado = [];
+  let bolsa = [];
+  while (resultado.length < cantidad) {
+    if (bolsa.length === 0) bolsa = [...ids].sort(() => Math.random() - 0.5);
+    resultado.push(bolsa.pop());
+  }
+  return resultado;
+}
 
 function crearAutoGP({ esBot, skinIndex, idxInicial }, pista) {
   const p = pista.centerline[idxInicial];
@@ -5435,9 +5517,9 @@ function actualizarFisicaAutoGP(auto, dt, entrada, rebufo) {
   const pideDerrapeManual = !!entrada.derrape && Math.abs(entrada.dir) > GP_DERRAPE_MANUAL_DIR_MIN && Math.abs(vAdelante) > auto.velMaxBase * 0.25;
   if (Math.abs(vLateral) > GP_UMBRAL_DERRAPE || pideDerrapeManual) auto.derrapeHasta = ahora + GP_DERRAPE_MS;
   auto.enDerrape = ahora < auto.derrapeHasta;
-  // Durante el derrape el agarre lateral baja mucho más que antes — el auto resbala de verdad hacia
-  // afuera de la curva en vez de solo "sentirse" un poco suelto.
-  const amortLateral = auto.enDerrape ? amortLateralBase * 0.2 : amortLateralBase;
+  // Durante el derrape el agarre lateral baja MUCHO (más todavía que antes) — el auto resbala de
+  // verdad hacia afuera de la curva, con un derrape visiblemente más largo y dramático.
+  const amortLateral = auto.enDerrape ? amortLateralBase * 0.13 : amortLateralBase;
 
   let fuerza = 0;
   const acelerando = entrada.accel || turboActivo; // el turbo empuja solo, aunque no se toque el gas
@@ -5473,7 +5555,8 @@ function actualizarFisicaAutoGP(auto, dt, entrada, rebufo) {
 // la velocidad relativa de acercamiento es casi cero y aun así hay que separarlos de verdad. Un
 // golpe fuerte (velocidad relativa alta) además tira a ambos autos a un derrape forzado con un
 // pequeño giro brusco — "salen proyectados" en vez de solo detenerse.
-function resolverColisionesGP(autos) {
+function resolverColisionesGP(st) {
+  const autos = st.autos;
   const minDist = GP_RADIO_COLISION * 2;
   for (let i = 0; i < autos.length; i++) {
     for (let j = i + 1; j < autos.length; j++) {
@@ -5520,6 +5603,14 @@ function resolverColisionesGP(autos) {
           const giro = 0.18 + Math.random() * 0.16;
           if (!aEscudo) { a.derrapeHasta = ahora + GP_DERRAPE_MS; a.enDerrape = true; a.heading -= giro; }
           if (!bEscudo) { b.derrapeHasta = ahora + GP_DERRAPE_MS; b.enDerrape = true; b.heading += giro; }
+          // Efecto de impacto: chispas en el punto de contacto + una sacudida de cámara chica (solo
+          // si el jugador fue parte del choque, para no sacudir la pantalla por golpes ajenos).
+          const golpeX = (a.x + b.x) / 2, golpeY = (a.y + b.y) / 2;
+          for (let p = 0; p < 7; p++) {
+            const ang = Math.random() * Math.PI * 2, vel = 60 + Math.random() * 90;
+            st.particulas.push({ x: golpeX, y: golpeY, vx: Math.cos(ang) * vel, vy: Math.sin(ang) * vel, vida: 0.35, vidaMax: 0.35, tipo: "chispa" });
+          }
+          if (a === st.jugador || b === st.jugador) st.sacudida = Math.max(st.sacudida, 12);
         }
       }
     }
@@ -5545,7 +5636,7 @@ function crearEstadoGP(skinJugador, totalVueltas, pistaId) {
   return {
     pista, autos, jugador: autos[0], totalVueltas,
     inicioMs: Date.now(), terminado: false, posicionFinalJugador: 0,
-    marcasDerrape: [], particulas: [], camara: { x: autos[0].x, y: autos[0].y },
+    marcasDerrape: [], particulas: [], sacudida: 0, camara: { x: autos[0].x, y: autos[0].y },
     cuentaRegresiva: 3.2,
     // Poderes: manchas de aceite tiradas en la pista (independientes de cada auto).
     aceites: [],
@@ -5659,17 +5750,46 @@ function actualizarGP(st, dt, entrada) {
     const rebufo = hayRebufoGP(auto, st.autos);
     actualizarFisicaAutoGP(auto, dt, entradaAuto, rebufo);
 
+    // Valla física: si alguien se pasa del límite de "escape" más allá del borde de pista, lo frena
+    // en seco ahí y le anula/rebota la velocidad que iba hacia afuera — nadie puede seguir de largo
+    // hacia el pasto sin fin. Antes esto no existía y quedarse "varado" lejos de la pista (con el
+    // 60% de velocidad y mucho menos agarre por ir offRoad) se sentía como quedarse sin motor.
+    const offLat = offsetLateralActualGP(pista, auto);
+    if (Math.abs(offLat) > GP_MURO_DIST) {
+      const idxM = auto.idxCercano;
+      const pM = pista.centerline[idxM];
+      const latM = lateralEnGP(pista, idxM);
+      const signoM = offLat > 0 ? 1 : -1;
+      auto.x = pM.x + latM.x * GP_MURO_DIST * signoM;
+      auto.y = pM.y + latM.y * GP_MURO_DIST * signoM;
+      const vLatM = auto.vx * latM.x + auto.vy * latM.y;
+      if (vLatM * signoM > 0) {
+        auto.vx -= latM.x * vLatM * GP_MURO_REBOTE;
+        auto.vy -= latM.y * vLatM * GP_MURO_REBOTE;
+      }
+    }
+
     // Marcas de derrape continuas (sin sorteo) mientras dure el estado — un derrape de verdad deja
-    // un rastro negro parejo en el asfalto, no puntitos intermitentes.
+    // un rastro negro parejo en el asfalto, no puntitos intermitentes. Además, humo de neumático
+    // mientras derrapa y polvo mientras anda por el pasto — efectos de movimiento, no solo la marca.
     if (auto.enDerrape) {
       st.marcasDerrape.push({ x: auto.x, y: auto.y, vida: 2.2, vidaMax: 2.2 });
+      if (Math.random() < 0.55) {
+        st.particulas.push({ x: auto.x, y: auto.y, vx: (Math.random() - 0.5) * 20, vy: (Math.random() - 0.5) * 20, vida: 0.6, vidaMax: 0.6, tipo: "humo" });
+      }
+    } else if (auto.offRoad && Math.hypot(auto.vx, auto.vy) > 40 && Math.random() < 0.4) {
+      st.particulas.push({ x: auto.x, y: auto.y, vx: -auto.vx * 0.15 + (Math.random() - 0.5) * 25, vy: -auto.vy * 0.15 + (Math.random() - 0.5) * 25, vida: 0.45, vidaMax: 0.45, tipo: "polvo" });
     }
   }
-  resolverColisionesGP(st.autos);
+  resolverColisionesGP(st);
   st.marcasDerrape = st.marcasDerrape.filter((m) => (m.vida -= dt) > 0);
-  // Tope defensivo de rendimiento: con hasta 16 autos derrapando a la vez de forma continua el
-  // arreglo podría crecer mucho — se descartan las marcas más viejas primero.
+  st.particulas.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.vida -= dt; });
+  st.particulas = st.particulas.filter((p) => p.vida > 0);
+  st.sacudida = Math.max(0, st.sacudida * Math.max(0, 1 - dt * 9));
+  // Tope defensivo de rendimiento: con hasta 16 autos derrapando/levantando polvo a la vez de forma
+  // continua los arreglos podrían crecer mucho — se descartan los elementos más viejos primero.
   if (st.marcasDerrape.length > 500) st.marcasDerrape.splice(0, st.marcasDerrape.length - 500);
+  if (st.particulas.length > 400) st.particulas.splice(0, st.particulas.length - 400);
 
   // Cámara: sigue al jugador con un adelanto en la dirección en que se está moviendo (no
   // necesariamente hacia donde mira el auto — durante un derrape puede ser distinto).
@@ -5867,7 +5987,11 @@ function dibujarGP(ctx, st, assets, dimensiones) {
   const velAbs = Math.hypot(st.jugador.vx, st.jugador.vy);
   const escalaZoom = 1 - Math.min(1, velAbs / GP_VEL_MAX_BASE) * 0.12;
   const cx = canvas.width / 2, cy = canvas.height / 2;
-  ctx.setTransform(escalaZoom, 0, 0, escalaZoom, cx - st.camara.x * escalaZoom, cy - st.camara.y * escalaZoom);
+  // Sacudida de cámara: un temblor chico y breve tras un choque fuerte del jugador — se apaga solo
+  // en un puñado de cuadros (ver decaimiento de st.sacudida en actualizarGP).
+  const sacX = st.sacudida > 0.1 ? (Math.random() - 0.5) * st.sacudida : 0;
+  const sacY = st.sacudida > 0.1 ? (Math.random() - 0.5) * st.sacudida : 0;
+  ctx.setTransform(escalaZoom, 0, 0, escalaZoom, cx - st.camara.x * escalaZoom + sacX, cy - st.camara.y * escalaZoom + sacY);
 
   // Terreno: patrón con franjas de corte con los colores del tema de esta pista, cubriendo el área
   // visible alrededor de la cámara.
@@ -5910,6 +6034,7 @@ function dibujarGP(ctx, st, assets, dimensiones) {
     ctx.setLineDash([]);
 
     dibujarCurbsGP(ctx, pista);
+    dibujarVallaGP(ctx, pista);
 
     // Línea de meta: cuadriculado ancho perpendicular a la pista, más un arco/pórtico simple encima.
     const p0 = pista.centerline[0];
@@ -5940,11 +6065,37 @@ function dibujarGP(ctx, st, assets, dimensiones) {
   });
   ctx.globalAlpha = 1;
 
+  st.particulas.forEach((p) => dibujarParticulaGP(ctx, p));
+
   const ordenDibujo = [...st.autos].sort((a, b) => a.y - b.y);
   ordenDibujo.forEach((auto) => dibujarSombraAutoGP(ctx, auto, GP_AUTO_ANCHO, GP_AUTO_LARGO));
   ordenDibujo.forEach((auto) => dibujarAutoGP(ctx, assets, auto, GP_AUTO_ANCHO, GP_AUTO_LARGO));
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // Líneas de velocidad: a alta velocidad, unos trazos radiales sutiles desde el auto del jugador
+  // hacia afuera de la pantalla — más "efecto de movimiento" sin tocar la física de nadie.
+  const fraccionVel = Math.max(0, (velAbs - GP_VEL_MAX_BASE * 0.55) / (GP_VEL_MAX_BASE * 0.55));
+  if (fraccionVel > 0) {
+    const jx = cx + (st.jugador.x - st.camara.x) * escalaZoom + sacX;
+    const jy = cy + (st.jugador.y - st.camara.y) * escalaZoom + sacY;
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.4, fraccionVel * 0.4);
+    ctx.strokeStyle = COLORS.white;
+    ctx.lineWidth = 2;
+    const nLineas = 14;
+    for (let i = 0; i < nLineas; i++) {
+      const ang = (Math.PI * 2 * i) / nLineas;
+      const rInt = Math.max(canvas.width, canvas.height) * 0.32;
+      const rExt = rInt + 60 + fraccionVel * 70;
+      ctx.beginPath();
+      ctx.moveTo(jx + Math.cos(ang) * rInt, jy + Math.sin(ang) * rInt);
+      ctx.lineTo(jx + Math.cos(ang) * rExt, jy + Math.sin(ang) * rExt);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   dibujarMinimapaGP(ctx, st, canvas.width, canvas.height);
   if (st.cuentaRegresiva > 0) {
     ctx.textAlign = "center";
@@ -6041,14 +6192,26 @@ function CupulaGPView({ user, onVolver }) {
   const rafRef = useRef(null);
   const assetsRef = useRef(null);
   const inputRef = useRef({ izq: false, der: false, acel: false, freno: false, joystick: 0, derrape: false, usarPoder: false });
+  // Modo Torneo F1: null si es carrera única. Si hay torneo en curso, guarda la secuencia de
+  // pistas, en qué carrera vamos y los puntos acumulados por auto (clave = skinIndex, que es
+  // estable carrera a carrera: el jugador siempre usa su skin elegida y los bots son
+  // skinJugador+1..+15, nunca se repiten entre sí).
+  const torneoRef = useRef(null);
 
-  const [fase, setFase] = useState("menu"); // menu | jugando | terminado
+  const [fase, setFase] = useState("menu"); // menu | jugando | terminado | torneo-standings | torneo-final
   const [skinElegida, setSkinElegida] = useState(0);
   const [vueltasElegidas, setVueltasElegidas] = useState(5);
   const [pistaElegidaId, setPistaElegidaId] = useState(GP_PISTAS[0].id);
+  const [modoTorneo, setModoTorneo] = useState(false);
+  const [carrerasTorneo, setCarrerasTorneo] = useState(GP_OPCIONES_TORNEO[1]);
   const [hud, setHud] = useState({ vuelta: 0, posicion: 1, velocidad: 0, powerUp: null, mejorVuelta: null, peorVuelta: null });
   const [posicionFinal, setPosicionFinal] = useState(0);
   const [recordFinal, setRecordFinal] = useState({ mejor: null, peor: null });
+  // PC (sin touch): no mostramos los cuadros de FRENO/GAS/ÍTEM/DERR. encima del mapa — solo un
+  // cartelito chiquito con las teclas, que se ve al empezar y se apaga solo a los ~10 segundos.
+  const [esTouch] = useState(() => typeof window !== "undefined" && (("ontouchstart" in window) || (navigator.maxTouchPoints || 0) > 0));
+  const [mostrarAyuda, setMostrarAyuda] = useState(true);
+  const [ayudaOpaca, setAyudaOpaca] = useState(true);
 
   useEffect(() => {
     const mgr = new AssetManagerJuegos();
@@ -6085,16 +6248,45 @@ function CupulaGPView({ user, onVolver }) {
     return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
   }, []);
 
+  // Cartelito de teclas para PC: aparece apenas arranca cada carrera (incluida la cuenta
+  // regresiva) y se apaga solo — empieza a desvanecerse a los 9s y desaparece del todo a los 10s.
+  useEffect(() => {
+    if (fase !== "jugando") return;
+    setMostrarAyuda(true);
+    setAyudaOpaca(true);
+    const tFade = setTimeout(() => setAyudaOpaca(false), 9000);
+    const tOculta = setTimeout(() => setMostrarAyuda(false), 10000);
+    return () => { clearTimeout(tFade); clearTimeout(tOculta); };
+  }, [fase]);
+
   const retirarse = useCallback(() => {
     estadoRef.current = null;
+    torneoRef.current = null;
     setFase("menu");
   }, []);
 
   const empezarCarrera = useCallback(() => {
-    estadoRef.current = crearEstadoGP(skinElegida, vueltasElegidas, pistaElegidaId);
-    setHud({ vuelta: 0, posicion: GP_NUM_BOTS + 1, velocidad: 0 });
+    if (modoTorneo) {
+      const pistasIds = pistasAleatoriasGP(carrerasTorneo);
+      torneoRef.current = { pistasIds, indice: 0, puntos: {}, total: carrerasTorneo };
+      estadoRef.current = crearEstadoGP(skinElegida, vueltasElegidas, pistasIds[0]);
+    } else {
+      torneoRef.current = null;
+      estadoRef.current = crearEstadoGP(skinElegida, vueltasElegidas, pistaElegidaId);
+    }
+    setHud({ vuelta: 0, posicion: GP_NUM_BOTS + 1, velocidad: 0, powerUp: null, mejorVuelta: null, peorVuelta: null });
     setFase("jugando");
-  }, [skinElegida, vueltasElegidas, pistaElegidaId]);
+  }, [modoTorneo, carrerasTorneo, skinElegida, vueltasElegidas, pistaElegidaId]);
+
+  // Arranca la siguiente carrera del torneo (misma skin/vueltas, la pista que toca en la secuencia).
+  const continuarTorneo = useCallback(() => {
+    const torneo = torneoRef.current;
+    if (!torneo) { setFase("menu"); return; }
+    const siguientePista = torneo.pistasIds[torneo.indice];
+    estadoRef.current = crearEstadoGP(skinElegida, vueltasElegidas, siguientePista);
+    setHud({ vuelta: 0, posicion: GP_NUM_BOTS + 1, velocidad: 0, powerUp: null, mejorVuelta: null, peorVuelta: null });
+    setFase("jugando");
+  }, [skinElegida, vueltasElegidas]);
 
   useEffect(() => {
     if (fase !== "jugando") return;
@@ -6130,7 +6322,19 @@ function CupulaGPView({ user, onVolver }) {
       if (st.terminado) {
         setPosicionFinal(st.posicionFinalJugador);
         setRecordFinal({ mejor: st.mejorVuelta, peor: st.peorVuelta });
-        setFase("terminado");
+        const torneo = torneoRef.current;
+        if (torneo) {
+          // "ordenados" de arriba es la clasificación final (misma carrera, último frame): reparte
+          // puntos estilo F1 por posición y suma al acumulado del torneo, por skinIndex.
+          ordenados.forEach((auto, i) => {
+            const pts = puntosParaPosicionGP(i + 1);
+            torneo.puntos[auto.skinIndex] = (torneo.puntos[auto.skinIndex] || 0) + pts;
+          });
+          torneo.indice += 1;
+          setFase(torneo.indice >= torneo.total ? "torneo-final" : "torneo-standings");
+        } else {
+          setFase("terminado");
+        }
         return;
       }
       rafRef.current = requestAnimationFrame(loop);
@@ -6157,31 +6361,52 @@ function CupulaGPView({ user, onVolver }) {
               }} />
             ))}
           </div>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>ELEGÍ LA PISTA</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
-            {GP_PISTAS.map((p) => {
-              const activa = pistaElegidaId === p.id;
-              return (
-                <button key={p.id} onClick={() => setPistaElegidaId(p.id)} style={{
-                  padding: "8px 14px", borderRadius: 8, cursor: "pointer", textAlign: "left",
-                  background: activa ? "rgba(47,168,255,0.15)" : "rgba(255,255,255,0.04)",
-                  border: activa ? `2px solid ${COLORS.neonBlue}` : "1px solid rgba(255,255,255,0.12)",
-                  boxShadow: activa ? `0 0 14px ${COLORS.neonBlue}55` : "none",
-                  color: COLORS.white, fontFamily: FONT_MONO,
-                }}>
-                  <div style={{ fontSize: 12, letterSpacing: 0.5 }}>{p.nombre}</div>
-                  <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>{Math.round(p.largoVuelta)}m de vuelta</div>
-                </button>
-              );
-            })}
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>MODO</div>
+          <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+            <NeonButton active={!modoTorneo} onClick={() => setModoTorneo(false)}>Carrera única</NeonButton>
+            <NeonButton active={modoTorneo} onClick={() => setModoTorneo(true)}>🏆 Torneo F1</NeonButton>
           </div>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>VUELTAS</div>
+          {modoTorneo ? (
+            <>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>CARRERAS DEL TORNEO</div>
+              <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                {GP_OPCIONES_TORNEO.map((n) => (
+                  <NeonButton key={n} active={carrerasTorneo === n} onClick={() => setCarrerasTorneo(n)}>{n} carreras</NeonButton>
+                ))}
+              </div>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, marginBottom: 20, lineHeight: 1.6 }}>
+                Las pistas salen al azar, una por carrera. Se suman puntos como en la F1 (25-18-15-12-10-8-6-4-2-1) y al final hay podio con la tabla completa.
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>ELEGÍ LA PISTA</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+                {GP_PISTAS.map((p) => {
+                  const activa = pistaElegidaId === p.id;
+                  return (
+                    <button key={p.id} onClick={() => setPistaElegidaId(p.id)} style={{
+                      padding: "8px 14px", borderRadius: 8, cursor: "pointer", textAlign: "left",
+                      background: activa ? "rgba(47,168,255,0.15)" : "rgba(255,255,255,0.04)",
+                      border: activa ? `2px solid ${COLORS.neonBlue}` : "1px solid rgba(255,255,255,0.12)",
+                      boxShadow: activa ? `0 0 14px ${COLORS.neonBlue}55` : "none",
+                      color: COLORS.white, fontFamily: FONT_MONO,
+                    }}>
+                      <div style={{ fontSize: 12, letterSpacing: 0.5 }}>{p.nombre}</div>
+                      <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>{Math.round(p.largoVuelta)}m de vuelta</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>VUELTAS {modoTorneo ? "(por carrera)" : ""}</div>
           <div style={{ display: "flex", gap: 10, marginBottom: 22 }}>
             {GP_VUELTAS_OPCIONES.map((v) => (
               <NeonButton key={v} active={vueltasElegidas === v} onClick={() => setVueltasElegidas(v)}>{v}</NeonButton>
             ))}
           </div>
-          <NeonButton active onClick={empezarCarrera}>🏁 Empezar Carrera</NeonButton>
+          <NeonButton active onClick={empezarCarrera}>{modoTorneo ? `🏆 Empezar Torneo (${carrerasTorneo} carreras)` : "🏁 Empezar Carrera"}</NeonButton>
         </Card>
       </div>
     );
@@ -6202,7 +6427,93 @@ function CupulaGPView({ user, onVolver }) {
             </div>
           )}
           <div style={{ display: "flex", gap: 10 }}>
-            <NeonButton active onClick={() => setFase("menu")}>Volver al menú</NeonButton>
+            <NeonButton active onClick={() => { torneoRef.current = null; setFase("menu"); }}>Volver al menú</NeonButton>
+            <NeonButton onClick={onVolver}>Salir a Cúpula Games</NeonButton>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  if (fase === "torneo-standings") {
+    const torneo = torneoRef.current;
+    const tabla = torneo
+      ? Object.entries(torneo.puntos).map(([skinIndex, pts]) => ({ skinIndex: Number(skinIndex), pts })).sort((a, b) => b.pts - a.pts)
+      : [];
+    return (
+      <div>
+        <SectionTitle>Cúpula GP — Torneo: carrera {torneo ? torneo.indice : 0}/{torneo ? torneo.total : 0}</SectionTitle>
+        <Card>
+          <div style={{ fontFamily: FONT_DISPLAY, fontSize: 22, color: COLORS.white, marginBottom: 16 }}>
+            Llegaste {posicionFinal}° en esa carrera
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>TABLA GENERAL DEL TORNEO</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 22 }}>
+            {tabla.map((f, i) => (
+              <div key={f.skinIndex} style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "7px 12px", borderRadius: 6,
+                background: f.skinIndex === skinElegida ? "rgba(47,168,255,0.15)" : "rgba(255,255,255,0.04)",
+                border: f.skinIndex === skinElegida ? `1px solid ${COLORS.neonBlue}` : "1px solid transparent",
+              }}>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, width: 22 }}>{i + 1}°</div>
+                <div style={{ width: 18, height: 18, borderRadius: 4, background: `hsl(${(f.skinIndex * 47) % 360},80%,50%)`, flexShrink: 0 }} />
+                <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.white, flex: 1 }}>
+                  {f.skinIndex === skinElegida ? "Vos" : `Bot`}
+                </div>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: COLORS.neonAmber, fontWeight: 700 }}>{f.pts} pts</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <NeonButton active onClick={continuarTorneo}>Siguiente carrera →</NeonButton>
+            <NeonButton onClick={() => { torneoRef.current = null; setFase("menu"); }}>Salir del torneo</NeonButton>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  if (fase === "torneo-final") {
+    const torneo = torneoRef.current;
+    const tabla = torneo
+      ? Object.entries(torneo.puntos).map(([skinIndex, pts]) => ({ skinIndex: Number(skinIndex), pts })).sort((a, b) => b.pts - a.pts)
+      : [];
+    const podio = [tabla[1], tabla[0], tabla[2]];
+    return (
+      <div>
+        <SectionTitle>Cúpula GP — Podio final del torneo</SectionTitle>
+        <Card>
+          <div style={{ display: "flex", gap: 14, alignItems: "flex-end", justifyContent: "center", marginBottom: 24 }}>
+            {podio.map((f, i) => f && (
+              <div key={f.skinIndex} style={{ textAlign: "center" }}>
+                <div style={{
+                  width: 58, height: [42, 66, 34][i], borderRadius: "6px 6px 0 0",
+                  background: [COLORS.textMuted, COLORS.neonAmber, "#a5622a"][i],
+                  display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 6,
+                  fontFamily: FONT_DISPLAY, fontSize: 16, color: "#000", fontWeight: 700,
+                }}>{[2, 1, 3][i]}°</div>
+                <div style={{ width: 22, height: 22, borderRadius: 5, background: `hsl(${(f.skinIndex * 47) % 360},80%,50%)`, margin: "8px auto 4px" }} />
+                <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.white }}>{f.skinIndex === skinElegida ? "Vos" : "Bot"}</div>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonAmber }}>{f.pts} pts</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>TABLA COMPLETA</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 22 }}>
+            {tabla.map((f, i) => (
+              <div key={f.skinIndex} style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "5px 12px",
+                background: f.skinIndex === skinElegida ? "rgba(47,168,255,0.12)" : "transparent", borderRadius: 6,
+              }}>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, width: 22 }}>{i + 1}°</div>
+                <div style={{ width: 16, height: 16, borderRadius: 4, background: `hsl(${(f.skinIndex * 47) % 360},80%,50%)`, flexShrink: 0 }} />
+                <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.white, flex: 1 }}>{f.skinIndex === skinElegida ? "Vos" : "Bot"}</div>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.neonAmber }}>{f.pts} pts</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <NeonButton active onClick={() => { torneoRef.current = null; setFase("menu"); }}>Volver al menú</NeonButton>
             <NeonButton onClick={onVolver}>Salir a Cúpula Games</NeonButton>
           </div>
         </Card>
@@ -6246,33 +6557,51 @@ function CupulaGPView({ user, onVolver }) {
         </div>
       )}
 
-      <JoystickGP onCambio={(v) => { inputRef.current.joystick = v; }} />
-      <div style={{ position: "absolute", right: 22, bottom: 22, display: "flex", gap: 10, zIndex: 20, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: 220 }}>
-        <BotonAccionCabezones
-          etiqueta="DERR."
-          color={COLORS.neonBlue}
-          onPress={() => { inputRef.current.derrape = true; }}
-          onRelease={() => { inputRef.current.derrape = false; }}
-        />
-        <BotonAccionCabezones
-          etiqueta="ÍTEM"
-          color={COLORS.neonAmber}
-          onPress={() => { inputRef.current.usarPoder = true; }}
-          onRelease={() => { inputRef.current.usarPoder = false; }}
-        />
-        <BotonAccionCabezones
-          etiqueta="FRENO"
-          color={COLORS.neonRed}
-          onPress={() => { inputRef.current.freno = true; }}
-          onRelease={() => { inputRef.current.freno = false; }}
-        />
-        <BotonAccionCabezones
-          etiqueta="GAS"
-          color={COLORS.neonSuccess}
-          onPress={() => { inputRef.current.acel = true; }}
-          onRelease={() => { inputRef.current.acel = false; }}
-        />
-      </div>
+      {esTouch ? (
+        <>
+          <JoystickGP onCambio={(v) => { inputRef.current.joystick = v; }} />
+          <div style={{ position: "absolute", right: 22, bottom: 22, display: "flex", gap: 10, zIndex: 20, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: 220 }}>
+            <BotonAccionCabezones
+              etiqueta="DERR."
+              color={COLORS.neonBlue}
+              onPress={() => { inputRef.current.derrape = true; }}
+              onRelease={() => { inputRef.current.derrape = false; }}
+            />
+            <BotonAccionCabezones
+              etiqueta="ÍTEM"
+              color={COLORS.neonAmber}
+              onPress={() => { inputRef.current.usarPoder = true; }}
+              onRelease={() => { inputRef.current.usarPoder = false; }}
+            />
+            <BotonAccionCabezones
+              etiqueta="FRENO"
+              color={COLORS.neonRed}
+              onPress={() => { inputRef.current.freno = true; }}
+              onRelease={() => { inputRef.current.freno = false; }}
+            />
+            <BotonAccionCabezones
+              etiqueta="GAS"
+              color={COLORS.neonSuccess}
+              onPress={() => { inputRef.current.acel = true; }}
+              onRelease={() => { inputRef.current.acel = false; }}
+            />
+          </div>
+        </>
+      ) : (
+        // PC: nada de cuadros tapando el mapa — solo un cartelito chiquito con las teclas, que
+        // se ve al arrancar (incluida la cuenta regresiva) y se apaga solo a los ~10 segundos.
+        mostrarAyuda && (
+          <div style={{
+            position: "absolute", bottom: 20, left: "50%", transform: "translateX(-50%)", zIndex: 20,
+            fontFamily: FONT_MONO, fontSize: 11, color: COLORS.white, background: "rgba(0,0,0,0.65)",
+            borderRadius: 8, padding: "8px 16px", border: `1px solid ${COLORS.neonBlue}55`,
+            letterSpacing: 0.5, textAlign: "center", whiteSpace: "nowrap",
+            opacity: ayudaOpaca ? 1 : 0, transition: "opacity 1000ms ease", pointerEvents: "none",
+          }}>
+            ◀▶ / A D girar · ▲ / W acelerar · ▼ / S frenar · SHIFT derrapar · E usar ítem
+          </div>
+        )
+      )}
     </div>
   );
 }
@@ -6281,7 +6610,7 @@ function CupulaGPView({ user, onVolver }) {
 const CUPULA_GAMES_LISTA = [
   { id: "happyweed", nombre: "Happy Weed", desc: "Estilo Flappy Bird: esquiva los portales neón con tu propia foto convertida en pajarito.", color: COLORS.neonRed },
   { id: "cabezones", nombre: "No haga sino Jogar", desc: "Fútbol de cabezones estilo arcade: corre, salta y patea/cabecea para meter más goles que tu rival, solo contra el computador o en línea 1 contra 1 con los de la cúpula. Tiene power-ups y récord histórico.", color: COLORS.neonMagenta },
-  { id: "cupulagp", nombre: "Cúpula GP", desc: "Carreras de circuito cerrado estilo F1 visto desde arriba: elige tu auto, una de 8 pistas (cada una con su propia ambientación) y el número de vueltas, y compite contra hasta 15 bots agresivos (con sensores, poderes y algo de malicia cerca de la meta) con derrape a botón, rebufo, power-ups tipo Mario Kart, mini-mapa y récord de mejor/peor vuelta.", color: COLORS.neonBlue },
+  { id: "cupulagp", nombre: "Cúpula GP", desc: "Carreras de circuito cerrado estilo F1 visto desde arriba: elige tu auto, una de 8 pistas (cada una con su propia ambientación) y el número de vueltas, y compite contra hasta 15 bots agresivos (con sensores, poderes y algo de malicia cerca de la meta) con derrape a botón, rebufo, power-ups tipo Mario Kart, mini-mapa, vallas en la pista y récord de mejor/peor vuelta. También tiene Modo Torneo: varias carreras seguidas en pistas al azar con podio final por puntos, estilo F1.", color: COLORS.neonBlue },
 ];
 
 function CupulaGamesView({ user }) {
