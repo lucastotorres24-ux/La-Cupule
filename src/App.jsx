@@ -3762,7 +3762,10 @@ function dibujarCanchaCabezones(ctx, estado, opts) {
 
 // ── Botón de control (mover, saltar, patear) — mismo estilo press-and-hold para mouse y táctil,
 // con una respuesta visual clara al presionarlo (más fácil de ubicar sin mirar en celular) ──
-function BotonAccionCabezones({ onPress, onRelease, children, ancho = 62, color }) {
+// NOTA: acepta o un ícono corto como children (◀, 🦵, etc, se ve grande) o una "etiqueta" de texto
+// (FRENO, GAS, etc, se ve chica en mayúsculas) — antes solo existía la vía de children y los
+// botones de Cúpula GP que pasaban "etiqueta" (FRENO/GAS) se veían vacíos, sin texto.
+function BotonAccionCabezones({ onPress, onRelease, children, ancho = 62, color, etiqueta }) {
   const [activo, setActivo] = useState(false);
   const activar = (e) => { e.preventDefault(); setActivo(true); onPress(); };
   const desactivar = (e) => { e.preventDefault(); setActivo(false); onRelease(); };
@@ -3774,12 +3777,14 @@ function BotonAccionCabezones({ onPress, onRelease, children, ancho = 62, color 
       style={{
         width: ancho, height: 56, borderRadius: 14,
         background: activo ? `${c}33` : "rgba(10,10,16,0.85)",
-        border: `2px solid ${c}`, color: COLORS.white, fontSize: 22, fontWeight: 700,
+        border: `2px solid ${c}`, color: COLORS.white, fontWeight: 700,
+        fontSize: etiqueta ? 11 : 22, letterSpacing: etiqueta ? 0.5 : 0,
+        fontFamily: etiqueta ? FONT_MONO : undefined,
         cursor: "pointer", userSelect: "none", touchAction: "none", flexShrink: 0,
         boxShadow: activo ? `0 0 16px ${c}88, inset 0 0 10px ${c}55` : `0 0 8px ${c}33`,
         transition: "background 0.08s, box-shadow 0.08s",
       }}
-    >{children}</button>
+    >{etiqueta || children}</button>
   );
 }
 
@@ -4013,6 +4018,41 @@ function MotorCabezones({
   );
 }
 
+// ── Caja que MIDE en píxeles el espacio disponible de su contenedor (vía ResizeObserver) y calcula
+// el tamaño exacto que mantiene la relación de aspecto pedida (letterbox), en vez de depender del
+// truco CSS "aspect-ratio + width/height:auto". Ese truco CSS falla cuando el contenido de adentro
+// está en position:absolute (como el canvas de MotorCabezones): un elemento absoluto no cuenta para
+// el cálculo de tamaño automático del navegador, así que la caja terminaba calculando 0x0 y el juego
+// se veía roto/en blanco. Midiendo con JS esto no depende de eso — siempre da un tamaño real. ──
+function CajaJuegoContenida({ ratioAncho, ratioAlto, style, children }) {
+  const exteriorRef = useRef(null);
+  const [caja, setCaja] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const el = exteriorRef.current;
+    if (!el) return;
+    const calcular = () => {
+      const contW = el.clientWidth, contH = el.clientHeight;
+      if (contW <= 0 || contH <= 0) return;
+      const ratio = ratioAncho / ratioAlto;
+      let w = contW, h = contW / ratio;
+      if (h > contH) { h = contH; w = contH * ratio; }
+      setCaja({ width: Math.floor(w), height: Math.floor(h) });
+    };
+    calcular();
+    const ro = new ResizeObserver(calcular);
+    ro.observe(el);
+    window.addEventListener("resize", calcular);
+    return () => { ro.disconnect(); window.removeEventListener("resize", calcular); };
+  }, [ratioAncho, ratioAlto]);
+  return (
+    <div ref={exteriorRef} style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ position: "relative", width: caja.width || undefined, height: caja.height || undefined, ...style }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 // ── Vista de una partida contra el computador (todo local, no usa Firebase) ──
 function PartidaBotCabezones({ user, colorLocal, config, dificultad, onVolver, onTerminar }) {
   const estadoLocalRef = useRef(crearEstadoPartidoCabezones(config));
@@ -4091,8 +4131,8 @@ function PartidaBotCabezones({ user, colorLocal, config, dificultad, onVolver, o
           {(DIFICULTADES_BOT_UI.find((d) => d.id === dificultad) || DIFICULTADES_BOT_UI[1]).etiqueta}
         </Badge>
       </div>
-      <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 14px" }}>
-        <div style={{ position: "relative", maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", aspectRatio: `${CABEZONES_ANCHO} / ${CABEZONES_ALTO}`, borderRadius: 8, overflow: "hidden", border: `2px solid ${COLORS.neonMagenta}`, boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
+      <div style={{ flex: 1, minHeight: 0, padding: "6px 14px" }}>
+        <CajaJuegoContenida ratioAncho={CABEZONES_ANCHO} ratioAlto={CABEZONES_ALTO} style={{ borderRadius: 8, overflow: "hidden", border: `2px solid ${COLORS.neonMagenta}`, boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
           <MotorCabezones
             esHost
             ladoLocal="izquierda"
@@ -4118,7 +4158,7 @@ function PartidaBotCabezones({ user, colorLocal, config, dificultad, onVolver, o
               </div>
             </div>
           )}
-        </div>
+        </CajaJuegoContenida>
       </div>
       <div style={{ flexShrink: 0, padding: "6px 14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", opacity: marcador.fase === "terminado" ? 0.35 : 1, pointerEvents: marcador.fase === "terminado" ? "none" : "auto" }}>
         <div style={{ display: "flex", gap: 8 }}>
@@ -4529,8 +4569,8 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
         <Badge color={COLORS.textMuted}>⏱ {Math.ceil(marcador.tiempoRestante)}s</Badge>
         <Badge color={COLORS.neonMagenta}>{soyJugador1 ? "Jugador 1" : "Jugador 2"}</Badge>
       </div>
-      <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 14px" }}>
-        <div style={{ position: "relative", maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", aspectRatio: `${CABEZONES_ANCHO} / ${CABEZONES_ALTO}`, borderRadius: 8, overflow: "hidden", border: `2px solid ${COLORS.neonMagenta}`, boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
+      <div style={{ flex: 1, minHeight: 0, padding: "6px 14px" }}>
+        <CajaJuegoContenida ratioAncho={CABEZONES_ANCHO} ratioAlto={CABEZONES_ALTO} style={{ borderRadius: 8, overflow: "hidden", border: `2px solid ${COLORS.neonMagenta}`, boxShadow: `0 0 26px ${COLORS.neonMagenta}33` }}>
           <MotorCabezones
             esHost={false}
             modoServidor
@@ -4564,7 +4604,7 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
               </div>
             </div>
           )}
-        </div>
+        </CajaJuegoContenida>
       </div>
       <div style={{ flexShrink: 0, padding: "6px 14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", opacity: marcador.fase === "terminado" ? 0.35 : 1, pointerEvents: marcador.fase === "terminado" ? "none" : "auto" }}>
         <div style={{ display: "flex", gap: 8 }}>
@@ -4867,6 +4907,33 @@ const GP_GOLPE_DERRAPE_UMBRAL = 95; // velocidad relativa lateral de impacto a p
 const GP_RAYCAST_DIST = 130; // alcance de las 3 "antenas" de los bots
 const GP_RAYCAST_ANGULO = 0.5; // rad de apertura de las antenas diagonales respecto al frente
 const GP_BOOST_RECTA = 1.32; // multiplicador de fuerza de motor de los bots en recta despejada
+const GP_LIMITE_OFFROAD_BOT = GP_TRACK_MITAD * 0.9; // más allá de esto la IA prioriza volver a la pista, ignorando cualquier esquive
+const GP_DERRAPE_MANUAL_DIR_MIN = 0.2; // cuánto hay que estar girando para que el botón de derrape haga efecto
+const GP_TURBO_MS = 1400;
+const GP_TURBO_FUERZA = 1.5;
+const GP_ESCUDO_MS = 4500;
+const GP_LENTO_MS = 1500;
+const GP_LENTO_FACTOR = 0.55;
+const GP_ACEITE_VIDA = 9; // segundos que dura una mancha de aceite tirada en la pista
+const GP_ACEITE_RADIO = 22;
+const GP_COFRE_RADIO = 24;
+const GP_COFRE_RESPAWN_MS = 7000;
+const GP_TIPOS_PODER = ["turbo", "escudo", "aceite", "rayo"];
+const GP_ICONOS_PODER = { turbo: "🚀", escudo: "🛡️", aceite: "🛢️", rayo: "⚡" };
+const GP_NOMBRES_PODER = { turbo: "TURBO", escudo: "ESCUDO", aceite: "ACEITE", rayo: "RAYO" };
+
+// Ambientación distinta por pista: paleta de cielo/terreno, colores de pianito y qué mezcla de
+// decoraciones usa cada circuito — así las 8 pistas no comparten el mismo look verde-genérico.
+const GP_TEMAS = {
+  ovalo: { cieloTop: "#0d2414", cieloBottom: "#081a0e", pastoA: "#123A1C", pastoB: "#173F20", curbA: "#E23B3B", curbB: "#EDEDED", secuenciaDecos: ["grada", "arbol", "neumaticos", "arbol", "bandera"] },
+  autodromo: { cieloTop: "#1b2028", cieloBottom: "#12151b", pastoA: "#1E2530", pastoB: "#242C38", curbA: "#E23B3B", curbB: "#EDEDED", secuenciaDecos: ["grada", "grada", "neumaticos", "bandera", "neumaticos"] },
+  estadio: { cieloTop: "#0b1330", cieloBottom: "#080c20", pastoA: "#122018", pastoB: "#16281d", curbA: COLORS.neonAmber, curbB: "#EDEDED", secuenciaDecos: ["grada", "grada", "bandera", "grada", "neumaticos"] },
+  granrecta: { cieloTop: "#3a2412", cieloBottom: "#1c130a", pastoA: "#4A3A22", pastoB: "#54432A", curbA: "#E29A3B", curbB: "#EDEDED", secuenciaDecos: ["roca", "bandera", "neumaticos", "roca", "grada"] },
+  serpiente: { cieloTop: "#0a2a1a", cieloBottom: "#05150c", pastoA: "#0F3B1F", pastoB: "#134526", curbA: "#E23B3B", curbB: "#EDEDED", secuenciaDecos: ["arbol", "arbol", "neumaticos", "arbol", "bandera"] },
+  herradura: { cieloTop: "#0c2438", cieloBottom: "#08141f", pastoA: "#123047", pastoB: "#163a54", curbA: COLORS.neonBlue, curbB: "#EDEDED", secuenciaDecos: ["neumaticos", "bandera", "grada", "neumaticos", "arbol"] },
+  zigzag: { cieloTop: "#3a1c30", cieloBottom: "#1c0e18", pastoA: "#2E1A3A", pastoB: "#38203F", curbA: "#E2833B", curbB: "#EDEDED", secuenciaDecos: ["bandera", "neumaticos", "arbol", "bandera", "roca"] },
+  volcan: { cieloTop: "#3a0d0d", cieloBottom: "#1a0505", pastoA: "#2A1414", pastoB: "#331717", curbA: "#1A1A1E", curbB: COLORS.neonAmber, secuenciaDecos: ["roca", "roca", "bandera", "roca", "neumaticos"] },
+};
 
 // Circuito rectangular: dos rectas + dos semicírculos de 180° — nunca se autointersecta.
 function construirCircuitoRectangular(recta, radio) {
@@ -4958,16 +5025,12 @@ function lateralEnGP(pista, idx) {
 function construirDecoracionesGP(pista) {
   const decos = [];
   const paso = 7; // cada cuántos puntos de la curva va un elemento
+  const secuencia = (pista.tema && pista.tema.secuenciaDecos) || ["grada", "arbol", "neumaticos", "arbol", "bandera"];
   for (let i = 0; i < pista.nPuntos; i += paso) {
     const p = pista.centerline[i];
     const lat = lateralEnGP(pista, i);
-    const cicloTipo = Math.floor(i / paso) % 5;
-    // Rectas llevan más gradas; curvas llevan más neumáticos/árboles.
-    let tipo;
-    if (cicloTipo === 0) tipo = "grada";
-    else if (cicloTipo === 1 || cicloTipo === 3) tipo = "arbol";
-    else if (cicloTipo === 2) tipo = "neumaticos";
-    else tipo = "bandera";
+    const cicloTipo = Math.floor(i / paso) % secuencia.length;
+    const tipo = secuencia[cicloTipo];
     const lado = (Math.floor(i / paso) % 2 === 0) ? 1 : -1;
     const offset = GP_TRACK_MITAD + 46 + (tipo === "grada" ? 30 : 0) + (Math.sin(i * 0.7) * 12);
     decos.push({
@@ -5053,10 +5116,31 @@ function dibujarBanderaGP(ctx, x, y, rot, colorId) {
   ctx.restore();
 }
 
+function dibujarRocaGP(ctx, x, y) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = "rgba(0,0,0,0.3)";
+  ctx.beginPath(); ctx.ellipse(2, 5, 13, 5, 0, 0, Math.PI * 2); ctx.fill();
+  const bloques = [[-6, -2, 10], [5, 0, 9], [0, -8, 8]];
+  bloques.forEach(([bx, by, r], i) => {
+    ctx.fillStyle = i % 2 === 0 ? "#5A5449" : "#6E675A";
+    ctx.beginPath();
+    ctx.moveTo(bx, by - r);
+    ctx.lineTo(bx + r * 0.9, by - r * 0.2);
+    ctx.lineTo(bx + r * 0.5, by + r * 0.8);
+    ctx.lineTo(bx - r * 0.6, by + r * 0.7);
+    ctx.lineTo(bx - r * 0.9, by - r * 0.3);
+    ctx.closePath();
+    ctx.fill();
+  });
+  ctx.restore();
+}
+
 function dibujarDecoracionGP(ctx, deco, idx) {
   if (deco.tipo === "arbol") dibujarArbolGP(ctx, deco.x, deco.y);
   else if (deco.tipo === "grada") dibujarGradaGP(ctx, deco.x, deco.y, deco.rot);
   else if (deco.tipo === "neumaticos") dibujarNeumaticosGP(ctx, deco.x, deco.y, deco.rot);
+  else if (deco.tipo === "roca") dibujarRocaGP(ctx, deco.x, deco.y);
   else dibujarBanderaGP(ctx, deco.x, deco.y, deco.rot, idx);
 }
 
@@ -5065,12 +5149,13 @@ function dibujarDecoracionGP(ctx, deco, idx) {
 // simple línea punteada.
 function dibujarCurbsGP(ctx, pista) {
   const pasoCurb = 2;
+  const tema = pista.tema || GP_TEMAS.ovalo;
   for (let i = 0; i < pista.nPuntos; i += pasoCurb) {
     const p = pista.centerline[i];
     const lat = lateralEnGP(pista, i);
     const sig = pista.centerline[(i + 1) % pista.nPuntos];
     const tangRot = Math.atan2(sig.y - p.y, sig.x - p.x);
-    const color = Math.floor(i / pasoCurb) % 2 === 0 ? "#E23B3B" : "#EDEDED";
+    const color = Math.floor(i / pasoCurb) % 2 === 0 ? tema.curbA : tema.curbB;
     ctx.fillStyle = color;
     [1, -1].forEach((lado) => {
       const cx = p.x + lat.x * GP_TRACK_MITAD * lado;
@@ -5084,33 +5169,56 @@ function dibujarCurbsGP(ctx, pista) {
   }
 }
 
-let GP_PATRON_PASTO_CACHE = null;
-function obtenerPatronPastoGP(ctx) {
-  if (GP_PATRON_PASTO_CACHE) return GP_PATRON_PASTO_CACHE;
+const GP_PATRON_PASTO_CACHE = {};
+function obtenerPatronPastoGP(ctx, tema) {
+  const t = tema || GP_TEMAS.ovalo;
+  if (GP_PATRON_PASTO_CACHE[t.pastoA]) return GP_PATRON_PASTO_CACHE[t.pastoA];
   const tile = document.createElement("canvas");
   tile.width = 96; tile.height = 96;
   const tctx = tile.getContext("2d");
-  tctx.fillStyle = "#123A1C";
+  tctx.fillStyle = t.pastoA;
   tctx.fillRect(0, 0, 96, 96);
-  tctx.fillStyle = "#173F20";
+  tctx.fillStyle = t.pastoB;
   tctx.fillRect(0, 0, 96, 48);
-  GP_PATRON_PASTO_CACHE = ctx.createPattern(tile, "repeat");
-  return GP_PATRON_PASTO_CACHE;
+  const patron = ctx.createPattern(tile, "repeat");
+  GP_PATRON_PASTO_CACHE[t.pastoA] = patron;
+  return patron;
 }
 
 // Arma el objeto completo de un circuito a partir de su curva de puntos ya generada: longitud
 // acumulada punto a punto (para medir progreso/posiciones), largo total de vuelta y la
 // ambientación (gradas/árboles/neumáticos/banderas) calculada una sola vez.
+// Cofres de poderes: repartidos a intervalos regulares sobre la propia línea central de la pista
+// (a diferencia de la ambientación, que va al costado) — unos 8-9 por vuelta.
+function construirCofresGP(pista) {
+  const cofres = [];
+  const paso = Math.max(12, Math.floor(pista.nPuntos / 9));
+  for (let i = 0; i < pista.nPuntos; i += paso) {
+    const p = pista.centerline[i];
+    cofres.push({ idx: i, x: p.x, y: p.y, activo: true, respawnEn: 0 });
+  }
+  return cofres;
+}
+
 function construirPistaGP(id, nombre, centerline) {
   const nPuntos = centerline.length;
   const longitudes = [0];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (let i = 1; i <= nPuntos; i++) {
     const a = centerline[i - 1];
     const b = centerline[i % nPuntos];
     longitudes.push(longitudes[i - 1] + Math.hypot(b.x - a.x, b.y - a.y));
   }
-  const pista = { id, nombre, centerline, nPuntos, longitudes, largoVuelta: longitudes[nPuntos] };
+  centerline.forEach((p) => {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  });
+  const pista = {
+    id, nombre, centerline, nPuntos, longitudes, largoVuelta: longitudes[nPuntos],
+    tema: GP_TEMAS[id] || GP_TEMAS.ovalo, bbox: { minX, maxX, minY, maxY },
+  };
   pista.decoraciones = construirDecoracionesGP(pista);
+  pista.cofres = construirCofresGP(pista);
   return pista;
 }
 
@@ -5118,10 +5226,14 @@ function construirPistaGP(id, nombre, centerline) {
 // rectas largas) y 4 generados con spline Catmull-Rom sobre puntos de control polares (curvas más
 // orgánicas, eses y sectores técnicos) — todos escalados para ~30s de vuelta a GP_VEL_MAX_BASE.
 const GP_PISTAS = [
-  construirPistaGP("ovalo", "Óvalo Clásico", construirCircuitoRectangular(2477, 716)),
-  construirPistaGP("autodromo", "Autódromo Norte", construirCircuitoRectangular(3172, 595)),
+  // Las 3 rectangulares "aburridas" (recta muchísimo más larga que el radio de las curvas) fueron
+  // re-escaladas: mismo generador 100% seguro (dos rectas + dos semicírculos, nunca se
+  // autointerseca), pero con radios de curva mucho más grandes — así quedan curvas amplias y
+  // cerradas de verdad, buenas para derrapar, en vez de dos rectas larguísimas unidas por curvitas.
+  construirPistaGP("ovalo", "Óvalo Clásico", construirCircuitoRectangular(950, 1050)),
+  construirPistaGP("autodromo", "Autódromo Norte", construirCircuitoRectangular(2080, 850)),
   construirPistaGP("estadio", "Estadio Doble", construirCircuitoRectangular(587, 1017)),
-  construirPistaGP("granrecta", "Gran Recta Cúpula", construirCircuitoRectangular(4063, 271)),
+  construirPistaGP("granrecta", "Gran Recta Cúpula", construirCircuitoRectangular(2701, 700)),
   construirPistaGP("serpiente", "Circuito Serpiente", construirPistaSplineGP(
     construirControlesPolaresGP(20, 1248, 225, 3, 0.3, 75, 7, 1.1), 14
   )),
@@ -5155,6 +5267,8 @@ function crearAutoGP({ esBot, skinIndex, idxInicial }, pista) {
     offsetLinea: esBot ? (Math.random() * 2 - 1) * GP_TRACK_MITAD * 0.55 : 0,
     faseOffset: Math.random() * Math.PI * 2,
     lookahead: 9 + Math.floor(Math.random() * 6),
+    // Poderes: un ítem a la vez (estilo Mario Kart), más los relojes de efectos activos.
+    powerUp: null, turboHasta: 0, escudoHasta: 0, lentoHasta: 0,
   };
 }
 
@@ -5184,12 +5298,30 @@ function sensorGP(auto, anguloOffset, autos, distMax) {
   return masCercano;
 }
 
+// Offset lateral ACTUAL del auto respecto al centro de la pista (con signo, en la misma base que
+// lateralEnGP/offsetLinea) — se usa para saber qué tan cerca del borde/pasto está de verdad, más
+// allá de hacia dónde esté mirando en este instante.
+function offsetLateralActualGP(pista, auto) {
+  const idx = auto.idxCercano;
+  const p = pista.centerline[idx];
+  const lat = lateralEnGP(pista, idx);
+  return (auto.x - p.x) * lat.x + (auto.y - p.y) * lat.y;
+}
+
 // Le arma la entrada (acelerar/frenar/girar) a un bot mirando un punto más adelante en la curva,
 // con su propio offset lateral (línea de carrera) para no ir todos pegados al centro, más:
 //  · 3 sensores raycast (frente + 2 diagonales) para detectar autos cerca y esquivar/adelantar.
 //  · Boost al 100% en recta despejada (curvatura baja y nada detectado adelante).
 //  · Rubber-banding: si va bastante atrás del líder, un empujón extra de fuerza.
-function entradaBotGP(bot, autos, pista) {
+//  · Freno de seguridad de pista: si el esquive de un auto los estaba empujando hacia el pasto,
+//    ahora SIEMPRE se prioriza volver a la pista por sobre esquivar — antes el esquive podía
+//    ganarle a la línea de carrera y mandaba al bot derechito afuera.
+//  · Poderes: los toman solos al pasar por un cofre y los usan con criterio simple (turbo en
+//    recta, rayo si hay alguien justo adelante, aceite si los persiguen de cerca, escudo apenas
+//    lo tienen porque es puramente defensivo).
+//  · Malicia en la última vuelta: si van cuerpo a cuerpo con un rival cerca de la meta, un empujón
+//    de verdad hacia él en vez de solo esquivarlo — juegan la posición como pediste.
+function entradaBotGP(bot, autos, pista, totalVueltas) {
   const objIdx = (bot.idxCercano + bot.lookahead) % pista.nPuntos;
   const lat = lateralEnGP(pista, objIdx);
   const offsetVivo = bot.offsetLinea * (0.7 + 0.3 * Math.sin(Date.now() / 1400 + bot.faseOffset));
@@ -5222,29 +5354,63 @@ function entradaBotGP(bot, autos, pista) {
     else freno = true;
   }
 
+  // Malicia cerca de la meta: en la última vuelta, si hay un rival prácticamente al lado peleando
+  // la posición, un empujón de dir hacia él (no solo esquivarlo) — bounded, no un volantazo.
+  if (totalVueltas != null && bot.vueltas >= totalVueltas - 1) {
+    let rival = null, distRival = Infinity;
+    for (const otro of autos) {
+      if (otro === bot) continue;
+      const d = Math.hypot(otro.x - bot.x, otro.y - bot.y);
+      if (d < 60 && d < distRival && Math.abs(progresoGP(otro, pista) - progresoGP(bot, pista)) < 45) {
+        rival = otro; distRival = d;
+      }
+    }
+    if (rival) {
+      let angRival = Math.atan2(rival.y - bot.y, rival.x - bot.x) - bot.heading;
+      while (angRival > Math.PI) angRival -= Math.PI * 2;
+      while (angRival < -Math.PI) angRival += Math.PI * 2;
+      dir = Math.max(-1, Math.min(1, dir + angRival * 0.4));
+    }
+  }
+
+  // Freno de seguridad de pista: tiene PRIORIDAD sobre todo lo anterior — si el offset actual ya
+  // se está pasando del borde, ignorar esquive/malicia y clavar el volante de vuelta al centro.
+  const offsetActual = offsetLateralActualGP(pista, bot);
+  if (Math.abs(offsetActual) > GP_LIMITE_OFFROAD_BOT) {
+    dir = offsetActual > 0 ? -1 : 1;
+  }
+
   // Boost: recta despejada (poca curvatura adelante y nada detectado por el sensor frontal).
   const boost = !freno && !frente && curvatura < 0.18;
 
-  // Rubber-banding leve: si va bastante atrás de la punta, un empujón de fuerza para no perder la
-  // carrera por completo (los líderes no reciben ayuda extra).
+  // Rubber-banding leve: si va bastante atrás de la punta, un empujón extra de fuerza para no
+  // perder la carrera por completo (los líderes no reciben ayuda extra).
   const punta = Math.max(...autos.map((a) => progresoGP(a, pista)));
   const atras = punta - progresoGP(bot, pista);
   const rubberBand = atras > pista.largoVuelta * 0.12;
 
-  return { accel: !freno, freno, dir, boost: boost || rubberBand };
+  // Poderes: criterio simple pero con intención — no los guardan indefinidamente.
+  let usarPoder = false;
+  if (bot.powerUp === "turbo") usarPoder = boost;
+  else if (bot.powerUp === "rayo") usarPoder = !!frente;
+  else if (bot.powerUp === "escudo") usarPoder = true;
+  else if (bot.powerUp === "aceite") usarPoder = !!sensorGP(bot, Math.PI, autos, 95);
+
+  return { accel: !freno, freno, dir, boost: boost || rubberBand, usarPoder };
 }
 
-// Rebufo: si hay otro auto justo adelante (dentro de ~90 unidades, casi alineado con el heading),
-// da un 15% extra de fuerza de motor — beneficia a quien va detrás, sea el jugador o un bot.
+// Rebufo: si hay otro auto justo adelante (dentro de ~105 unidades, bastante alineado con el
+// heading), da un 22% extra de fuerza de motor — beneficia a quien va detrás, sea el jugador o un
+// bot. Un poco más generoso en rango y efecto que antes (pedido explícito: "más activo").
 function hayRebufoGP(auto, autos) {
   const dirH = { x: Math.cos(auto.heading), y: Math.sin(auto.heading) };
   for (const otro of autos) {
     if (otro === auto) continue;
     const dx = otro.x - auto.x, dy = otro.y - auto.y;
     const dist = Math.hypot(dx, dy);
-    if (dist > 85 || dist < 1) continue;
+    if (dist > 105 || dist < 1) continue;
     const alineacion = (dx * dirH.x + dy * dirH.y) / dist;
-    if (alineacion > 0.92) return true;
+    if (alineacion > 0.88) return true;
   }
   return false;
 }
@@ -5259,19 +5425,28 @@ function actualizarFisicaAutoGP(auto, dt, entrada, rebufo) {
   const amortLateralBase = auto.offRoad ? 11 : 6.2;
 
   const ahora = Date.now();
-  if (Math.abs(vLateral) > GP_UMBRAL_DERRAPE) auto.derrapeHasta = ahora + GP_DERRAPE_MS;
+  const turboActivo = !!auto.turboHasta && ahora < auto.turboHasta;
+  const lentoActivo = !!auto.lentoHasta && ahora < auto.lentoHasta;
+
+  // Derrape: automático al pasar el umbral de velocidad lateral (como siempre), PERO también se
+  // puede pedir a mano con el botón/tecla de derrape mientras se gira a buena velocidad — deja el
+  // control fino intacto (no cambia nada si no se usa) y agrega un derrape voluntario "a lo drift"
+  // para quien lo quiera manejar activamente.
+  const pideDerrapeManual = !!entrada.derrape && Math.abs(entrada.dir) > GP_DERRAPE_MANUAL_DIR_MIN && Math.abs(vAdelante) > auto.velMaxBase * 0.25;
+  if (Math.abs(vLateral) > GP_UMBRAL_DERRAPE || pideDerrapeManual) auto.derrapeHasta = ahora + GP_DERRAPE_MS;
   auto.enDerrape = ahora < auto.derrapeHasta;
   // Durante el derrape el agarre lateral baja mucho más que antes — el auto resbala de verdad hacia
   // afuera de la curva en vez de solo "sentirse" un poco suelto.
   const amortLateral = auto.enDerrape ? amortLateralBase * 0.2 : amortLateralBase;
 
   let fuerza = 0;
-  if (entrada.accel) fuerza += GP_FUERZA_MOTOR * (rebufo ? 1.15 : 1) * (entrada.boost ? GP_BOOST_RECTA : 1);
-  if (entrada.freno) fuerza -= GP_FUERZA_FRENO;
+  const acelerando = entrada.accel || turboActivo; // el turbo empuja solo, aunque no se toque el gas
+  if (acelerando) fuerza += GP_FUERZA_MOTOR * (rebufo ? 1.22 : 1) * (entrada.boost ? GP_BOOST_RECTA : 1) * (turboActivo ? GP_TURBO_FUERZA : 1);
+  if (entrada.freno && !turboActivo) fuerza -= GP_FUERZA_FRENO;
 
   let nuevoVAdelante = vAdelante + fuerza * dt;
   nuevoVAdelante *= Math.max(0, 1 - GP_RESISTENCIA * dt);
-  const velMaxEfectiva = auto.velMaxBase * factorSuperficie;
+  const velMaxEfectiva = auto.velMaxBase * factorSuperficie * (lentoActivo ? GP_LENTO_FACTOR : 1) * (turboActivo ? 1.18 : 1);
   nuevoVAdelante = Math.max(-velMaxEfectiva * 0.45, Math.min(velMaxEfectiva, nuevoVAdelante));
 
   const nuevoVLateral = vLateral * Math.max(0, 1 - amortLateral * dt * 8);
@@ -5333,14 +5508,18 @@ function resolverColisionesGP(autos) {
         b.vx = vnB2 * nx + vtB * tx; b.vy = vnB2 * ny + vtB * ty;
 
         // 3) Golpe fuerte → derrape forzado + pequeño giro brusco en ambos, simulando perder el
-        // control un instante (choque real de carreras, no solo un frenón).
+        // control un instante (choque real de carreras, no solo un frenón). El poder "escudo" no
+        // hace al auto invencible a los choques (la física de separación de arriba sigue igual de
+        // normal, así no se vuelve una pared que rompe el juego) — solo evita QUE ESE auto en
+        // particular pierda el control por el golpe.
         const relSpeed = Math.hypot(a.vx - b.vx, a.vy - b.vy);
         if (relVn > GP_GOLPE_DERRAPE_UMBRAL || relSpeed > GP_GOLPE_DERRAPE_UMBRAL) {
           const ahora = Date.now();
-          a.derrapeHasta = ahora + GP_DERRAPE_MS; a.enDerrape = true;
-          b.derrapeHasta = ahora + GP_DERRAPE_MS; b.enDerrape = true;
+          const aEscudo = a.escudoHasta && ahora < a.escudoHasta;
+          const bEscudo = b.escudoHasta && ahora < b.escudoHasta;
           const giro = 0.18 + Math.random() * 0.16;
-          a.heading -= giro; b.heading += giro;
+          if (!aEscudo) { a.derrapeHasta = ahora + GP_DERRAPE_MS; a.enDerrape = true; a.heading -= giro; }
+          if (!bEscudo) { b.derrapeHasta = ahora + GP_DERRAPE_MS; b.enDerrape = true; b.heading += giro; }
         }
       }
     }
@@ -5368,15 +5547,87 @@ function crearEstadoGP(skinJugador, totalVueltas, pistaId) {
     inicioMs: Date.now(), terminado: false, posicionFinalJugador: 0,
     marcasDerrape: [], particulas: [], camara: { x: autos[0].x, y: autos[0].y },
     cuentaRegresiva: 3.2,
+    // Poderes: manchas de aceite tiradas en la pista (independientes de cada auto).
+    aceites: [],
+    // Récord de vuelta: se arranca a contar recién cuando termina la cuenta regresiva.
+    vueltasTiempos: [], mejorVuelta: null, peorVuelta: null, inicioVueltaMs: null,
   };
+}
+
+// Aplica el efecto de un power-up recién usado (turbo/escudo/aceite/rayo) — ver los comentarios de
+// cada const GP_* arriba para los valores. No es invasivo: nada tira a nadie fuera de la pista ni
+// bloquea el control por completo, solo da ventajas/desventajas temporales chicas.
+function usarPoderGP(auto, autos, st) {
+  const tipo = auto.powerUp;
+  if (!tipo) return;
+  auto.powerUp = null;
+  const ahora = Date.now();
+  if (tipo === "turbo") {
+    auto.turboHasta = ahora + GP_TURBO_MS;
+  } else if (tipo === "escudo") {
+    auto.escudoHasta = ahora + GP_ESCUDO_MS;
+  } else if (tipo === "aceite") {
+    const dirH = { x: Math.cos(auto.heading), y: Math.sin(auto.heading) };
+    st.aceites.push({ x: auto.x - dirH.x * 26, y: auto.y - dirH.y * 26, vida: GP_ACEITE_VIDA, usado: false });
+  } else if (tipo === "rayo") {
+    // Apunta al rival inmediatamente adelante en progreso de carrera — un poder ofensivo real.
+    let objetivo = null, mejorDif = Infinity;
+    const progresoAuto = progresoGP(auto, st.pista);
+    for (const otro of autos) {
+      if (otro === auto) continue;
+      const dif = progresoGP(otro, st.pista) - progresoAuto;
+      if (dif > 0 && dif < mejorDif) { mejorDif = dif; objetivo = otro; }
+    }
+    if (objetivo && !(objetivo.escudoHasta && ahora < objetivo.escudoHasta)) {
+      objetivo.lentoHasta = ahora + GP_LENTO_MS;
+    }
+  }
 }
 
 function actualizarGP(st, dt, entrada) {
   if (st.cuentaRegresiva > 0) {
     st.cuentaRegresiva -= dt;
+    if (st.cuentaRegresiva <= 0) st.inicioVueltaMs = Date.now();
     return;
   }
   const pista = st.pista;
+  const ahora = Date.now();
+
+  // Cofres de poderes: los que están apagados vuelven a activarse pasado su respawn; los activos
+  // se los lleva el primer auto (sin ítem en mano) que pase cerca.
+  for (const cofre of pista.cofres) {
+    if (!cofre.activo) {
+      if (ahora >= cofre.respawnEn) cofre.activo = true;
+      continue;
+    }
+    for (const auto of st.autos) {
+      if (auto.powerUp) continue;
+      if (Math.hypot(auto.x - cofre.x, auto.y - cofre.y) < GP_COFRE_RADIO) {
+        auto.powerUp = GP_TIPOS_PODER[Math.floor(Math.random() * GP_TIPOS_PODER.length)];
+        cofre.activo = false;
+        cofre.respawnEn = ahora + GP_COFRE_RESPAWN_MS;
+        break;
+      }
+    }
+  }
+
+  // Manchas de aceite: un solo golpe por mancha (como una banana de Mario Kart) — el auto que la
+  // pisa (sin escudo) entra en derrape forzado con un pequeño giro brusco.
+  st.aceites.forEach((h) => { h.vida -= dt; });
+  st.aceites = st.aceites.filter((h) => h.vida > 0 && !h.usado);
+  for (const h of st.aceites) {
+    for (const auto of st.autos) {
+      if (auto.escudoHasta && ahora < auto.escudoHasta) continue;
+      if (Math.hypot(auto.x - h.x, auto.y - h.y) < GP_ACEITE_RADIO) {
+        h.usado = true;
+        auto.derrapeHasta = ahora + GP_DERRAPE_MS;
+        auto.enDerrape = true;
+        auto.heading += (Math.random() < 0.5 ? -1 : 1) * (0.2 + Math.random() * 0.15);
+        break;
+      }
+    }
+  }
+
   for (const auto of st.autos) {
     const cercano = indiceCercanoGP(pista, auto.x, auto.y, auto.idxCercano);
     const idxPrevio = auto.idxCercano;
@@ -5387,6 +5638,15 @@ function actualizarGP(st, dt, entrada) {
     if (idxPrevio > pista.nPuntos * 0.75 && auto.idxCercano < pista.nPuntos * 0.25) {
       auto.vueltas += 1;
       auto.ultimaVueltaMs = Date.now();
+      // Récord de mejor/peor vuelta — solo del jugador, y solo vueltas completas de verdad (la
+      // primera vez que se cruza la meta al arrancar no cuenta, por eso el >= 1).
+      if (auto === st.jugador && auto.vueltas >= 1) {
+        const duracion = (ahora - (st.inicioVueltaMs || ahora)) / 1000;
+        st.vueltasTiempos.push(duracion);
+        if (st.mejorVuelta === null || duracion < st.mejorVuelta) st.mejorVuelta = duracion;
+        if (st.peorVuelta === null || duracion > st.peorVuelta) st.peorVuelta = duracion;
+      }
+      if (auto === st.jugador) st.inicioVueltaMs = ahora;
       if (!auto.esBot && auto.vueltas >= st.totalVueltas && !st.terminado) {
         st.terminado = true;
         const ordenados = [...st.autos].sort((a, b) => progresoGP(b, pista) - progresoGP(a, pista));
@@ -5394,7 +5654,8 @@ function actualizarGP(st, dt, entrada) {
       }
     }
 
-    const entradaAuto = auto.esBot ? entradaBotGP(auto, st.autos, pista) : entrada;
+    const entradaAuto = auto.esBot ? entradaBotGP(auto, st.autos, pista, st.totalVueltas) : entrada;
+    if (entradaAuto.usarPoder) usarPoderGP(auto, st.autos, st);
     const rebufo = hayRebufoGP(auto, st.autos);
     actualizarFisicaAutoGP(auto, dt, entradaAuto, rebufo);
 
@@ -5439,8 +5700,66 @@ function dibujarSombraAutoGP(ctx, auto, ancho, alto) {
   ctx.restore();
 }
 
+// Íconos de poderes: cofre giratorio en la pista (sin recoger), mancha de aceite pegada al asfalto.
+function dibujarCofreGP(ctx, cofre) {
+  const t = Date.now() / 400;
+  const escala = 0.85 + Math.sin(t + cofre.idx) * 0.12;
+  ctx.save();
+  ctx.translate(cofre.x, cofre.y);
+  ctx.rotate(t * 0.6);
+  ctx.scale(escala, escala);
+  ctx.shadowColor = COLORS.neonAmber;
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = COLORS.neonAmber;
+  ctx.fillRect(-9, -9, 18, 18);
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "#3a2a06";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(-9, -9, 18, 18);
+  ctx.fillStyle = "#3a2a06";
+  ctx.font = "800 13px 'Courier New', monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("?", 0, 1);
+  ctx.restore();
+}
+function dibujarAceiteGP(ctx, h) {
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, h.vida / 1.5);
+  ctx.translate(h.x, h.y);
+  ctx.fillStyle = "#0a0a0a";
+  ctx.beginPath();
+  ctx.ellipse(0, 0, GP_ACEITE_RADIO * 0.9, GP_ACEITE_RADIO * 0.62, 0.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "rgba(140,120,255,0.35)";
+  ctx.beginPath();
+  ctx.ellipse(-4, -3, GP_ACEITE_RADIO * 0.4, GP_ACEITE_RADIO * 0.24, 0.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 function dibujarAutoGP(ctx, assets, auto, ancho, alto) {
   const img = assets.get("autos");
+  const ahora = Date.now();
+  // Estela de turbo: un par de trazos de velocidad naranjas detrás del auto mientras dura el boost.
+  if (auto.turboHasta && ahora < auto.turboHasta) {
+    ctx.save();
+    ctx.translate(auto.x, auto.y);
+    ctx.rotate(auto.heading + Math.PI / 2);
+    ctx.globalAlpha = 0.7;
+    ctx.fillStyle = COLORS.neonAmber;
+    ctx.shadowColor = COLORS.neonAmber;
+    ctx.shadowBlur = 16;
+    [-6, 6].forEach((ox) => {
+      ctx.beginPath();
+      ctx.moveTo(ox - 3, alto / 2 + 2);
+      ctx.lineTo(ox + 3, alto / 2 + 2);
+      ctx.lineTo(ox, alto / 2 + 20 + Math.random() * 10);
+      ctx.closePath();
+      ctx.fill();
+    });
+    ctx.restore();
+  }
   ctx.save();
   ctx.translate(auto.x, auto.y);
   ctx.rotate(auto.heading + Math.PI / 2);
@@ -5463,7 +5782,6 @@ function dibujarAutoGP(ctx, assets, auto, ancho, alto) {
   }
   ctx.shadowBlur = 0;
   // Luces traseras neón (freno) — un par de rectángulos brillantes atrás del auto.
-  const frenando = !auto.esBot ? undefined : undefined;
   ctx.shadowColor = auto.enDerrape ? COLORS.neonAmber : COLORS.neonRed;
   ctx.shadowBlur = auto.enDerrape ? 14 : 7;
   ctx.fillStyle = auto.enDerrape ? COLORS.neonAmber : "#FF2A2A";
@@ -5471,18 +5789,78 @@ function dibujarAutoGP(ctx, assets, auto, ancho, alto) {
   ctx.fillRect(ancho / 2 - 6, alto / 2 - 3, 4, 3);
   ctx.shadowBlur = 0;
   ctx.restore();
+  // Anillo de escudo: un aro translúcido girando alrededor del auto mientras dura.
+  if (auto.escudoHasta && ahora < auto.escudoHasta) {
+    ctx.save();
+    ctx.translate(auto.x, auto.y);
+    ctx.rotate(ahora / 300);
+    ctx.strokeStyle = COLORS.neonBlue;
+    ctx.shadowColor = COLORS.neonBlue;
+    ctx.shadowBlur = 10;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(ancho, alto) * 0.62, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+}
+
+// Mini-mapa: recuadro chico y semitransparente en una esquina (no invasivo) con el trazo de la
+// pista completa y un punto por cada auto — para ubicar de un vistazo dónde va cada competidor sin
+// taparle la pantalla al jugador.
+function dibujarMinimapaGP(ctx, st, canvasW, canvasH) {
+  const pista = st.pista;
+  const tam = 118, margen = 14, pad = 12;
+  const bx = canvasW - tam - margen, by = canvasH - tam - margen;
+  const bbox = pista.bbox;
+  const w = Math.max(1, bbox.maxX - bbox.minX), h = Math.max(1, bbox.maxY - bbox.minY);
+  const escala = Math.min((tam - pad * 2) / w, (tam - pad * 2) / h);
+  const offX = bx + tam / 2 - (bbox.minX + w / 2) * escala;
+  const offY = by + tam / 2 - (bbox.minY + h / 2) * escala;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(5,6,10,0.6)";
+  if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, by, tam, tam, 10); ctx.fill(); }
+  else ctx.fillRect(bx, by, tam, tam);
+  ctx.strokeStyle = "rgba(255,255,255,0.18)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(bx, by, tam, tam);
+
+  ctx.beginPath();
+  for (let i = 0; i < pista.nPuntos; i += 3) {
+    const p = pista.centerline[i];
+    const px = p.x * escala + offX, py = p.y * escala + offY;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.strokeStyle = "rgba(255,255,255,0.5)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  st.autos.forEach((auto) => {
+    const px = auto.x * escala + offX, py = auto.y * escala + offY;
+    ctx.beginPath();
+    ctx.arc(px, py, auto === st.jugador ? 3.6 : 2, 0, Math.PI * 2);
+    ctx.fillStyle = auto === st.jugador ? COLORS.neonAmber : "rgba(255,255,255,0.7)";
+    ctx.fill();
+  });
+  ctx.restore();
 }
 
 function dibujarGP(ctx, st, assets, dimensiones) {
   const canvas = ctx.canvas;
   const pista = st.pista;
+  const tema = pista.tema || GP_TEMAS.ovalo;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-  // Cielo/fondo: degradé sutil detrás de todo (en vez de un verde plano), le da profundidad a la
-  // ambientación general aunque la cámara nunca se aleja lo suficiente para verlo directamente.
+  // Cielo/fondo: degradé propio de cada pista (ambientación distinta por circuito) en vez de un
+  // único verde genérico — le da profundidad y carácter aunque la cámara nunca se aleje del todo.
   const cieloGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  cieloGrad.addColorStop(0, "#0d2414");
-  cieloGrad.addColorStop(1, "#081a0e");
+  cieloGrad.addColorStop(0, tema.cieloTop);
+  cieloGrad.addColorStop(1, tema.cieloBottom);
   ctx.fillStyle = cieloGrad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -5491,11 +5869,11 @@ function dibujarGP(ctx, st, assets, dimensiones) {
   const cx = canvas.width / 2, cy = canvas.height / 2;
   ctx.setTransform(escalaZoom, 0, 0, escalaZoom, cx - st.camara.x * escalaZoom, cy - st.camara.y * escalaZoom);
 
-  // Pasto: patrón con franjas de corte (como una cancha/circuito real recién cortado) cubriendo el
-  // área visible alrededor de la cámara, en vez de un relleno liso.
+  // Terreno: patrón con franjas de corte con los colores del tema de esta pista, cubriendo el área
+  // visible alrededor de la cámara.
   const medioAnchoMundo = (canvas.width / escalaZoom) / 2 + 120;
   const medioAltoMundo = (canvas.height / escalaZoom) / 2 + 120;
-  ctx.fillStyle = obtenerPatronPastoGP(ctx);
+  ctx.fillStyle = obtenerPatronPastoGP(ctx, tema);
   ctx.fillRect(st.camara.x - medioAnchoMundo, st.camara.y - medioAltoMundo, medioAnchoMundo * 2, medioAltoMundo * 2);
 
   // Ambientación: gradas, árboles, banderas y pilas de neumáticos alrededor del circuito.
@@ -5550,6 +5928,9 @@ function dibujarGP(ctx, st, assets, dimensiones) {
     ctx.stroke();
   }
 
+  st.aceites.forEach((h) => dibujarAceiteGP(ctx, h));
+  pista.cofres.forEach((cofre) => { if (cofre.activo) dibujarCofreGP(ctx, cofre); });
+
   st.marcasDerrape.forEach((m) => {
     ctx.globalAlpha = Math.max(0, m.vida / m.vidaMax) * 0.5;
     ctx.fillStyle = "#000000";
@@ -5564,6 +5945,7 @@ function dibujarGP(ctx, st, assets, dimensiones) {
   ordenDibujo.forEach((auto) => dibujarAutoGP(ctx, assets, auto, GP_AUTO_ANCHO, GP_AUTO_LARGO));
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  dibujarMinimapaGP(ctx, st, canvas.width, canvas.height);
   if (st.cuentaRegresiva > 0) {
     ctx.textAlign = "center";
     ctx.fillStyle = COLORS.white;
@@ -5658,14 +6040,15 @@ function CupulaGPView({ user, onVolver }) {
   const estadoRef = useRef(null);
   const rafRef = useRef(null);
   const assetsRef = useRef(null);
-  const inputRef = useRef({ izq: false, der: false, acel: false, freno: false, joystick: 0 });
+  const inputRef = useRef({ izq: false, der: false, acel: false, freno: false, joystick: 0, derrape: false, usarPoder: false });
 
   const [fase, setFase] = useState("menu"); // menu | jugando | terminado
   const [skinElegida, setSkinElegida] = useState(0);
   const [vueltasElegidas, setVueltasElegidas] = useState(5);
   const [pistaElegidaId, setPistaElegidaId] = useState(GP_PISTAS[0].id);
-  const [hud, setHud] = useState({ vuelta: 0, posicion: 1, velocidad: 0 });
+  const [hud, setHud] = useState({ vuelta: 0, posicion: 1, velocidad: 0, powerUp: null, mejorVuelta: null, peorVuelta: null });
   const [posicionFinal, setPosicionFinal] = useState(0);
+  const [recordFinal, setRecordFinal] = useState({ mejor: null, peor: null });
 
   useEffect(() => {
     const mgr = new AssetManagerJuegos();
@@ -5692,12 +6075,19 @@ function CupulaGPView({ user, onVolver }) {
   }, [fase]);
 
   useEffect(() => {
-    const TECLAS = { arrowleft: "izq", a: "izq", arrowright: "der", d: "der", arrowup: "acel", w: "acel", arrowdown: "freno", s: "freno" };
+    // "shift" = derrape a propósito (mantener buena conducción, solo lo activa si además estás
+    // girando); "e" = usar el power-up que tengas guardado.
+    const TECLAS = { arrowleft: "izq", a: "izq", arrowright: "der", d: "der", arrowup: "acel", w: "acel", arrowdown: "freno", s: "freno", shift: "derrape", e: "usarPoder" };
     const onDown = (e) => { const a = TECLAS[e.key.toLowerCase()]; if (a) { e.preventDefault(); inputRef.current[a] = true; } };
     const onUp = (e) => { const a = TECLAS[e.key.toLowerCase()]; if (a) inputRef.current[a] = false; };
     window.addEventListener("keydown", onDown);
     window.addEventListener("keyup", onUp);
     return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
+  }, []);
+
+  const retirarse = useCallback(() => {
+    estadoRef.current = null;
+    setFase("menu");
   }, []);
 
   const empezarCarrera = useCallback(() => {
@@ -5711,7 +6101,7 @@ function CupulaGPView({ user, onVolver }) {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
     let ultimoTs = null;
-    let vueltaPrev = -1, posPrev = -1, velPrev = -1;
+    let vueltaPrev = -1, posPrev = -1, velPrev = -1, poderPrev = undefined, mejorPrev = null, peorPrev = null;
 
     const loop = (ts) => {
       const st = estadoRef.current;
@@ -5723,21 +6113,23 @@ function CupulaGPView({ user, onVolver }) {
       const in_ = inputRef.current;
       const dirTeclado = (in_.izq ? -1 : 0) + (in_.der ? 1 : 0);
       const dirTotal = Math.max(-1, Math.min(1, dirTeclado + in_.joystick));
-      actualizarGP(st, dt, { accel: in_.acel, freno: in_.freno, dir: dirTotal });
+      actualizarGP(st, dt, { accel: in_.acel, freno: in_.freno, dir: dirTotal, derrape: in_.derrape, usarPoder: in_.usarPoder });
 
       const vueltaMostrar = Math.max(0, st.jugador.vueltas);
       const ordenados = [...st.autos].sort((a, b) => progresoGP(b, st.pista) - progresoGP(a, st.pista));
       const posicion = ordenados.indexOf(st.jugador) + 1;
       const velocidad = Math.round(Math.hypot(st.jugador.vx, st.jugador.vy));
-      if (vueltaMostrar !== vueltaPrev || posicion !== posPrev || Math.abs(velocidad - velPrev) > 2) {
-        vueltaPrev = vueltaMostrar; posPrev = posicion; velPrev = velocidad;
-        setHud({ vuelta: vueltaMostrar, posicion, velocidad });
+      const poderActual = st.jugador.powerUp;
+      if (vueltaMostrar !== vueltaPrev || posicion !== posPrev || Math.abs(velocidad - velPrev) > 2 || poderActual !== poderPrev || st.mejorVuelta !== mejorPrev || st.peorVuelta !== peorPrev) {
+        vueltaPrev = vueltaMostrar; posPrev = posicion; velPrev = velocidad; poderPrev = poderActual; mejorPrev = st.mejorVuelta; peorPrev = st.peorVuelta;
+        setHud({ vuelta: vueltaMostrar, posicion, velocidad, powerUp: poderActual, mejorVuelta: st.mejorVuelta, peorVuelta: st.peorVuelta });
       }
 
       dibujarGP(ctx, st, assetsRef.current);
 
       if (st.terminado) {
         setPosicionFinal(st.posicionFinalJugador);
+        setRecordFinal({ mejor: st.mejorVuelta, peor: st.peorVuelta });
         setFase("terminado");
         return;
       }
@@ -5803,6 +6195,12 @@ function CupulaGPView({ user, onVolver }) {
           <div style={{ fontFamily: FONT_DISPLAY, fontSize: 28, color: COLORS.white, marginBottom: 10 }}>
             Llegaste {posicionFinal}° de {GP_NUM_BOTS + 1}
           </div>
+          {(recordFinal.mejor != null || recordFinal.peor != null) && (
+            <div style={{ display: "flex", gap: 18, marginBottom: 18, fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>
+              {recordFinal.mejor != null && <div>Mejor vuelta: <span style={{ color: COLORS.neonSuccess, fontWeight: 700 }}>{recordFinal.mejor.toFixed(1)}s</span></div>}
+              {recordFinal.peor != null && <div>Peor vuelta: <span style={{ color: COLORS.neonRed, fontWeight: 700 }}>{recordFinal.peor.toFixed(1)}s</span></div>}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 10 }}>
             <NeonButton active onClick={() => setFase("menu")}>Volver al menú</NeonButton>
             <NeonButton onClick={onVolver}>Salir a Cúpula Games</NeonButton>
@@ -5818,17 +6216,50 @@ function CupulaGPView({ user, onVolver }) {
         <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
       </div>
 
-      <div style={{ position: "absolute", top: 14, left: 14, zIndex: 20, fontFamily: FONT_MONO, color: COLORS.white, background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "8px 14px", border: `1px solid ${COLORS.neonBlue}55` }}>
+      <button onClick={retirarse} style={{
+        position: "absolute", top: 14, left: 14, zIndex: 21, fontFamily: FONT_MONO, fontSize: 10, letterSpacing: 1,
+        color: COLORS.textMuted, background: "rgba(0,0,0,0.55)", border: `1px solid ${COLORS.neonRed}55`,
+        borderRadius: 8, padding: "5px 10px", cursor: "pointer",
+      }}>✕ Retirarse</button>
+      <div style={{ position: "absolute", top: 44, left: 14, zIndex: 20, fontFamily: FONT_MONO, color: COLORS.white, background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "8px 14px", border: `1px solid ${COLORS.neonBlue}55` }}>
         <div style={{ fontSize: 9, letterSpacing: 1, color: COLORS.textMuted, marginBottom: 3 }}>{(estadoRef.current && estadoRef.current.pista.nombre) || ""}</div>
         <div style={{ fontSize: 12, letterSpacing: 1 }}>VUELTA {hud.vuelta}/{vueltasElegidas}</div>
         <div style={{ fontSize: 12, letterSpacing: 1 }}>POS {hud.posicion}°/{GP_NUM_BOTS + 1}</div>
+        {(hud.mejorVuelta != null || hud.peorVuelta != null) && (
+          <div style={{ fontSize: 9, letterSpacing: 0.5, color: COLORS.textMuted, marginTop: 4, display: "flex", gap: 8 }}>
+            {hud.mejorVuelta != null && <span>Mejor <span style={{ color: COLORS.neonSuccess }}>{hud.mejorVuelta.toFixed(1)}s</span></span>}
+            {hud.peorVuelta != null && <span>Peor <span style={{ color: COLORS.neonRed }}>{hud.peorVuelta.toFixed(1)}s</span></span>}
+          </div>
+        )}
       </div>
       <div style={{ position: "absolute", top: 14, right: 14, zIndex: 20, fontFamily: FONT_MONO, color: COLORS.neonAmber, background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "8px 14px", border: `1px solid ${COLORS.neonAmber}55`, fontSize: 20, fontWeight: 700 }}>
         {hud.velocidad} <span style={{ fontSize: 10, color: COLORS.textMuted }}>km/h</span>
       </div>
+      {hud.powerUp && (
+        <div style={{
+          position: "absolute", top: 70, right: 14, zIndex: 20, fontFamily: FONT_MONO, fontSize: 10, letterSpacing: 1,
+          color: COLORS.white, background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "6px 12px",
+          border: `1px solid ${COLORS.neonAmber}55`, textAlign: "center",
+        }}>
+          <div style={{ fontSize: 18 }}>{GP_ICONOS_PODER[hud.powerUp] || "?"}</div>
+          {GP_NOMBRES_PODER[hud.powerUp] || hud.powerUp}
+        </div>
+      )}
 
       <JoystickGP onCambio={(v) => { inputRef.current.joystick = v; }} />
-      <div style={{ position: "absolute", right: 22, bottom: 22, display: "flex", gap: 10, zIndex: 20 }}>
+      <div style={{ position: "absolute", right: 22, bottom: 22, display: "flex", gap: 10, zIndex: 20, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: 220 }}>
+        <BotonAccionCabezones
+          etiqueta="DERR."
+          color={COLORS.neonBlue}
+          onPress={() => { inputRef.current.derrape = true; }}
+          onRelease={() => { inputRef.current.derrape = false; }}
+        />
+        <BotonAccionCabezones
+          etiqueta="ÍTEM"
+          color={COLORS.neonAmber}
+          onPress={() => { inputRef.current.usarPoder = true; }}
+          onRelease={() => { inputRef.current.usarPoder = false; }}
+        />
         <BotonAccionCabezones
           etiqueta="FRENO"
           color={COLORS.neonRed}
@@ -5850,7 +6281,7 @@ function CupulaGPView({ user, onVolver }) {
 const CUPULA_GAMES_LISTA = [
   { id: "happyweed", nombre: "Happy Weed", desc: "Estilo Flappy Bird: esquiva los portales neón con tu propia foto convertida en pajarito.", color: COLORS.neonRed },
   { id: "cabezones", nombre: "No haga sino Jogar", desc: "Fútbol de cabezones estilo arcade: corre, salta y patea/cabecea para meter más goles que tu rival, solo contra el computador o en línea 1 contra 1 con los de la cúpula. Tiene power-ups y récord histórico.", color: COLORS.neonMagenta },
-  { id: "cupulagp", nombre: "Cúpula GP", desc: "Carreras de circuito cerrado estilo F1 visto desde arriba: elige tu auto, una de 8 pistas y el número de vueltas, y compite contra hasta 15 bots agresivos (con sensores para esquivar/adelantar) con derrape, rebufo y choques con física elástica real.", color: COLORS.neonBlue },
+  { id: "cupulagp", nombre: "Cúpula GP", desc: "Carreras de circuito cerrado estilo F1 visto desde arriba: elige tu auto, una de 8 pistas (cada una con su propia ambientación) y el número de vueltas, y compite contra hasta 15 bots agresivos (con sensores, poderes y algo de malicia cerca de la meta) con derrape a botón, rebufo, power-ups tipo Mario Kart, mini-mapa y récord de mejor/peor vuelta.", color: COLORS.neonBlue },
 ];
 
 function CupulaGamesView({ user }) {
