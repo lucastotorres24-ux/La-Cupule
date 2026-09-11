@@ -54,6 +54,15 @@ io.on("connection", (socket) => {
     cb && cb(res);
   });
 
+  // El navegador manda esto apenas Socket.io le avisa que la conexión volvió después de un corte
+  // (wifi, datos móviles, VPN, un hipo del servidor) — retoma la MISMA sala/jugador en vez de quedar
+  // fantasma o entrar como uno nuevo. Ver salas.js (desconectar/reconectar) para el porqué completo.
+  socket.on("reconectar", (payload = {}, cb) => {
+    const res = gestor.reconectar({ id: socket.id, ...payload });
+    if (res.ok) { socket.join(res.codigo); miSala = res.codigo; }
+    cb && cb(res);
+  });
+
   socket.on("empezar", (_payload, cb) => { cb && cb(gestor.empezar({ id: socket.id })); });
   socket.on("jugarDeNuevo", (_payload, cb) => { cb && cb(gestor.jugarDeNuevo({ id: socket.id })); });
 
@@ -68,6 +77,8 @@ io.on("connection", (socket) => {
   // Retirarse de una carrera en curso (Cúpula GP) sin cortarle la carrera a los demás.
   socket.on("retirarse", () => { gestor.retirarse({ id: socket.id }); });
 
+  // Salida VOLUNTARIA (el jugador apretó "salir"/cerró la sala a propósito) — se va ya mismo, sin
+  // ventana de gracia, como siempre.
   function salirDeSala() {
     if (!miSala) return;
     gestor.salir({ id: socket.id });
@@ -75,7 +86,15 @@ io.on("connection", (socket) => {
     miSala = null;
   }
   socket.on("salirSala", salirDeSala);
-  socket.on("disconnect", salirDeSala);
+
+  // Se cortó el SOCKET (no necesariamente el jugador se fue — ver el comentario en salas.js
+  // desconectar()). No se lo saca en el acto: se le da una ventana de gracia para que Socket.io
+  // reconecte solo y el navegador pida "reconectar" con el mismo identificador estable.
+  socket.on("disconnect", () => {
+    if (!miSala) return;
+    gestor.desconectar({ id: socket.id });
+    miSala = null; // este socket ya está muerto — si reconecta, es un socket.id nuevo con su propio miSala
+  });
 });
 
 app.get("/", (req, res) => {
