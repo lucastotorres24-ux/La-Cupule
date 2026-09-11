@@ -4507,6 +4507,7 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
     let cancelado = false;
     const net = new NetworkManager();
     netRef.current = net;
+    net.conectar(); // primero conecta el socket — recién ahí se le pueden enganchar los escuchadores
     net.onEstado(({ estado }) => { if (!cancelado) { estadoRemotoRef.current = estado; } });
     (async () => {
       const res = await net.crearSala({ juego: "cabezones", nombre: user.nombre, config: sala.config || configElegida || null });
@@ -4526,6 +4527,7 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
     let cancelado = false;
     const net = new NetworkManager();
     netRef.current = net;
+    net.conectar(); // primero conecta el socket — recién ahí se le pueden enganchar los escuchadores
     net.onEstado(({ estado }) => { if (!cancelado) { estadoRemotoRef.current = estado; } });
     net.unirseSala({ codigo: sala.codigoRed, nombre: user.nombre });
     return () => { cancelado = true; net.desconectar(); if (netRef.current === net) netRef.current = null; };
@@ -6473,6 +6475,7 @@ function CupulaGPView({ user, onVolver }) {
     if (netRef.current) netRef.current.desconectar();
     const net = new NetworkManager();
     netRef.current = net;
+    net.conectar(); // primero conecta el socket — recién ahí se le pueden enganchar los escuchadores
     net.onJugadores(({ jugadores }) => setJugadoresSala(jugadores));
     net.onEmpezando(({ estado, jugadores }) => {
       setJugadoresSala(jugadores);
