@@ -4414,7 +4414,16 @@ function LobbyCabezones({ user, onVolver, onElegirOponente }) {
     const enLinea = !!presencia[otroId];
     let jugandoContra = null;
     Object.values(salas).forEach((s) => {
-      if (s && s.fase === "jugando" && (s.jugador1Id === otroId || s.jugador2Id === otroId)) {
+      if (!s || s.fase !== "jugando") return;
+      // Misma regla que usa la sala real para auto-liberarse: sin un latido del anfitrión en los
+      // últimos 15s, la partida se considera abandonada (alguien cerró la pestaña de golpe, se le
+      // cayó la conexión, etc.). Antes el lobby mostraba "Jugando vs. X" leyendo la sala en Firebase
+      // tal cual, sin fijarse en el latido — así que si esa sala quedaba pegada en "jugando" (nadie
+      // volvió a intentar jugar justo esa pareja, que es lo único que dispara el auto-liberado), acá
+      // se seguía viendo "ocupado" para siempre aunque en verdad no hubiera nadie jugando.
+      const abandonada = Date.now() - (s.latido || s.creadaEn || 0) > 15000;
+      if (abandonada) return;
+      if (s.jugador1Id === otroId || s.jugador2Id === otroId) {
         const rivalId = s.jugador1Id === otroId ? s.jugador2Id : s.jugador1Id;
         jugandoContra = nombrePorId(rivalId);
       }
