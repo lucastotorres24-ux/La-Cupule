@@ -30,8 +30,8 @@ const GP_FUERZA_MOTOR = 340;
 const GP_FUERZA_FRENO = 420;
 const GP_RESISTENCIA = 0.3; // resistencia al rodar (rolling resistance), siempre activa
 const GP_GIRO_MAX = 2.8; // rad/s de referencia a velocidad de crucero
-const GP_UMBRAL_DERRAPE = 110; // velocidad lateral (px/s) a partir de la cual se considera derrape
-const GP_DERRAPE_MS = 380; // cuánto se mantiene el estado de derrape una vez disparado
+const GP_UMBRAL_DERRAPE = 155; // velocidad lateral (px/s) a partir de la cual se considera derrape (antes 110 — se disparaba solo con giros normales)
+const GP_DERRAPE_MS = 300; // cuánto se mantiene el estado de derrape una vez disparado
 const GP_CAMARA_LOOKAHEAD = 130;
 const GP_CAMARA_SUAVIDAD = 0.00002; // más chico = cámara más "pegada"; se usa como base de un lerp exponencial independiente del framerate
 const GP_RESTITUCION = 0.78; // "bounciness" de los choques auto-auto (0 = se pegan, 1 = rebote elástico total)
@@ -650,9 +650,10 @@ function actualizarFisicaAutoGP(auto, dt, entrada, rebufo) {
   const pideDerrapeManual = !!entrada.derrape && Math.abs(entrada.dir) > GP_DERRAPE_MANUAL_DIR_MIN && Math.abs(vAdelante) > auto.velMaxBase * 0.25;
   if (Math.abs(vLateral) > GP_UMBRAL_DERRAPE || pideDerrapeManual) auto.derrapeHasta = ahora + GP_DERRAPE_MS;
   auto.enDerrape = ahora < auto.derrapeHasta;
-  // Durante el derrape el agarre lateral baja MUCHO (más todavía que antes) — el auto resbala de
-  // verdad hacia afuera de la curva, con un derrape visiblemente más largo y dramático.
-  const amortLateral = auto.enDerrape ? amortLateralBase * 0.13 : amortLateralBase;
+  // Durante el derrape el agarre lateral baja (el auto resbala de verdad hacia afuera de la curva)
+  // pero sin pasarse — antes bajaba tanto (0.13x) que se sentía como manejar sobre hielo apenas se
+  // giraba fuerte; ahora derrapa visiblemente pero se puede controlar.
+  const amortLateral = auto.enDerrape ? amortLateralBase * 0.32 : amortLateralBase;
 
   let fuerza = 0;
   const acelerando = entrada.accel || turboActivo; // el turbo empuja solo, aunque no se toque el gas

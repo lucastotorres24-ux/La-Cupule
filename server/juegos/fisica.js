@@ -31,7 +31,7 @@ const CABEZONES_DURACION_PARTIDO_S = 120;
 const CABEZONES_GOLES_PARA_GANAR = 5;
 const CABEZONES_POWERUP_INTERVALO_S = 16;
 const CABEZONES_POWERUP_DURACION_S = 9;
-const CABEZONES_SUBPASOS = 4;
+const CABEZONES_SUBPASOS = 8; // más fino = el balón a máxima velocidad ya no puede "saltar" a través del travesano/pared en un solo sub-paso
 const CABEZONES_TRAVESANO_GROSOR = 10;
 const CABEZONES_POWERUPS = [
   { tipo: "velocidad", icono: "⚡", nombre: "Velocidad", color: "#FFE94D" },

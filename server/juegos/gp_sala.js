@@ -5,6 +5,10 @@
 const GP = require("./gp.js");
 
 const MAX_JUGADORES = 8; // de sobra para el equipo de La Cúpula
+// 3 sub-pasos por tick de red (50ms / 3 ≈ 16.6ms cada uno) — clava el intervalo que usa un cuadro de
+// navegador normal, así la curva que calcula el servidor se parece mucho más a la que predice el
+// cliente y no hace falta corregir tanto al auto propio en cada paquete.
+const SUB_PASOS = 3;
 
 function crearEstado(jugadores, config) {
   return GP.crearEstadoGPOnline(jugadores, config);
@@ -48,4 +52,4 @@ function estadoLigero(estado) {
   };
 }
 
-module.exports = { crearEstado, avanzar, estaTerminado, retirar, puedeEmpezar, estadoLigero, maxJugadores: MAX_JUGADORES, GP_PISTAS: GP.GP_PISTAS };
+module.exports = { crearEstado, avanzar, estaTerminado, retirar, puedeEmpezar, estadoLigero, maxJugadores: MAX_JUGADORES, subPasos: SUB_PASOS, GP_PISTAS: GP.GP_PISTAS };
