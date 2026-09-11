@@ -1,8 +1,8 @@
 {
   "name": "cupula-server",
   "private": true,
-  "version": "1.0.0",
-  "description": "Servidor autoritativo de \"No haga sino Jogar\" para La Cúpula — corre el partido en vivo por igual para ambos jugadores.",
+  "version": "2.0.0",
+  "description": "Servidor autoritativo de La Cúpula (Socket.io, salas con código) — corre 'No haga sino Jogar' y 'Cúpula GP' en línea por igual para todos los jugadores conectados.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -11,6 +11,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "firebase": "^10.13.0"
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
   }
 }
