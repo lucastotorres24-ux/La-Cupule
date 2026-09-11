@@ -2783,6 +2783,14 @@ const CABEZONES_RADIO_CABEZA = 26;
 const CABEZONES_RADIO_BALON = 14;
 const CABEZONES_CUERPO_RADIO = 29;
 const CABEZONES_CUERPO_CENTRO_Y = 41;
+// Altura del centro del círculo de la CABEZA sobre los pies — calcado a mano de la silueta que se
+// dibuja en pantalla (dibujarJugadorCabezones: altoCuerpo = 58*0.85, y la cabeza se dibuja 26*0.55
+// más arriba de ahí). Antes la colisión con el balón solo usaba el círculo del CUERPO (más abajo y
+// angosto) y la cabeza no tenía colisionador propio — un balón alto, sobre todo saltando a
+// cabecear, podía pasar limpio por encima del cuerpo sin tocar nunca ese círculo, aunque
+// visualmente sí le pegara en la cabeza. Eso es lo que se veía como "el balón atraviesa la cabeza".
+const CABEZONES_ALTO_CUERPO_VISUAL = 58 * 0.85;
+const CABEZONES_CABEZA_CENTRO_Y = CABEZONES_ALTO_CUERPO_VISUAL + CABEZONES_RADIO_CABEZA * 0.55;
 const CABEZONES_GRAVEDAD = 2200;
 const CABEZONES_GRAVEDAD_BALON = 1050;
 const CABEZONES_SALTO_V = 800;
@@ -2993,10 +3001,12 @@ function revisarColisionArco(balon, arcoIzqFactor, arcoDerFactor) {
 // quedó del otro lado del jugador, igual se detecta que "pasó rozando" y rebota en vez de
 // atravesarlo sin tocarlo (el reporte de "el balón pasa como si no hubiera box collider"). Si no se
 // pasan, se comporta igual que antes (solo posición final).
-function resolverColisionJugadorBalon(jugador, balon, balonAntesX, balonAntesAltura) {
-  const centroJugadorY = CABEZONES_SUELO_Y - jugador.altura - CABEZONES_CUERPO_CENTRO_Y;
+// Un único círculo, contra el balón — lo usa resolverColisionJugadorBalon dos veces (cabeza y
+// cuerpo por separado, ver abajo) en vez de una lógica repetida a mano para cada parte.
+function resolverColisionContraCirculoCabezones(jugador, balon, balonAntesX, balonAntesAltura, centroYSobrePies, radioParte) {
+  const centroJugadorY = CABEZONES_SUELO_Y - jugador.altura - centroYSobrePies;
   const radioBalon = balon.efecto === "gigante" ? CABEZONES_RADIO_BALON * 1.8 : CABEZONES_RADIO_BALON;
-  const radios = CABEZONES_CUERPO_RADIO + radioBalon;
+  const radios = radioParte + radioBalon;
 
   const x1 = balonAntesX === undefined ? balon.x : balonAntesX;
   const y1 = CABEZONES_SUELO_Y - (balonAntesAltura === undefined ? balon.altura : balonAntesAltura);
@@ -3047,6 +3057,20 @@ function resolverColisionJugadorBalon(jugador, balon, balonAntesX, balonAntesAlt
     balon.vAltura = Math.max(balon.vAltura, -ny * impulso * 0.6);
   }
   return true;
+}
+
+// Se prueban DOS círculos por separado — cabeza y cuerpo — calcados de la silueta que se dibuja en
+// pantalla (antes solo existía el círculo de cuerpo, más abajo y angosto, que no llegaba a cubrir
+// la parte de arriba de la cabeza: un balón alto, sobre todo saltando a cabecear, podía pasar limpio
+// por encima sin tocar nunca ese círculo aunque visualmente sí le diera en la cabeza — eso es lo que
+// se veía como "el balón atraviesa la cabeza" y terminaba en autogoles). Se prueba la cabeza primero
+// porque en un balón aéreo suele ser el punto de contacto real; si no le pega a la cabeza, se prueba
+// igual contra el cuerpo como siempre. El radio de la cabeza crece con el power-up "cabezón", igual
+// que se ve en pantalla.
+function resolverColisionJugadorBalon(jugador, balon, balonAntesX, balonAntesAltura) {
+  const radioCabeza = jugador.efecto === "cabezon" ? CABEZONES_RADIO_CABEZA * 1.35 : CABEZONES_RADIO_CABEZA;
+  if (resolverColisionContraCirculoCabezones(jugador, balon, balonAntesX, balonAntesAltura, CABEZONES_CABEZA_CENTRO_Y, radioCabeza)) return true;
+  return resolverColisionContraCirculoCabezones(jugador, balon, balonAntesX, balonAntesAltura, CABEZONES_CUERPO_CENTRO_Y, CABEZONES_CUERPO_RADIO);
 }
 
 // Empuje simple para que los dos cabezones no se atraviesen del todo ahora que comparten toda la
@@ -5611,7 +5635,7 @@ function actualizarFisicaAutoGP(auto, dt, entrada, rebufo) {
   const vAdelante = auto.vx * dirH.x + auto.vy * dirH.y;
   const vLateral = auto.vx * dirL.x + auto.vy * dirL.y;
 
-  const factorSuperficie = auto.offRoad ? 0.4 : 1;
+  const factorSuperficie = auto.offRoad ? 0.6 : 1;
   const amortLateralBase = auto.offRoad ? 11 : 6.2;
 
   const ahora = Date.now();
@@ -6305,10 +6329,24 @@ function aplicarEstadoLigeroGP(st, ligero) {
   for (const remoto of ligero.autos) {
     const local = st.autos.find((a) => a.jugadorId === remoto.jugadorId);
     if (!local) continue;
+    const esMio = remoto.jugadorId === st.miId;
     local.servidorX = remoto.x; local.servidorY = remoto.y; local.servidorHeading = remoto.heading;
-    local.vx = remoto.vx; local.vy = remoto.vy;
+    if (!esMio) {
+      // A los rivales sí hay que copiarles esto tal cual: no se predicen con física local, solo se
+      // interpolan hacia la posición del servidor más abajo, y vx/vy/enDerrape/offRoad acá solo se
+      // usan para decidir efectos visuales (humo, polvo, marcas), nunca para moverlos.
+      local.vx = remoto.vx; local.vy = remoto.vy;
+      local.enDerrape = remoto.enDerrape; local.offRoad = remoto.offRoad;
+    }
+    // Al auto PROPIO, en cambio, NO se le pisan vx/vy/enDerrape/offRoad acá: esos los sigue
+    // produciendo la predicción local cuadro a cuadro con la física real (actualizarFisicaAutoGP,
+    // 60 veces por segundo). Antes se sobreescribían con el valor del servidor cada vez que llegaba
+    // un paquete (hasta 20 veces por segundo) — y como ese valor siempre viene con algo de retraso de
+    // red, cortaba en seco la velocidad que la física local venía integrando en ese instante. Eso se
+    // sentía exactamente como un tirón/campo de fuerza manejando derecho, sin ningún choque de por
+    // medio, cada vez que llegaba un paquete nuevo. La posición sigue reconciliándose suave más abajo
+    // (servidorX/Y) — que es lo único que de verdad hace falta corregir cuando hay desync real.
     local.powerUp = remoto.powerUp; local.turboHasta = remoto.turboHasta; local.escudoHasta = remoto.escudoHasta; local.lentoHasta = remoto.lentoHasta;
-    local.enDerrape = remoto.enDerrape; local.offRoad = remoto.offRoad;
     local.vueltas = remoto.vueltas; local.llego = remoto.llego; local.retirado = remoto.retirado; local.posicionFinal = remoto.posicionFinal;
     local.mejorVuelta = remoto.mejorVuelta; local.peorVuelta = remoto.peorVuelta;
     local.nuevoPaquete = true;
@@ -6667,6 +6705,18 @@ function CupulaGPView({ user, onVolver }) {
           while (diffH > Math.PI) diffH -= Math.PI * 2;
           while (diffH < -Math.PI) diffH += Math.PI * 2;
           auto.heading += diffH * Math.min(1, f * 1.5);
+        }
+        // Choques auto-auto: el servidor SIEMPRE los resuelve (empuje + rebote elástico), pero antes
+        // acá nunca se predecían — el cliente solo se enteraba de golpe cuando llegaba el paquete ya
+        // con la posición corregida por el choque, y como un choque real mueve mucho más que la zona
+        // muerta de la reconciliación, esa corrección se sentía como un tirón/campo de fuerza
+        // invisible cada vez que se pasaba cerca de otro auto. Ahora se resuelve acá también, en el
+        // momento, con la misma función que usa el modo solo — así el bache/empujón se siente al
+        // instante en vez de aparecer "solo" un instante después.
+        {
+          const wrapperColision = { autos: st.autos.filter((a) => !a.retirado), particulas: st.particulas, sacudida: st.sacudida, jugador: st.jugador };
+          resolverColisionesGP(wrapperColision);
+          st.sacudida = wrapperColision.sacudida;
         }
         // Efectos visuales locales (humo/polvo/marcas), para cualquier auto — igual criterio que el
         // modo solo, pero generados acá porque el servidor no manda nada de esto.
