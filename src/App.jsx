@@ -82,7 +82,16 @@ class NetworkManager {
 
   conectar() {
     if (this.socket) return this.socket;
-    this.socket = io(CUPULA_SERVER_URL, { transports: ["websocket", "polling"] });
+    // El orden importa: "websocket" primero (como estaba antes) hace que CADA conexión/reconexión
+    // intente abrir un WebSocket de entrada — en una red que lo bloquea o lo corta a medio abrir
+    // (típico de VPNs y algunas redes móviles/corporativas) eso se ve en la consola como "WebSocket
+    // is closed before the connection is established" una y otra vez, y mientras tanto los paquetes
+    // del servidor llegan salteados/tarde — exactamente lo que se sentía como pantalla vibrando y el
+    // auto "imantado" hacia donde el servidor cree que debería estar. "polling" primero es lo que
+    // Socket.io recomienda por defecto: arranca con pedidos HTTP normales (pasan por cualquier
+    // VPN/proxy sin problema) y recién después, si la red lo permite, sube en silencio a WebSocket
+    // — si esa mejora falla, se queda en polling sin cortar nada ni mostrar errores.
+    this.socket = io(CUPULA_SERVER_URL, { transports: ["polling", "websocket"] });
     // Un wifi/datos móviles que titubea un instante, una VPN que se recicla, o el servidor gratis que
     // da un hipo de un par de segundos: TODO eso corta el socket, y Socket.io lo reconecta solo por
     // debajo (reconnection viene prendido de fábrica) — pero antes de este arreglo eso pasaba
@@ -6607,6 +6616,14 @@ function CupulaGPView({ user, onVolver }) {
   }, [fase]);
 
   useEffect(() => {
+    // Antes esto quedaba activo SIEMPRE (dependencias vacías: se registraba una sola vez al montar
+    // el componente y nunca se apagaba), incluso en las pantallas de menú/lobby con inputs de texto
+    // (como el código de sala de 4 letras) — como el código usa letras de LETRAS_CODIGO (que incluye
+    // A/D/E/S/W), escribirlo terminaba chocando con los controles del auto: cada W/A/S/D tipeado
+    // llamaba a e.preventDefault(), y el navegador nunca llegaba a insertar esa letra en el campo.
+    // Ahora, igual que ya hacía "No haga sino Jogar", esto solo se activa mientras se está
+    // manejando de verdad (no en menús/lobby/formularios).
+    if (fase !== "jugando" && fase !== "online-jugando") return;
     // "shift" = derrape a propósito (mantener buena conducción, solo lo activa si además estás
     // girando); "e" = usar el power-up que tengas guardado.
     const TECLAS = { arrowleft: "izq", a: "izq", arrowright: "der", d: "der", arrowup: "acel", w: "acel", arrowdown: "freno", s: "freno", shift: "derrape", e: "usarPoder" };
@@ -6615,7 +6632,7 @@ function CupulaGPView({ user, onVolver }) {
     window.addEventListener("keydown", onDown);
     window.addEventListener("keyup", onUp);
     return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
-  }, []);
+  }, [fase]);
 
   // Cartelito de teclas para PC: aparece apenas arranca cada carrera (incluida la cuenta
   // regresiva) y se apaga solo — empieza a desvanecerse a los 9s y desaparece del todo a los 10s.
