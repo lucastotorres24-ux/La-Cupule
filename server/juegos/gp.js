@@ -636,7 +636,7 @@ function actualizarFisicaAutoGP(auto, dt, entrada, rebufo) {
   const vAdelante = auto.vx * dirH.x + auto.vy * dirH.y;
   const vLateral = auto.vx * dirL.x + auto.vy * dirL.y;
 
-  const factorSuperficie = auto.offRoad ? 0.4 : 1;
+  const factorSuperficie = auto.offRoad ? 0.6 : 1;
   const amortLateralBase = auto.offRoad ? 11 : 6.2;
 
   const ahora = Date.now();
