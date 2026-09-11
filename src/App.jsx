@@ -5826,6 +5826,74 @@ function resolverColisionesGP(st) {
   }
 }
 
+// Empuje LOCAL de un choque contra un rival, SOLO EN LÍNEA — a diferencia de resolverColisionesGP
+// (que mueve a los DOS autos por igual, pensada para modo solo, donde el rival es un bot 100% real y
+// determinista), acá el "rival" es apenas una posición APROXIMADA: interpolada hacia el último
+// paquete del servidor, nunca al día de verdad. Antes esta misma resolverColisionesGP de dos lados
+// se llamaba también acá, tocando la posición/velocidad del rival — eso creaba TRES mecanismos
+// distintos peleando por la posición del rival en el mismo cuadro (la interpolación hacia el
+// servidor, esta resolución local, y la próxima corrección de red que llega), y de paso también
+// perturbaba al auto PROPIO con un choque calculado contra una posición de rival que todavía no
+// estaba al día — la raíz real de "la pantalla vibra y el auto se va solo para los lados, cada vez
+// peor", incluso lejos de un choque de verdad, porque bastaba con pasar cerca de un rival cuya
+// posición local iba un poco retrasada. Ahora esta función SOLO mueve/frena al auto propio — el
+// rival se deja completamente intacto (su posición la sigue manejando nada más la interpolación de
+// arriba) — así ya no hay tres fuerzas compitiendo por el mismo auto, solo dos (predicción propia +
+// reconciliación contra el servidor), que es justamente el par que ya está bien afinado con zona
+// muerta. El servidor SIGUE resolviendo el choque real para los dos lados con resolverColisionesGP
+// tal cual — esto de acá es nomás para que el auto propio sienta el golpe al instante en vez de
+// esperar la vuelta de la red.
+function empujarContraRivalGP(propio, rival, particulas) {
+  const minDist = GP_RADIO_COLISION * 2;
+  const dx = rival.x - propio.x, dy = rival.y - propio.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist <= 0.001 || dist >= minDist) return false;
+  const nx = dx / dist, ny = dy / dist; // normal de propio hacia rival
+  const tx = -ny, ty = nx;
+
+  // Separación: solo se mueve el auto propio, hacia atrás en el normal (el rival no se toca).
+  const solape = (minDist - dist) + 0.5;
+  propio.x -= nx * solape; propio.y -= ny * solape;
+
+  // Rebote elástico "de un solo lado" (el rival se trata como si su velocidad actual fuera fija
+  // para este cálculo — es la fórmula estándar de chocar contra un objeto mucho más pesado, o sea
+  // que no hace falta escribirle nada de vuelta).
+  const rvx = rival.vx || 0, rvy = rival.vy || 0;
+  const vnPropio = propio.vx * nx + propio.vy * ny, vnRival = rvx * nx + rvy * ny;
+  const vtPropio = propio.vx * tx + propio.vy * ty;
+  const relVn = vnPropio - vnRival;
+  let vnPropio2 = vnPropio;
+  if (relVn > 0) vnPropio2 = vnPropio - (1 + GP_RESTITUCION) * relVn;
+  vnPropio2 -= GP_EMPUJE_MINIMO;
+  propio.vx = vnPropio2 * nx + vtPropio * tx;
+  propio.vy = vnPropio2 * ny + vtPropio * ty;
+
+  // Golpe fuerte → derrape forzado + chispas, con el mismo cooldown "golpe fresco" que ya evita que
+  // esto se dispare 60 veces por segundo mientras dos autos siguen cerca.
+  const relSpeed = Math.hypot(propio.vx - rvx, propio.vy - rvy);
+  if (relVn > GP_GOLPE_DERRAPE_UMBRAL || relSpeed > GP_GOLPE_DERRAPE_UMBRAL) {
+    const ahora = Date.now();
+    const escudo = propio.escudoHasta && ahora < propio.escudoHasta;
+    const golpeFresco = !(propio.derrapeHasta && ahora < propio.derrapeHasta);
+    if (golpeFresco) {
+      if (!escudo) {
+        propio.derrapeHasta = ahora + GP_DERRAPE_MS;
+        propio.enDerrape = true;
+        propio.heading += (Math.random() < 0.5 ? -1 : 1) * (0.18 + Math.random() * 0.16);
+      }
+      if (particulas) {
+        const golpeX = (propio.x + rival.x) / 2, golpeY = (propio.y + rival.y) / 2;
+        for (let p = 0; p < 7; p++) {
+          const ang = Math.random() * Math.PI * 2, vel = 60 + Math.random() * 90;
+          particulas.push({ x: golpeX, y: golpeY, vx: Math.cos(ang) * vel, vy: Math.sin(ang) * vel, vida: 0.35, vidaMax: 0.35, tipo: "chispa" });
+        }
+      }
+      return true; // golpe nuevo de verdad — el que llama puede sacudir la cámara una sola vez
+    }
+  }
+  return false;
+}
+
 function crearEstadoGP(skinJugador, totalVueltas, pistaId) {
   const pista = GP_PISTAS.find((p) => p.id === pistaId) || GP_PISTAS[0];
   const autos = [];
@@ -6807,17 +6875,17 @@ function CupulaGPView({ user, onVolver }) {
           while (diffH < -Math.PI) diffH += Math.PI * 2;
           auto.heading += diffH * Math.min(1, f * 1.5);
         }
-        // Choques auto-auto: el servidor SIEMPRE los resuelve (empuje + rebote elástico), pero antes
-        // acá nunca se predecían — el cliente solo se enteraba de golpe cuando llegaba el paquete ya
-        // con la posición corregida por el choque, y como un choque real mueve mucho más que la zona
-        // muerta de la reconciliación, esa corrección se sentía como un tirón/campo de fuerza
-        // invisible cada vez que se pasaba cerca de otro auto. Ahora se resuelve acá también, en el
-        // momento, con la misma función que usa el modo solo — así el bache/empujón se siente al
-        // instante en vez de aparecer "solo" un instante después.
-        {
-          const wrapperColision = { autos: st.autos.filter((a) => !a.retirado), particulas: st.particulas, sacudida: st.sacudida, jugador: st.jugador };
-          resolverColisionesGP(wrapperColision);
-          st.sacudida = wrapperColision.sacudida;
+        // Choques auto-auto: el servidor SIEMPRE los resuelve de verdad (empuje + rebote elástico
+        // para los DOS lados). Acá el auto propio nomás "siente" el golpe al instante contra cada
+        // rival — con empujarContraRivalGP, que a diferencia de lo que había antes NUNCA toca la
+        // posición/velocidad del rival (ver el comentario grande junto a esa función: tocar al rival
+        // acá, además de la interpolación de más arriba y de la próxima corrección de red, era la
+        // causa real de la pantalla vibrando y el auto yéndose solo para los lados cada vez peor).
+        if (st.jugador && !st.jugador.retirado) {
+          for (const rival of st.autos) {
+            if (rival === st.jugador || rival.retirado) continue;
+            if (empujarContraRivalGP(st.jugador, rival, st.particulas)) st.sacudida = Math.max(st.sacudida, 12);
+          }
         }
         // Efectos visuales locales (humo/polvo/marcas), para cualquier auto — igual criterio que el
         // modo solo, pero generados acá porque el servidor no manda nada de esto.
