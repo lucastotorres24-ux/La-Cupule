@@ -6,10 +6,22 @@
 // y index.js queda como un adaptador chico que solo conecta estos eventos a los sockets reales.
 function crearGestorSalas(JUEGOS, opts = {}) {
   const TICK_MS = opts.tickMs || 50;
+  // Cuánto se le espera a alguien que se desconectó a mitad de partido antes de sacarlo de verdad.
+  // Socket.io reconecta solo ante un corte de wifi/datos/VPN de un instante, o un hipo del servidor
+  // (Render gratis a veces tira un 502 de un par de segundos) — 15s de gracia alcanza de sobra para
+  // eso sin dejar colgada una partida cuando alguien de verdad se fue.
+  const GRACIA_RECONEXION_MS = opts.graciaReconexionMs || 20000;
+  // Entrada "neutral" genérica (sirve para cualquier juego: cabezones solo mira los booleanos de
+  // movimiento, Cúpula GP además necesita "dir" como NÚMERO 0 y no undefined — un auto que ya venía
+  // con velocidad y de golpe recibe entrada.dir=undefined corrompe el heading a NaN para siempre en
+  // el próximo tick, mucho peor que el bug que se está arreglando). Se usa para "soltar los botones"
+  // de alguien que se desconectó, sin arriesgar a romper la física de ningún juego.
+  const ENTRADA_NEUTRAL = { izq: false, der: false, saltar: false, patear: false, accel: false, freno: false, dir: 0, derrape: false, usarPoder: false, boost: false };
   const LETRAS_CODIGO = "ABCDEFGHJKLMNPQRSTUVWXYZ"; // sin I/O, se confunden fácil al dictarlos
   const ahora = opts.ahora || (() => Date.now());
   const setIntervalFn = opts.setInterval || setInterval;
   const clearIntervalFn = opts.clearInterval || clearInterval;
+  const setTimeoutFn = opts.setTimeout || setTimeout;
   const onJugadores = opts.onJugadores || (() => {});
   const onEmpezando = opts.onEmpezando || (() => {});
   const onEstado = opts.onEstado || (() => {});
@@ -28,7 +40,10 @@ function crearGestorSalas(JUEGOS, opts = {}) {
   }
 
   function listaJugadores(sala) {
-    return sala.jugadores.map((j) => ({ id: j.id, nombre: j.nombre, skinIndex: j.skinIndex, esHost: j.id === sala.hostId }));
+    return sala.jugadores.map((j) => ({
+      id: j.id, nombre: j.nombre, skinIndex: j.skinIndex, esHost: j.id === sala.hostId,
+      desconectado: !!j.desconectadoDesde,
+    }));
   }
 
   function detenerTick(sala) {
@@ -79,11 +94,11 @@ function crearGestorSalas(JUEGOS, opts = {}) {
     }, TICK_MS);
   }
 
-  function crearSala({ id, juego, nombre, config, skinIndex }) {
+  function crearSala({ id, juego, nombre, config, skinIndex, idEstable }) {
     const handler = JUEGOS[juego];
     if (!handler) return { ok: false, error: "juego desconocido" };
     const codigo = generarCodigo();
-    const jugador = { id, nombre: (nombre || "Piloto").slice(0, 24), skinIndex };
+    const jugador = { id, nombre: (nombre || "Piloto").slice(0, 24), skinIndex, idEstable: idEstable || null };
     const sala = {
       codigo, juego, config: config || {}, jugadores: [jugador], hostId: id,
       empezada: false, estado: null, entradas: {}, secuencias: {}, intervalId: null,
@@ -107,7 +122,7 @@ function crearGestorSalas(JUEGOS, opts = {}) {
     return null;
   }
 
-  function unirseSala({ id, codigo, nombre, skinIndex }) {
+  function unirseSala({ id, codigo, nombre, skinIndex, idEstable }) {
     const cod = (codigo || "").toUpperCase();
     const sala = salas.get(cod);
     if (!sala) return { ok: false, error: "esa sala no existe" };
@@ -119,7 +134,7 @@ function crearGestorSalas(JUEGOS, opts = {}) {
     // del mismo color en una carrera. Quien ya estaba en la sala tiene preferencia sobre su color.
     let skinFinal = skinIndex;
     if (skinFinal != null && colorTomado(sala, skinFinal, id)) skinFinal = primerColorLibre(sala, id);
-    const jugador = { id, nombre: (nombre || "Piloto").slice(0, 24), skinIndex: skinFinal };
+    const jugador = { id, nombre: (nombre || "Piloto").slice(0, 24), skinIndex: skinFinal, idEstable: idEstable || null };
     sala.jugadores.push(jugador);
     jugadorSala.set(id, cod);
     onJugadores(cod, { jugadores: listaJugadores(sala), empezada: sala.empezada });
@@ -196,8 +211,78 @@ function crearGestorSalas(JUEGOS, opts = {}) {
     }
   }
 
+  // Se llama cuando el SOCKET se corta (evento "disconnect" de Socket.io) — que no es lo mismo que
+  // "el jugador se fue": un wifi/datos móviles que titubea un instante, una VPN que se recicla, o el
+  // servidor gratis que da un hipo de un par de segundos, TODOS cortan el socket y Socket.io los
+  // reconecta solo por debajo, sin que el jugador haga nada. Antes, cualquiera de esos cortes lo
+  // sacaba de la sala en el acto (vía salir()): el navegador seguía mandando botones e ignorando que
+  // ya no era parte de nada, y su auto/jugador quedaba "fantasma" en el estado del otro lado, sin
+  // recibir más entradas — eso es lo que se veía como que el auto pierde el control y se va para los
+  // lados, o el balón/rival se traba, cada vez peor con el rato. Ahora, si la partida ya está en
+  // marcha, se le da una ventana de gracia para reconectar (ver reconectar() más abajo) antes de
+  // sacarlo de verdad. Si todavía estaba en el lobby (sala sin empezar), no hay nada que conservar —
+  // se va directo, como antes.
+  function desconectar({ id }) {
+    const cod = jugadorSala.get(id);
+    const sala = cod && salas.get(cod);
+    if (!sala) return;
+    if (!sala.empezada) { salir({ id }); return; }
+    const jugador = sala.jugadores.find((j) => j.id === id);
+    if (!jugador || jugador.desconectadoDesde) return; // ya estaba en gracia (o no existe)
+    sala.entradas[id] = { ...ENTRADA_NEUTRAL }; // no se quede "acelerando" fantasma con la última tecla apretada
+    jugador.desconectadoDesde = ahora();
+    if (sala.hostId === id) {
+      const otro = sala.jugadores.find((j) => j.id !== id);
+      if (otro) sala.hostId = otro.id;
+    }
+    onJugadores(cod, { jugadores: listaJugadores(sala), empezada: sala.empezada });
+    setTimeoutFn(() => {
+      const salaAhora = salas.get(cod);
+      if (!salaAhora) return;
+      const jugadorAhora = salaAhora.jugadores.find((j) => j.id === id);
+      // Si para cuando se cumple la gracia sigue marcado como desconectado (nadie reconectó en su
+      // lugar), recién ahí se lo saca de verdad.
+      if (jugadorAhora && jugadorAhora.desconectadoDesde) salir({ id });
+    }, GRACIA_RECONEXION_MS);
+  }
+
+  // El navegador, apenas Socket.io le avisa que la conexión volvió, pide reconectarse a la MISMA
+  // sala con el identificador estable que generó al entrar (no cambia entre cortes, a diferencia del
+  // id de socket, que es nuevo cada vez) — así retoma exactamente el mismo jugador/auto donde iba,
+  // en vez de quedar fantasma o entrar como uno nuevo.
+  function reconectar({ id, codigo, idEstable }) {
+    const cod = (codigo || "").toUpperCase();
+    const sala = salas.get(cod);
+    if (!sala) return { ok: false, error: "esa sala ya no existe" };
+    if (!idEstable) return { ok: false, error: "falta identificador" };
+    const jugador = sala.jugadores.find((j) => j.idEstable === idEstable && j.desconectadoDesde);
+    if (!jugador) return { ok: false, error: "no había nadie esperando reconectar con ese identificador" };
+    const idViejo = jugador.id;
+    jugador.id = id;
+    delete jugador.desconectadoDesde;
+    jugadorSala.delete(idViejo);
+    jugadorSala.set(id, cod);
+    sala.entradas[id] = sala.entradas[idViejo] || {};
+    if (idViejo !== id) delete sala.entradas[idViejo];
+    if (sala.secuencias[idViejo] != null) { sala.secuencias[id] = sala.secuencias[idViejo]; }
+    if (idViejo !== id) delete sala.secuencias[idViejo];
+    if (sala.hostId === idViejo) sala.hostId = id;
+    // Algunos juegos (Cúpula GP) guardan el id del jugador ADENTRO de su propio estado (el auto de
+    // cada quien) además de en la lista de la sala — hay que actualizarlo ahí también para que el
+    // servidor y el navegador sigan de acuerdo en cuál auto es cuál.
+    if (sala.estado && Array.isArray(sala.estado.autos)) {
+      sala.estado.autos.forEach((a) => { if (a.jugadorId === idViejo) a.jugadorId = id; });
+    }
+    onJugadores(cod, { jugadores: listaJugadores(sala), empezada: sala.empezada });
+    const handler = JUEGOS[sala.juego];
+    const estadoActual = sala.empezada && sala.estado
+      ? (handler.estadoLigero ? handler.estadoLigero(sala.estado) : sala.estado)
+      : null;
+    return { ok: true, codigo: cod, miId: id, juego: sala.juego, empezada: sala.empezada, estado: estadoActual };
+  }
+
   return {
-    crearSala, unirseSala, empezar, jugarDeNuevo, input, retirarse, salir, cambiarSkin,
+    crearSala, unirseSala, empezar, jugarDeNuevo, input, retirarse, salir, desconectar, reconectar, cambiarSkin,
     _salas: salas, _jugadorSala: jugadorSala, // solo para tests/inspección
   };
 }
