@@ -128,6 +128,40 @@ function pruebaGP() {
   console.log("✔ GP online: retirarse de una carrera con más de 1 jugador — no afecta al resto");
 }
 
+function pruebaColoresUnicos() {
+  const reloj = crearRelojFalso();
+  const gestor = crearGestorSalas({ gp }, {
+    ahora: reloj.ahora, setInterval: reloj.setInterval, clearInterval: reloj.clearInterval,
+  });
+
+  const r1 = gestor.crearSala({ id: "p1", juego: "gp", nombre: "Wizzrd", skinIndex: 3 });
+  assert.ok(r1.ok);
+
+  // Alguien se une pidiendo el MISMO color que ya está tomado — el servidor le asigna otro solo, en
+  // vez de dejar dos autos con el mismo color en la misma carrera.
+  const r2 = gestor.unirseSala({ id: "p2", codigo: r1.codigo, nombre: "Paris", skinIndex: 3 });
+  assert.ok(r2.ok);
+  assert.notStrictEqual(r2.skinIndex, 3, "no debe quedarse con el color ya tomado");
+  assert.strictEqual(gestor._salas.get(r1.codigo).jugadores.find((j) => j.id === "p2").skinIndex, r2.skinIndex);
+
+  // Alguien más se une pidiendo un color libre — ese sí se respeta tal cual.
+  const r3 = gestor.unirseSala({ id: "p3", codigo: r1.codigo, nombre: "Cristian", skinIndex: 7 });
+  assert.strictEqual(r3.skinIndex, 7, "un color libre se respeta sin reasignar");
+
+  // Cambiar de color desde el lobby: a un color libre, funciona.
+  const okCambio = gestor.cambiarSkin({ id: "p3", skinIndex: 9 });
+  assert.ok(okCambio.ok);
+  assert.strictEqual(gestor._salas.get(r1.codigo).jugadores.find((j) => j.id === "p3").skinIndex, 9);
+
+  // Cambiar a un color que ya tiene otro: rechazado, sin tocar nada.
+  const rechazado = gestor.cambiarSkin({ id: "p3", skinIndex: 3 });
+  assert.strictEqual(rechazado.ok, false, "no debe permitir robarle el color a otro jugador");
+  assert.strictEqual(gestor._salas.get(r1.codigo).jugadores.find((j) => j.id === "p3").skinIndex, 9, "el color no debe haber cambiado tras el rechazo");
+
+  console.log("✔ colores únicos: reasignación automática al unirse + cambio de color en el lobby (con rechazo si está tomado) — todo OK");
+}
+
 pruebaCabezones();
 pruebaGP();
+pruebaColoresUnicos();
 console.log("\n=== TODAS LAS PRUEBAS DEL GESTOR DE SALAS PASARON ===");

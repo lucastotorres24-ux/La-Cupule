@@ -54,7 +54,19 @@ function crearGestorSalas(JUEGOS, opts = {}) {
       const t = ahora();
       const dt = Math.min(0.05, (t - ultimoTs) / 1000);
       ultimoTs = t;
-      sala.estado = handler.avanzar(sala.estado, dt, sala.entradas, sala.jugadores);
+      // Sub-pasos: en vez de mover todo de un solo salto grande cada 50ms, se avanza varias veces
+      // con un dt más chico dentro del mismo tick (si el juego pide subPasos>1). Con esto (a) un
+      // balón/auto rápido ya no puede "saltar" de un lado al otro de un colisionador en un solo paso
+      // grande (menos atravesamientos), y (b) la simulación del servidor queda más parecida a una
+      // continua de verdad, que es justo lo que el cliente predice cuadro a cuadro — así hay menos
+      // desvío entre lo que el cliente predijo y lo que el servidor terminó calculando. No cambia
+      // cuántas veces por segundo se manda la red (eso lo sigue marcando TICK_MS), solo qué tan fino
+      // se calcula puertas adentro cada vez.
+      const subPasos = handler.subPasos || 1;
+      const subDt = dt / subPasos;
+      for (let s = 0; s < subPasos; s++) {
+        sala.estado = handler.avanzar(sala.estado, subDt, sala.entradas, sala.jugadores);
+      }
       // El paquete de cada tick va "liviano" cuando el juego ofrece un resumen (GP: sin repetir la
       // pista entera 20 veces por segundo); si no ofrece uno (cabezones: ya es chico de por sí), se
       // manda el estado completo tal cual.
@@ -81,6 +93,20 @@ function crearGestorSalas(JUEGOS, opts = {}) {
     return { ok: true, codigo, miId: id, jugadores: listaJugadores(sala) };
   }
 
+  // ¿Ya hay alguien en la sala (menos "exceptoId") con ese mismo color/skin? Los juegos que no usan
+  // color (cabezones no manda skinIndex) nunca entran acá — solo importa cuando skinIndex no es null.
+  function colorTomado(sala, skinIndex, exceptoId) {
+    return sala.jugadores.some((j) => j.id !== exceptoId && j.skinIndex === skinIndex);
+  }
+
+  // Primer color libre, buscando desde 0. Con 8 jugadores máximo y 16 colores esto siempre encuentra
+  // uno; si por algún motivo no hubiera ninguno libre, se deja el que se pidió (mejor repetido que
+  // romper el join).
+  function primerColorLibre(sala, exceptoId) {
+    for (let i = 0; i < 32; i++) if (!colorTomado(sala, i, exceptoId)) return i;
+    return null;
+  }
+
   function unirseSala({ id, codigo, nombre, skinIndex }) {
     const cod = (codigo || "").toUpperCase();
     const sala = salas.get(cod);
@@ -88,11 +114,31 @@ function crearGestorSalas(JUEGOS, opts = {}) {
     if (sala.empezada) return { ok: false, error: "esa carrera ya empezó" };
     const handler = JUEGOS[sala.juego];
     if (sala.jugadores.length >= handler.maxJugadores) return { ok: false, error: "la sala está llena" };
-    const jugador = { id, nombre: (nombre || "Piloto").slice(0, 24), skinIndex };
+    // Si el color pedido ya lo tiene otro (dos personas lo eligieron a la vez antes de unirse, sin
+    // verse entre sí), se le asigna el primer color libre en su lugar — así nunca quedan dos autos
+    // del mismo color en una carrera. Quien ya estaba en la sala tiene preferencia sobre su color.
+    let skinFinal = skinIndex;
+    if (skinFinal != null && colorTomado(sala, skinFinal, id)) skinFinal = primerColorLibre(sala, id);
+    const jugador = { id, nombre: (nombre || "Piloto").slice(0, 24), skinIndex: skinFinal };
     sala.jugadores.push(jugador);
     jugadorSala.set(id, cod);
     onJugadores(cod, { jugadores: listaJugadores(sala), empezada: sala.empezada });
-    return { ok: true, codigo: cod, miId: id, juego: sala.juego, config: sala.config, jugadores: listaJugadores(sala) };
+    return { ok: true, codigo: cod, miId: id, juego: sala.juego, config: sala.config, jugadores: listaJugadores(sala), skinIndex: skinFinal };
+  }
+
+  // Cambiar de color desde el lobby (antes de arrancar) — rechaza si alguien más de la sala ya tiene
+  // ese color puesto, para que nunca haya dos autos iguales en una misma carrera.
+  function cambiarSkin({ id, skinIndex }) {
+    const cod = jugadorSala.get(id);
+    const sala = cod && salas.get(cod);
+    if (!sala) return { ok: false, error: "no estás en ninguna sala" };
+    if (sala.empezada) return { ok: false, error: "ya empezó, no se puede cambiar" };
+    if (skinIndex != null && colorTomado(sala, skinIndex, id)) return { ok: false, error: "ese color ya lo tiene otro jugador" };
+    const jugador = sala.jugadores.find((j) => j.id === id);
+    if (!jugador) return { ok: false, error: "no estás en ninguna sala" };
+    jugador.skinIndex = skinIndex;
+    onJugadores(cod, { jugadores: listaJugadores(sala), empezada: sala.empezada });
+    return { ok: true };
   }
 
   function empezar({ id }) {
@@ -151,7 +197,7 @@ function crearGestorSalas(JUEGOS, opts = {}) {
   }
 
   return {
-    crearSala, unirseSala, empezar, jugarDeNuevo, input, retirarse, salir,
+    crearSala, unirseSala, empezar, jugarDeNuevo, input, retirarse, salir, cambiarSkin,
     _salas: salas, _jugadorSala: jugadorSala, // solo para tests/inspección
   };
 }

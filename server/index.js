@@ -57,6 +57,10 @@ io.on("connection", (socket) => {
   socket.on("empezar", (_payload, cb) => { cb && cb(gestor.empezar({ id: socket.id })); });
   socket.on("jugarDeNuevo", (_payload, cb) => { cb && cb(gestor.jugarDeNuevo({ id: socket.id })); });
 
+  // Cambiar de color/skin desde el lobby (antes de arrancar) — el gestor rechaza si alguien más de
+  // la sala ya lo tiene puesto, así nunca hay dos autos del mismo color en una misma carrera.
+  socket.on("cambiarSkin", ({ skinIndex } = {}, cb) => { cb && cb(gestor.cambiarSkin({ id: socket.id, skinIndex })); });
+
   // Cada quien manda solo su propia entrada (botones/teclas), nunca posición ni estado del juego —
   // el servidor es el único que decide qué pasó de verdad, así nadie tiene ventaja por su conexión.
   socket.on("input", ({ seq, input } = {}) => { gestor.input({ id: socket.id, seq, input }); });
