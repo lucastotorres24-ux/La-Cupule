@@ -5753,17 +5753,32 @@ function resolverColisionesGP(st) {
           const ahora = Date.now();
           const aEscudo = a.escudoHasta && ahora < a.escudoHasta;
           const bEscudo = b.escudoHasta && ahora < b.escudoHasta;
+          // Un auto que TODAVÍA sigue en el derrape forzado de un golpe reciente no cuenta como
+          // golpe nuevo — sin esto, mientras dos autos seguían cerca (en línea, la predicción local
+          // del cliente corre esta misma función en CADA cuadro, hasta 60 veces por segundo, además
+          // de la del servidor) el giro brusco + sacudida se volvía a disparar en el cuadro
+          // siguiente, y el giro forzado de ESE disparo volvía a dejar la velocidad relativa por
+          // encima del umbral, y así de nuevo — un bucle que se retroalimentaba solo. Eso se veía
+          // como que la pantalla vibraba sin parar y el auto se iba solo para los lados sin soltar
+          // el control nunca. Con esto, el efecto dramático (giro + chispas + sacudida) solo pasa
+          // una vez por golpe real; la separación/rebote de velocidad de arriba sigue pasando
+          // siempre, cuadro a cuadro, como corresponde.
+          const aGolpeFresco = !(a.derrapeHasta && ahora < a.derrapeHasta);
+          const bGolpeFresco = !(b.derrapeHasta && ahora < b.derrapeHasta);
           const giro = 0.18 + Math.random() * 0.16;
-          if (!aEscudo) { a.derrapeHasta = ahora + GP_DERRAPE_MS; a.enDerrape = true; a.heading -= giro; }
-          if (!bEscudo) { b.derrapeHasta = ahora + GP_DERRAPE_MS; b.enDerrape = true; b.heading += giro; }
+          if (!aEscudo && aGolpeFresco) { a.derrapeHasta = ahora + GP_DERRAPE_MS; a.enDerrape = true; a.heading -= giro; }
+          if (!bEscudo && bGolpeFresco) { b.derrapeHasta = ahora + GP_DERRAPE_MS; b.enDerrape = true; b.heading += giro; }
           // Efecto de impacto: chispas en el punto de contacto + una sacudida de cámara chica (solo
-          // si el jugador fue parte del choque, para no sacudir la pantalla por golpes ajenos).
-          const golpeX = (a.x + b.x) / 2, golpeY = (a.y + b.y) / 2;
-          for (let p = 0; p < 7; p++) {
-            const ang = Math.random() * Math.PI * 2, vel = 60 + Math.random() * 90;
-            st.particulas.push({ x: golpeX, y: golpeY, vx: Math.cos(ang) * vel, vy: Math.sin(ang) * vel, vida: 0.35, vidaMax: 0.35, tipo: "chispa" });
+          // si el jugador fue parte del choque, para no sacudir la pantalla por golpes ajenos) —
+          // solo si al menos uno de los dos autos estaba recibiendo un golpe de verdad nuevo.
+          if (aGolpeFresco || bGolpeFresco) {
+            const golpeX = (a.x + b.x) / 2, golpeY = (a.y + b.y) / 2;
+            for (let p = 0; p < 7; p++) {
+              const ang = Math.random() * Math.PI * 2, vel = 60 + Math.random() * 90;
+              st.particulas.push({ x: golpeX, y: golpeY, vx: Math.cos(ang) * vel, vy: Math.sin(ang) * vel, vida: 0.35, vidaMax: 0.35, tipo: "chispa" });
+            }
+            if (a === st.jugador || b === st.jugador) st.sacudida = Math.max(st.sacudida, 12);
           }
-          if (a === st.jugador || b === st.jugador) st.sacudida = Math.max(st.sacudida, 12);
         }
       }
     }
