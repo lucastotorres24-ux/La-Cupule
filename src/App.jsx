@@ -105,6 +105,12 @@ class NetworkManager {
     return new Promise((resolve) => { this.socket.emit("jugarDeNuevo", {}, (res) => resolve(res)); });
   }
 
+  // Cambiar de color/skin desde el lobby — el servidor rechaza si otro jugador de la sala ya lo
+  // tiene puesto (así nunca hay dos autos iguales en la misma carrera).
+  cambiarSkin(skinIndex) {
+    return new Promise((resolve) => { this.socket.emit("cambiarSkin", { skinIndex }, (res) => resolve(res)); });
+  }
+
   // Manda solo el input (nunca posición/estado propio) con un número de secuencia creciente — el
   // servidor es la única autoridad sobre qué pasó de verdad con ese input.
   enviarInput(input) {
@@ -2789,7 +2795,7 @@ const CABEZONES_DURACION_PARTIDO_S = 120;
 const CABEZONES_GOLES_PARA_GANAR = 5;
 const CABEZONES_POWERUP_INTERVALO_S = 16;
 const CABEZONES_POWERUP_DURACION_S = 9;
-const CABEZONES_SUBPASOS = 4;
+const CABEZONES_SUBPASOS = 8; // más fino = el balón a máxima velocidad ya no puede "saltar" a través del travesano/pared en un solo sub-paso
 const CABEZONES_TRAVESANO_GROSOR = 10;
 const CABEZONES_POWERUPS = [
   { tipo: "velocidad", icono: "⚡", nombre: "Velocidad", color: "#FFE94D" },
@@ -4554,7 +4560,7 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
   // servidor de Cúpula, que es el único que decide qué pasó de verdad. Simétrico para los dos lados.
   useEffect(() => {
     if (!enPartida) return;
-    const id = setInterval(() => { if (netRef.current) netRef.current.enviarInput(entradaLocalRef.current); }, 40);
+    const id = setInterval(() => { if (netRef.current) netRef.current.enviarInput(entradaLocalRef.current); }, 20);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enPartida]);
@@ -4999,8 +5005,8 @@ const GP_FUERZA_MOTOR = 340;
 const GP_FUERZA_FRENO = 420;
 const GP_RESISTENCIA = 0.3; // resistencia al rodar (rolling resistance), siempre activa
 const GP_GIRO_MAX = 2.8; // rad/s de referencia a velocidad de crucero
-const GP_UMBRAL_DERRAPE = 110; // velocidad lateral (px/s) a partir de la cual se considera derrape
-const GP_DERRAPE_MS = 380; // cuánto se mantiene el estado de derrape una vez disparado
+const GP_UMBRAL_DERRAPE = 155; // velocidad lateral (px/s) a partir de la cual se considera derrape (antes 110 — se disparaba solo con giros normales)
+const GP_DERRAPE_MS = 300; // cuánto se mantiene el estado de derrape una vez disparado
 const GP_CAMARA_LOOKAHEAD = 130;
 const GP_CAMARA_SUAVIDAD = 0.00002; // más chico = cámara más "pegada"; se usa como base de un lerp exponencial independiente del framerate
 const GP_RESTITUCION = 0.78; // "bounciness" de los choques auto-auto (0 = se pegan, 1 = rebote elástico total)
@@ -5619,9 +5625,10 @@ function actualizarFisicaAutoGP(auto, dt, entrada, rebufo) {
   const pideDerrapeManual = !!entrada.derrape && Math.abs(entrada.dir) > GP_DERRAPE_MANUAL_DIR_MIN && Math.abs(vAdelante) > auto.velMaxBase * 0.25;
   if (Math.abs(vLateral) > GP_UMBRAL_DERRAPE || pideDerrapeManual) auto.derrapeHasta = ahora + GP_DERRAPE_MS;
   auto.enDerrape = ahora < auto.derrapeHasta;
-  // Durante el derrape el agarre lateral baja MUCHO (más todavía que antes) — el auto resbala de
-  // verdad hacia afuera de la curva, con un derrape visiblemente más largo y dramático.
-  const amortLateral = auto.enDerrape ? amortLateralBase * 0.13 : amortLateralBase;
+  // Durante el derrape el agarre lateral baja (el auto resbala de verdad hacia afuera de la curva)
+  // pero sin pasarse — antes bajaba tanto (0.13x) que se sentía como manejar sobre hielo apenas se
+  // giraba fuerte; ahora derrapa visiblemente pero se puede controlar.
+  const amortLateral = auto.enDerrape ? amortLateralBase * 0.32 : amortLateralBase;
 
   let fuerza = 0;
   const acelerando = entrada.accel || turboActivo; // el turbo empuja solo, aunque no se toque el gas
@@ -6505,6 +6512,15 @@ function CupulaGPView({ user, onVolver }) {
     if (!res.ok) setErrorOnline(res.error || "No se pudo empezar.");
   }, []);
 
+  // Cambiar de color desde el lobby — el servidor es quien de verdad decide si se puede (rechaza si
+  // otro piloto de la sala ya lo tiene puesto); acá solo se muestra el error si lo rechaza.
+  const cambiarColorOnline = useCallback(async (skinIndex) => {
+    if (!netRef.current) return;
+    setErrorOnline("");
+    const res = await netRef.current.cambiarSkin(skinIndex);
+    if (!res.ok) setErrorOnline(res.error || "No se pudo cambiar el color.");
+  }, []);
+
   // Salir de la sala en línea desde el lobby (todavía no arrancó la carrera).
   const salirSalaOnline = useCallback(() => {
     if (netRef.current) { netRef.current.desconectar(); netRef.current = null; }
@@ -6627,11 +6643,16 @@ function CupulaGPView({ user, onVolver }) {
             if (vLatM * signoM > 0) { auto.vx -= latM.x * vLatM * GP_MURO_REBOTE; auto.vy -= latM.y * vLatM * GP_MURO_REBOTE; }
           }
           // Reconciliación: solo cuando llegó un paquete nuevo del servidor desde el cuadro
-          // anterior, y con zona muerta — una diferencia chica (latencia normal) no se corrige,
-          // total la predicción local ya viene bien; solo un desync de verdad se ajusta, suave.
+          // anterior, y con una zona muerta bien amplia — una diferencia chica (la normal entre la
+          // predicción local y el servidor, sobre todo en curva) NO se corrige nunca, total la
+          // predicción local ya viene bien sola; solo un desync grande de verdad (lag de la red, no
+          // el vaivén normal de manejar) se ajusta, y encima bien suave. Antes esta zona era muy
+          // angosta y la corrección bastante fuerte, así que el auto propio se sentía "arrastrado"
+          // hacia los costados todo el tiempo mientras se giraba — eso no era un choque ni la
+          // conexión, era esta reconciliación corrigiendo de más algo que ni hacía falta corregir.
           if (auto.nuevoPaquete && auto.servidorX != null) {
             const diffX = auto.servidorX - auto.x, diffY = auto.servidorY - auto.y;
-            const f = factorSuavizadoRed(Math.hypot(diffX, diffY), 12, 100, dt, 2, 14);
+            const f = factorSuavizadoRed(Math.hypot(diffX, diffY), 30, 160, dt, 1.2, 6);
             if (f > 0) { auto.x += diffX * f; auto.y += diffY * f; }
             auto.nuevoPaquete = false;
           }
@@ -6696,7 +6717,7 @@ function CupulaGPView({ user, onVolver }) {
       // El input se manda cada ~40ms (no en cada cuadro) — de sobra para que se sienta bien y sin
       // saturar la red innecesariamente.
       envioAcumulador += dt;
-      if (envioAcumulador >= 0.04 && netRef.current) {
+      if (envioAcumulador >= 0.02 && netRef.current) {
         envioAcumulador = 0;
         netRef.current.enviarInput(entradaLocal);
       }
@@ -6891,10 +6912,46 @@ function CupulaGPView({ user, onVolver }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 20, alignItems: "center" }}>
             {jugadoresSala.map((j) => (
               <Badge key={j.id} color={j.esHost ? COLORS.neonAmber : COLORS.neonBlue}>
+                {j.skinIndex != null && (
+                  <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: `hsl(${(j.skinIndex * 47) % 360},80%,50%)`, marginRight: 6, verticalAlign: "middle" }} />
+                )}
                 {j.nombre}{j.esHost ? " — anfitrión" : ""}
               </Badge>
             ))}
           </div>
+          {netRef.current && (() => {
+            const miEntrada = jugadoresSala.find((j) => j.id === netRef.current.miId);
+            const miSkin = miEntrada ? miEntrada.skinIndex : null;
+            const tomados = new Set(jugadoresSala.filter((j) => j.id !== netRef.current.miId && j.skinIndex != null).map((j) => j.skinIndex));
+            return (
+              <>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>TU COLOR</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center", marginBottom: 20, maxWidth: 320 }}>
+                  {Array.from({ length: 16 }, (_, s) => s).map((s) => {
+                    const ocupado = tomados.has(s);
+                    return (
+                      <button
+                        key={s}
+                        disabled={ocupado}
+                        onClick={() => cambiarColorOnline(s)}
+                        title={ocupado ? "ya lo tiene otro piloto" : ""}
+                        style={{
+                          width: 36, height: 36, borderRadius: 8, position: "relative",
+                          cursor: ocupado ? "not-allowed" : "pointer",
+                          background: `hsl(${(s * 47) % 360},80%,50%)`,
+                          opacity: ocupado ? 0.25 : 1,
+                          border: miSkin === s ? `3px solid ${COLORS.white}` : "2px solid transparent",
+                          boxShadow: miSkin === s ? `0 0 14px ${COLORS.neonBlue}` : "none",
+                        }}
+                      >
+                        {ocupado && <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>🔒</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            );
+          })()}
           {soyHostSala && pistaElegida && (
             <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginBottom: 18 }}>
               {pistaElegida.nombre} · {vueltasElegidas} vueltas
