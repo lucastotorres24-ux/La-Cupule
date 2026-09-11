@@ -4085,7 +4085,18 @@ function MotorCabezones({
             const balonPrev = balonSuavizadoRef.current;
             const dxBalon = remoto.balon.x - balonPrev.x;
             const dyBalon = remoto.balon.altura - balonPrev.altura;
-            const fBalon = factorSuavizadoCabezones(Math.hypot(dxBalon, dyBalon), 6, 90, dt, 2, 28);
+            // Un bote real (cabeza, cuerpo o patada) invierte la velocidad del balón de golpe — el
+            // signo de vx cambia, o vAltura pasa de caer a subir fuerte (cabezazo). Si eso acaba de
+            // pasar, la posición que manda el servidor YA es la posición real del rebote: seguir
+            // acercándonos a ella de a poco (pensado para el jitter normal de red, no para esto) se
+            // veía como si el balón "esquivara" o rebotara imantado en cámara lenta justo cerca de
+            // la cabeza del rival, que es donde un cambio de dirección así se nota más. En ese caso
+            // saltamos directo a la posición real; un desajuste normal (sin rebote) se sigue
+            // suavizando como siempre.
+            const vxAntes = balonPrev.vx || 0, vxDespues = remoto.balon.vx || 0;
+            const vAlturaAntes = balonPrev.vAltura || 0, vAlturaDespues = remoto.balon.vAltura || 0;
+            const huboRebote = (vxAntes * vxDespues < 0 && Math.abs(vxDespues) > 40) || (vAlturaAntes < 0 && vAlturaDespues > 40);
+            const fBalon = huboRebote ? 1 : factorSuavizadoCabezones(Math.hypot(dxBalon, dyBalon), 6, 90, dt, 2, 28);
             balonSuavizadoRef.current = {
               ...remoto.balon,
               x: balonPrev.x + dxBalon * fBalon,
