@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref as rtdbRef, onValue as rtdbOnValue, set as rtdbSet, onDisconnect as rtdbOnDisconnect } from "firebase/database";
+import { io } from "socket.io-client";
 
 // ── Conexión real y compartida a Firebase Realtime Database ──
 const FIREBASE_DB_URL = "https://the-cupule-7cd07-default-rtdb.firebaseio.com";
@@ -30,17 +31,115 @@ function rtdbEscuchar(ruta, onCambio) {
 function rtdbLimpiarAlDesconectar(ruta) {
   rtdbOnDisconnect(rtdbRef(rtdb, ruta)).remove().catch(() => {});
 }
-const RT_ESTADO_CABEZONES = (roomId) => `cabezones_rt/estado/${roomId}`;
-const RT_ENTRADA1_CABEZONES = (roomId) => `cabezones_rt/entrada1/${roomId}`;
-const RT_ENTRADA2_CABEZONES = (roomId) => `cabezones_rt/entrada2/${roomId}`;
+// Esta ruta de presencia (quién de la Cúpula está en línea ahora mismo) se queda en Firebase RTDB
+// a propósito — es barata, no le importa la latencia, y no tiene nada que ver con correr un
+// partido: el estado del PARTIDO en sí (ver más abajo, NetworkManager) ahora viaja directo por
+// Socket.io al servidor de Cúpula, sin pasar por Firebase.
 const RT_PRESENCIA_CABEZONES = (uid) => `cabezones_rt/presencia/${uid}`;
-// El servidor de Cúpula (proceso Node aparte, ver /server) escucha esta ruta para saber qué salas
-// tienen partido en curso: cuando aparece un hijo acá, arranca el bucle de físicas de esa sala;
-// cuando desaparece, lo detiene. Antes el navegador de quien creaba la sala ("jugador1") era el que
-// corría toda la física y por eso siempre tenía cero de retraso mientras el otro dependía 100% de la
-// red — ahora NINGÚN navegador simula el partido: los dos mandan solo sus botones y reciben la
-// verdad del servidor exactamente igual, con la misma latencia de red para ambos.
-const RT_SALA_ACTIVA_CABEZONES = (roomId) => `cabezones_rt/salaActiva/${roomId}`;
+
+// ── Servidor de La Cúpula (Socket.io, salas con código) — juegos en línea de verdad ──
+//
+// Un único proceso Node (/server, alojado en Render) corre la física real de "No haga sino Jogar"
+// y de "Cúpula GP" en línea, a 20 cuadros por segundo, igual para todos los que estén en la sala.
+// Antes esto se hacía "a mano" sobre Firebase Realtime Database (cada botón/estado pasaba por los
+// servidores de Google antes de llegar al otro jugador); ahora es una conexión WebSocket directa
+// con este servidor, más liviana y con menos salto de red.
+const CUPULA_SERVER_URL = "https://la-cupule.onrender.com";
+
+// Clase chica y genérica (sirve para cualquier juego en línea de la Cúpula, no solo uno) que
+// encapsula las 3 patas de un netcode fluido:
+//   1) Client-Side Prediction: quien la usa mueve a SU PROPIO personaje al instante en su pantalla
+//      con la física local (esto lo sigue haciendo cada juego, no esta clase — acá solo se manda el
+//      input con un número de secuencia para más adelante poder reconciliar).
+//   2) Entity Interpolation: los rivales se dibujan un pasito atrás de lo último recibido e
+//      interpolados suavemente hacia ahí (también lo hace cada juego con los datos que esta clase
+//      les entrega, usando el mismo patrón de "zona muerta" que ya existía en No haga sino Jogar).
+//   3) Server Reconciliation: cuando llega un paquete nuevo del servidor, se puede comparar contra
+//      lo que ya se predijo localmente y corregir suave si hace falta.
+// Un solo NetworkManager por partida — se crea al entrar a una sala y se descarta al salir.
+class NetworkManager {
+  constructor() {
+    this.socket = null;
+    this.seq = 0;
+    this.miId = null;
+    this.codigo = null;
+    this.juego = null;
+    this._offJugadores = null;
+    this._offEmpezando = null;
+    this._offEstado = null;
+    this._offTerminado = null;
+  }
+
+  conectar() {
+    if (this.socket) return this.socket;
+    this.socket = io(CUPULA_SERVER_URL, { transports: ["websocket", "polling"] });
+    return this.socket;
+  }
+
+  crearSala({ juego, nombre, config, skinIndex }) {
+    this.conectar();
+    this.juego = juego;
+    return new Promise((resolve) => {
+      this.socket.emit("crearSala", { juego, nombre, config, skinIndex }, (res) => {
+        if (res && res.ok) { this.codigo = res.codigo; this.miId = res.miId; }
+        resolve(res);
+      });
+    });
+  }
+
+  unirseSala({ codigo, nombre, skinIndex }) {
+    this.conectar();
+    return new Promise((resolve) => {
+      this.socket.emit("unirseSala", { codigo, nombre, skinIndex }, (res) => {
+        if (res && res.ok) { this.codigo = res.codigo; this.miId = res.miId; this.juego = res.juego; }
+        resolve(res);
+      });
+    });
+  }
+
+  empezar() {
+    return new Promise((resolve) => { this.socket.emit("empezar", {}, (res) => resolve(res)); });
+  }
+
+  jugarDeNuevo() {
+    return new Promise((resolve) => { this.socket.emit("jugarDeNuevo", {}, (res) => resolve(res)); });
+  }
+
+  // Manda solo el input (nunca posición/estado propio) con un número de secuencia creciente — el
+  // servidor es la única autoridad sobre qué pasó de verdad con ese input.
+  enviarInput(input) {
+    this.seq += 1;
+    this.socket.emit("input", { seq: this.seq, input });
+    return this.seq;
+  }
+
+  retirarse() { if (this.socket) this.socket.emit("retirarse"); }
+
+  onJugadores(cb) { this._offJugadores && this._offJugadores(); this.socket.on("jugadores", cb); this._offJugadores = () => this.socket.off("jugadores", cb); }
+  onEmpezando(cb) { this._offEmpezando && this._offEmpezando(); this.socket.on("empezando", cb); this._offEmpezando = () => this.socket.off("empezando", cb); }
+  onEstado(cb) { this._offEstado && this._offEstado(); this.socket.on("estado", cb); this._offEstado = () => this.socket.off("estado", cb); }
+  onTerminado(cb) { this._offTerminado && this._offTerminado(); this.socket.on("terminado", cb); this._offTerminado = () => this.socket.off("terminado", cb); }
+
+  desconectar() {
+    if (this.socket) {
+      this.socket.emit("salirSala");
+      this.socket.disconnect();
+      this.socket = null;
+    }
+    this.codigo = null; this.miId = null; this.juego = null;
+  }
+}
+
+// Suaviza una posición/valor hacia su objetivo con "zona muerta" — el mismo patrón que ya usaba
+// "No haga sino Jogar" para el balón/rival: una diferencia chica (esperable por latencia normal) no
+// se corrige de golpe, solo una diferencia grande (desync real) se corrige rápido. Reutilizado acá
+// para interpolar a los rivales de Cúpula GP en línea de la misma forma ya probada.
+function factorSuavizadoRed(distancia, zonaMuerta, zonaFuerte, dt, tasaMin, tasaMax) {
+  if (distancia <= zonaMuerta) return 0;
+  const t = Math.min(1, (distancia - zonaMuerta) / (zonaFuerte - zonaMuerta));
+  const tasa = tasaMin + (tasaMax - tasaMin) * t;
+  return 1 - Math.exp(-tasa * dt);
+}
 
 if (typeof window !== "undefined" && !window.storage) {
   window.storage = {
@@ -4334,10 +4433,13 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
   const entradaLocalRef = useRef({ izq: false, der: false, saltar: false, patear: false });
   const terminadoNotificadoRef = useRef(false);
   // Marca si YA le avisamos al servidor de Cúpula que esta sala tiene partido en curso (para no
-  // reescribir la ruta en cada cuadro) — se reinicia en cada revancha para que el servidor arranque
-  // de nuevo el bucle de físicas de esta sala.
+  // crear la sala de red de nuevo en cada render) — se reinicia en cada revancha para que el
+  // servidor arranque de nuevo el bucle de físicas de esta sala.
   const salaActivaEnviadaRef = useRef(false);
   const estabaEnPartidaRef = useRef(false);
+  // El NetworkManager (conexión Socket.io) de la partida actual — uno por partida, se crea al
+  // entrar a "jugando" y se descarta al salir/terminar.
+  const netRef = useRef(null);
 
   useEffect(() => { salaRef.current = sala; }, [sala]);
 
@@ -4384,22 +4486,6 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
 
   useEffect(() => { if (enPartida) estabaEnPartidaRef.current = true; }, [enPartida]);
 
-  // Si el navegador se cierra o se cae la conexión sin avisar (wifi que se corta, se cierra la
-  // pestaña), le pedimos al SERVIDOR de Firebase — no al navegador, que ya no puede avisar de nada
-  // en ese momento — que borre nuestro último dato en tiempo real apenas lo detecte. Cada quien
-  // limpia sus propios botones; además, quien creó la sala (jugador1) limpia la marca de "sala
-  // activa" que le avisa al servidor de Cúpula que corra el partido — así, si se cae justo quien
-  // creó la sala, el servidor de verdad se entera y detiene el bucle de esa partida en vez de
-  // quedar corriendo solo para nadie.
-  useEffect(() => {
-    if (soyJugador1) {
-      rtdbLimpiarAlDesconectar(RT_ENTRADA1_CABEZONES(roomId));
-      rtdbLimpiarAlDesconectar(RT_SALA_ACTIVA_CABEZONES(roomId));
-    }
-    if (soyJugador2) rtdbLimpiarAlDesconectar(RT_ENTRADA2_CABEZONES(roomId));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [soyJugador1, soyJugador2, roomId]);
-
   // Latido del anfitrión cada 5s mientras se juega, para que una sala de verdad abandonada
   // (cerró la pestaña sin avisar) se pueda liberar sola más adelante.
   useEffect(() => {
@@ -4409,56 +4495,67 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador1, sala && sala.fase, roomId]);
 
-  // Quien creó la sala (jugador1) le avisa al servidor de Cúpula que este partido tiene que
-  // arrancar, escribiendo la config en "sala activa" — el servidor está escuchando esa ruta y, al
-  // verla aparecer, arranca su propio bucle de físicas para esta sala. NINGÚN navegador crea ni
-  // simula el estado del partido — antes lo hacía el navegador de jugador1 (por eso siempre tenía
-  // cero de retraso y el otro lado dependía 100% de la red); ahora los dos son clientes iguales del
-  // mismo servidor.
+  // Quien creó la sala (jugador1) crea también la sala de red en el servidor de Cúpula (Socket.io) y
+  // publica el código de 4 letras en el documento de sala para que jugador2 la encuentre solo —
+  // nadie tiene que copiar/pegar nada a mano. Apenas jugador2 se une del lado del servidor (llega el
+  // evento "jugadores" con 2), jugador1 le da "empezar". NINGÚN navegador crea ni simula el estado
+  // del partido — el servidor es el único que corre la física, por igual para los dos lados.
   useEffect(() => {
     if (!soyJugador1 || !sala || sala.fase !== "jugando" || salaActivaEnviadaRef.current) return;
     salaActivaEnviadaRef.current = true;
     terminadoNotificadoRef.current = false;
-    rtdbEnviar(RT_SALA_ACTIVA_CABEZONES(roomId), { config: sala.config || configElegida || null, iniciadaEn: Date.now() });
+    let cancelado = false;
+    const net = new NetworkManager();
+    netRef.current = net;
+    net.onEstado(({ estado }) => { if (!cancelado) { estadoRemotoRef.current = estado; } });
+    (async () => {
+      const res = await net.crearSala({ juego: "cabezones", nombre: user.nombre, config: sala.config || configElegida || null });
+      if (cancelado || !res.ok) return;
+      net.onJugadores(({ jugadores }) => { if (jugadores.length === 2 && !cancelado) net.empezar(); });
+      await saveData(k(claveSala), { ...(salaRef.current || sala), codigoRed: res.codigo });
+    })();
+    return () => { cancelado = true; net.desconectar(); if (netRef.current === net) netRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soyJugador1, sala && sala.fase, roomId]);
 
-  // Ambos jugadores reciben el estado autoritativo del servidor de Cúpula en tiempo real, por igual
-  // (antes solo el invitado hacía esto; el anfitrión se leía a sí mismo). Si en 75s nunca llega ni
-  // un solo estado del servidor — puede tardar hasta cerca de un minuto la primera vez si el servidor
-  // estaba "dormido" (se apaga solo tras un rato sin uso; el propio hospedaje avisa que puede tardar
-  // 50s o más en despertar) — asumimos que algo falló y libero la sala en vez de dejarla trabada para
-  // siempre. Antes este margen era de 40s, que resultó ser demasiado corto: un despertar lento del
-  // servidor (cerca del límite de esos 50s que el hospedaje mismo advierte) hacía que el margen se
-  // venciera ANTES de que llegara el primer estado, sacando a los jugadores de la sala justo cuando el
-  // servidor ya casi estaba listo.
+  // Jugador2 se une a la sala de red apenas ve el código que publicó jugador1 (llega con el próximo
+  // refresco del documento de sala, como mucho ~1s — el mismo poll que ya existía para detectar que
+  // la partida arrancó).
+  useEffect(() => {
+    if (!soyJugador2 || !sala || sala.fase !== "jugando" || !sala.codigoRed || netRef.current) return;
+    let cancelado = false;
+    const net = new NetworkManager();
+    netRef.current = net;
+    net.onEstado(({ estado }) => { if (!cancelado) { estadoRemotoRef.current = estado; } });
+    net.unirseSala({ codigo: sala.codigoRed, nombre: user.nombre });
+    return () => { cancelado = true; net.desconectar(); if (netRef.current === net) netRef.current = null; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soyJugador2, sala && sala.fase, sala && sala.codigoRed, roomId]);
+
+  // Si en 60s nunca llega ni un solo estado del servidor —puede tardar un rato la primera vez si el
+  // servidor estaba "dormido" (el hospedaje gratuito lo apaga solo tras un rato sin uso)— asumimos
+  // que algo falló y libero la sala en vez de dejarla trabada para siempre.
   useEffect(() => {
     if (!enPartida) return;
-    let ultimoOk = Date.now();
-    const cancelar = rtdbEscuchar(RT_ESTADO_CABEZONES(roomId), (e) => {
-      if (e) { estadoRemotoRef.current = e; ultimoOk = Date.now(); }
-    });
-    const id = setInterval(() => {
-      if (Date.now() - ultimoOk > 75000) {
+    const id = setTimeout(() => {
+      if (!estadoRemotoRef.current) {
         const limpia = salaVaciaCabezones();
         saveData(k(claveSala), limpia);
         setSala(limpia);
       }
-    }, 1000);
-    return () => { cancelar(); clearInterval(id); };
+    }, 60000);
+    return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enPartida, roomId]);
 
-  // Cada quien manda solo sus propios botones — nunca la posición ni el estado del partido — al
-  // servidor de Cúpula, que es el único que decide qué pasó de verdad. Antes solo el invitado hacía
-  // esto (el anfitrión mandaba el partido entero); ahora es simétrico para los dos lados.
+  // Cada quien manda solo sus propios botones —nunca la posición ni el estado del partido— al
+  // servidor de Cúpula, que es el único que decide qué pasó de verdad. Simétrico para los dos lados.
   useEffect(() => {
     if (!enPartida) return;
-    const ruta = soyJugador1 ? RT_ENTRADA1_CABEZONES(roomId) : RT_ENTRADA2_CABEZONES(roomId);
-    const id = setInterval(() => { rtdbEnviar(ruta, entradaLocalRef.current); }, 40);
+    const id = setInterval(() => { if (netRef.current) netRef.current.enviarInput(entradaLocalRef.current); }, 40);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enPartida, soyJugador1, roomId]);
+  }, [enPartida]);
 
   useEffect(() => {
     if (!enPartida) return;
@@ -4487,7 +4584,10 @@ function SalaCabezones({ user, oponente, colorLocal, configElegida, onVolver, on
   const jugarDeNuevo = async () => {
     salaActivaEnviadaRef.current = false;
     const fresco = await fetchData(k(claveSala));
-    const siguiente = { ...(fresco || salaRef.current || {}), fase: "jugando", latido: Date.now() };
+    // codigoRed se borra a propósito: jugador1 va a crear una sala de red nueva y publicar un
+    // código nuevo — si dejáramos el código viejo acá, jugador2 podría alcanzar a intentar unirse
+    // con el código de la partida anterior (que el servidor ya cerró) antes de que llegue el nuevo.
+    const siguiente = { ...(fresco || salaRef.current || {}), fase: "jugando", latido: Date.now(), codigoRed: null };
     setSala(siguiente);
     await saveData(k(claveSala), siguiente);
   };
@@ -6073,6 +6173,23 @@ function dibujarGP(ctx, st, assets, dimensiones) {
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
+  // Nombres de piloto (solo en carreras en línea — los autos del modo solo/bots nunca traen
+  // ".nombre", así que acá no dibuja nada). Se calculan en coordenadas de pantalla a mano (en vez
+  // de dibujar con el transform del mundo todavía puesto) para que la letra no cambie de tamaño
+  // con el zoom de cámara según la velocidad.
+  ordenDibujo.forEach((auto) => {
+    if (!auto.nombre || auto.retirado) return;
+    const sx = cx - st.camara.x * escalaZoom + sacX + auto.x * escalaZoom;
+    const sy = cy - st.camara.y * escalaZoom + sacY + auto.y * escalaZoom - 26 * escalaZoom;
+    ctx.font = "bold 11px " + FONT_MONO;
+    ctx.textAlign = "center";
+    const ancho = ctx.measureText(auto.nombre).width;
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(sx - ancho / 2 - 5, sy - 12, ancho + 10, 15);
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillText(auto.nombre, sx, sy - 1);
+  });
+
   // Líneas de velocidad: a alta velocidad, unos trazos radiales sutiles desde el auto del jugador
   // hacia afuera de la pantalla — más "efecto de movimiento" sin tocar la física de nadie.
   const fraccionVel = Math.max(0, (velAbs - GP_VEL_MAX_BASE * 0.55) / (GP_VEL_MAX_BASE * 0.55));
@@ -6144,6 +6261,51 @@ const GP_ASSET_MANIFEST = {
   pistaVisual: "/gp_pista_visual.png",
 };
 
+// ── Cúpula GP en línea (sin bots) ──
+//
+// El servidor manda el estado COMPLETO (con la pista entera: centerline, decoraciones, cofres, bbox,
+// tema) una sola vez, en "empezando" — a partir de ahí solo manda un paquete LIVIANO por tick (20
+// veces por segundo): posiciones/velocidades/estado de cada auto y qué cofres siguen activos. Acá
+// armamos un objeto con la MISMA forma que usa dibujarGP en modo solo (pista/autos/cámara/etc.) para
+// poder reusar ese dibujado tal cual, sin tener que escribir un renderer aparte para el modo online.
+function construirStOnlineDesdeInicial(estadoInicial, miId) {
+  const pista = { ...estadoInicial.pista, cofres: estadoInicial.pista.cofres.map((c) => ({ ...c })) };
+  const autos = estadoInicial.autos.map((a) => ({ ...a }));
+  const jugadorLocal = autos.find((a) => a.jugadorId === miId) || null;
+  const centroInicial = jugadorLocal || autos[0] || { x: pista.centerline[0].x, y: pista.centerline[0].y };
+  return {
+    pista, autos, totalVueltas: estadoInicial.totalVueltas,
+    cuentaRegresiva: estadoInicial.cuentaRegresiva, terminado: false,
+    marcasDerrape: [], particulas: [], sacudida: 0, aceites: [],
+    camara: { x: centroInicial.x, y: centroInicial.y },
+    jugador: jugadorLocal, miId,
+  };
+}
+
+// Aplica un paquete liviano del servidor al "st" local: los campos que no se predicen nunca
+// (vueltas, quién llegó, power-up en mano, etc.) se copian directo porque el servidor es la única
+// autoridad sobre eso; la posición/heading se guardan como "objetivo del servidor" para que el
+// bucle de dibujo los reconcilie/interpole suavemente en vez de teletransportar a nadie.
+function aplicarEstadoLigeroGP(st, ligero) {
+  if (!st || !ligero) return;
+  st.cuentaRegresiva = ligero.cuentaRegresiva;
+  st.terminado = !!ligero.terminado;
+  if (ligero.cofresActivos) {
+    ligero.cofresActivos.forEach((activo, i) => { if (st.pista.cofres[i]) st.pista.cofres[i].activo = activo; });
+  }
+  for (const remoto of ligero.autos) {
+    const local = st.autos.find((a) => a.jugadorId === remoto.jugadorId);
+    if (!local) continue;
+    local.servidorX = remoto.x; local.servidorY = remoto.y; local.servidorHeading = remoto.heading;
+    local.vx = remoto.vx; local.vy = remoto.vy;
+    local.powerUp = remoto.powerUp; local.turboHasta = remoto.turboHasta; local.escudoHasta = remoto.escudoHasta; local.lentoHasta = remoto.lentoHasta;
+    local.enDerrape = remoto.enDerrape; local.offRoad = remoto.offRoad;
+    local.vueltas = remoto.vueltas; local.llego = remoto.llego; local.retirado = remoto.retirado; local.posicionFinal = remoto.posicionFinal;
+    local.mejorVuelta = remoto.mejorVuelta; local.peorVuelta = remoto.peorVuelta;
+    local.nuevoPaquete = true;
+  }
+}
+
 const GP_JOYSTICK_RADIO = 46;
 function JoystickGP({ onCambio }) {
   const baseRef = useRef(null);
@@ -6213,6 +6375,18 @@ function CupulaGPView({ user, onVolver }) {
   const [mostrarAyuda, setMostrarAyuda] = useState(true);
   const [ayudaOpaca, setAyudaOpaca] = useState(true);
 
+  // ── En línea (sin bots) ──
+  const netRef = useRef(null); // NetworkManager de la sala online actual
+  const stOnlineRef = useRef(null); // objeto de render tipo "st" (misma forma que usa dibujarGP)
+  const [modoOnlineForm, setModoOnlineForm] = useState("crear"); // "crear" | "unirse"
+  const [nombreOnline, setNombreOnline] = useState((user && user.nombre) || "Piloto");
+  const [codigoIngresado, setCodigoIngresado] = useState("");
+  const [codigoSala, setCodigoSala] = useState(null);
+  const [jugadoresSala, setJugadoresSala] = useState([]);
+  const [soyHostSala, setSoyHostSala] = useState(false);
+  const [errorOnline, setErrorOnline] = useState("");
+  const [resultadosOnline, setResultadosOnline] = useState([]);
+
   useEffect(() => {
     const mgr = new AssetManagerJuegos();
     assetsRef.current = mgr;
@@ -6220,7 +6394,7 @@ function CupulaGPView({ user, onVolver }) {
   }, []);
 
   useEffect(() => {
-    if (fase !== "jugando" && fase !== "terminado") return;
+    if (fase !== "jugando" && fase !== "terminado" && fase !== "online-jugando") return;
     const contenedor = contenedorRef.current;
     const canvas = canvasRef.current;
     if (!contenedor || !canvas) return;
@@ -6251,7 +6425,7 @@ function CupulaGPView({ user, onVolver }) {
   // Cartelito de teclas para PC: aparece apenas arranca cada carrera (incluida la cuenta
   // regresiva) y se apaga solo — empieza a desvanecerse a los 9s y desaparece del todo a los 10s.
   useEffect(() => {
-    if (fase !== "jugando") return;
+    if (fase !== "jugando" && fase !== "online-jugando") return;
     setMostrarAyuda(true);
     setAyudaOpaca(true);
     const tFade = setTimeout(() => setAyudaOpaca(false), 9000);
@@ -6287,6 +6461,62 @@ function CupulaGPView({ user, onVolver }) {
     setHud({ vuelta: 0, posicion: GP_NUM_BOTS + 1, velocidad: 0, powerUp: null, mejorVuelta: null, peorVuelta: null });
     setFase("jugando");
   }, [skinElegida, vueltasElegidas]);
+
+  // Crea o se une a una sala en línea (según modoOnlineForm) y se queda escuchando lo que haga falta
+  // para toda la partida — jugadores que entran/salen, la señal de arranque y cada paquete de estado.
+  const crearOUnirseOnline = useCallback(async () => {
+    setErrorOnline("");
+    if (modoOnlineForm === "unirse" && codigoIngresado.trim().length !== 4) {
+      setErrorOnline("El código tiene 4 letras.");
+      return;
+    }
+    if (netRef.current) netRef.current.desconectar();
+    const net = new NetworkManager();
+    netRef.current = net;
+    net.onJugadores(({ jugadores }) => setJugadoresSala(jugadores));
+    net.onEmpezando(({ estado, jugadores }) => {
+      setJugadoresSala(jugadores);
+      stOnlineRef.current = construirStOnlineDesdeInicial(estado, net.miId);
+      setResultadosOnline([]);
+      setFase("online-jugando");
+    });
+    net.onEstado(({ estado }) => { aplicarEstadoLigeroGP(stOnlineRef.current, estado); });
+
+    const nombre = (nombreOnline || "Piloto").trim() || "Piloto";
+    if (modoOnlineForm === "crear") {
+      const res = await net.crearSala({ juego: "gp", nombre, skinIndex: skinElegida, config: { pistaId: pistaElegidaId, vueltas: vueltasElegidas } });
+      if (!res.ok) { setErrorOnline(res.error || "No se pudo crear la sala."); netRef.current = null; return; }
+      setCodigoSala(res.codigo); setJugadoresSala(res.jugadores); setSoyHostSala(true);
+      setFase("online-lobby");
+    } else {
+      const res = await net.unirseSala({ codigo: codigoIngresado.trim(), nombre, skinIndex: skinElegida });
+      if (!res.ok) { setErrorOnline(res.error || "No se pudo unir a esa sala."); netRef.current = null; return; }
+      setCodigoSala(res.codigo); setJugadoresSala(res.jugadores); setSoyHostSala(false);
+      setFase("online-lobby");
+    }
+  }, [modoOnlineForm, codigoIngresado, nombreOnline, skinElegida, pistaElegidaId, vueltasElegidas]);
+
+  const empezarOnline = useCallback(async () => {
+    if (!netRef.current) return;
+    const res = await netRef.current.empezar();
+    if (!res.ok) setErrorOnline(res.error || "No se pudo empezar.");
+  }, []);
+
+  // Salir de la sala en línea desde el lobby (todavía no arrancó la carrera).
+  const salirSalaOnline = useCallback(() => {
+    if (netRef.current) { netRef.current.desconectar(); netRef.current = null; }
+    setCodigoSala(null); setJugadoresSala([]); setErrorOnline("");
+    setFase("menu");
+  }, []);
+
+  // Retirarse de una carrera en línea EN CURSO: le avisa al servidor (así la carrera sigue normal
+  // para el resto, no se corta) y se desconecta de la sala.
+  const retirarseOnline = useCallback(() => {
+    if (netRef.current) { netRef.current.retirarse(); netRef.current.desconectar(); netRef.current = null; }
+    stOnlineRef.current = null;
+    setCodigoSala(null); setJugadoresSala([]);
+    setFase("menu");
+  }, []);
 
   useEffect(() => {
     if (fase !== "jugando") return;
@@ -6342,6 +6572,148 @@ function CupulaGPView({ user, onVolver }) {
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
   }, [fase]);
+
+  // Bucle de la carrera EN LÍNEA: el servidor es la única autoridad (nadie más simula la carrera),
+  // pero para que se sienta fluido cada quien predice su propio auto al instante con la MISMA física
+  // que usa el modo solo, y corrige suave contra lo último que confirmó el servidor cuando llega un
+  // paquete nuevo (Client-Side Prediction + Server Reconciliation); a los rivales se los interpola
+  // suavemente hacia su última posición conocida en vez de "teletransportarlos" cada 50ms (Entity
+  // Interpolation). Los efectos puramente visuales (humo, polvo, marcas de derrape) se generan acá
+  // mismo, en el cliente, para cualquier auto (propio o rival) — así el paquete de red no tiene que
+  // cargar con nada de eso.
+  useEffect(() => {
+    if (fase !== "online-jugando") return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    let ultimoTs = null;
+    let envioAcumulador = 0;
+    let vueltaPrev = -1, posPrev = -1, velPrev = -1, poderPrev = undefined;
+
+    const loop = (ts) => {
+      const st = stOnlineRef.current;
+      if (!st) return;
+      if (ultimoTs === null) ultimoTs = ts;
+      const dt = Math.min(0.05, Math.max(0, (ts - ultimoTs) / 1000));
+      ultimoTs = ts;
+
+      const in_ = inputRef.current;
+      const dirTeclado = (in_.izq ? -1 : 0) + (in_.der ? 1 : 0);
+      const dirTotal = Math.max(-1, Math.min(1, dirTeclado + in_.joystick));
+      const entradaLocal = { accel: in_.acel, freno: in_.freno, dir: dirTotal, derrape: in_.derrape, usarPoder: in_.usarPoder };
+
+      if (st.cuentaRegresiva <= 0) {
+        const pista = st.pista;
+        // Predicción local del auto propio — misma física que el modo solo (actualizarFisicaAutoGP,
+        // rebufo, valla) para que se sienta al instante, sin esperar la vuelta de la red.
+        if (st.jugador && !st.jugador.retirado) {
+          const auto = st.jugador;
+          const cercano = indiceCercanoGP(pista, auto.x, auto.y, auto.idxCercano);
+          auto.idxCercano = cercano.idx;
+          auto.offRoad = cercano.dist > GP_TRACK_MITAD;
+          const rebufo = hayRebufoGP(auto, st.autos);
+          actualizarFisicaAutoGP(auto, dt, entradaLocal, rebufo);
+          const offLat = offsetLateralActualGP(pista, auto);
+          if (Math.abs(offLat) > GP_MURO_DIST) {
+            const idxM = auto.idxCercano;
+            const pM = pista.centerline[idxM];
+            const latM = lateralEnGP(pista, idxM);
+            const signoM = offLat > 0 ? 1 : -1;
+            auto.x = pM.x + latM.x * GP_MURO_DIST * signoM;
+            auto.y = pM.y + latM.y * GP_MURO_DIST * signoM;
+            const vLatM = auto.vx * latM.x + auto.vy * latM.y;
+            if (vLatM * signoM > 0) { auto.vx -= latM.x * vLatM * GP_MURO_REBOTE; auto.vy -= latM.y * vLatM * GP_MURO_REBOTE; }
+          }
+          // Reconciliación: solo cuando llegó un paquete nuevo del servidor desde el cuadro
+          // anterior, y con zona muerta — una diferencia chica (latencia normal) no se corrige,
+          // total la predicción local ya viene bien; solo un desync de verdad se ajusta, suave.
+          if (auto.nuevoPaquete && auto.servidorX != null) {
+            const diffX = auto.servidorX - auto.x, diffY = auto.servidorY - auto.y;
+            const f = factorSuavizadoRed(Math.hypot(diffX, diffY), 12, 100, dt, 2, 14);
+            if (f > 0) { auto.x += diffX * f; auto.y += diffY * f; }
+            auto.nuevoPaquete = false;
+          }
+        }
+        // Interpolación de los rivales hacia su última posición conocida del servidor.
+        for (const auto of st.autos) {
+          if (auto === st.jugador || auto.retirado || auto.servidorX == null) continue;
+          const diffX = auto.servidorX - auto.x, diffY = auto.servidorY - auto.y;
+          const f = factorSuavizadoRed(Math.hypot(diffX, diffY), 3, 90, dt, 3, 16);
+          auto.x += diffX * f; auto.y += diffY * f;
+          let diffH = auto.servidorHeading - auto.heading;
+          while (diffH > Math.PI) diffH -= Math.PI * 2;
+          while (diffH < -Math.PI) diffH += Math.PI * 2;
+          auto.heading += diffH * Math.min(1, f * 1.5);
+        }
+        // Efectos visuales locales (humo/polvo/marcas), para cualquier auto — igual criterio que el
+        // modo solo, pero generados acá porque el servidor no manda nada de esto.
+        for (const auto of st.autos) {
+          if (auto.retirado) continue;
+          if (auto.enDerrape) {
+            st.marcasDerrape.push({ x: auto.x, y: auto.y, vida: 2.2, vidaMax: 2.2 });
+            if (Math.random() < 0.55) st.particulas.push({ x: auto.x, y: auto.y, vx: (Math.random() - 0.5) * 20, vy: (Math.random() - 0.5) * 20, vida: 0.6, vidaMax: 0.6, tipo: "humo" });
+          } else if (auto.offRoad && Math.hypot(auto.vx, auto.vy) > 40 && Math.random() < 0.4) {
+            st.particulas.push({ x: auto.x, y: auto.y, vx: -auto.vx * 0.15 + (Math.random() - 0.5) * 25, vy: -auto.vy * 0.15 + (Math.random() - 0.5) * 25, vida: 0.45, vidaMax: 0.45, tipo: "polvo" });
+          }
+        }
+        st.marcasDerrape = st.marcasDerrape.filter((m) => (m.vida -= dt) > 0);
+        st.particulas.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.vida -= dt; });
+        st.particulas = st.particulas.filter((p) => p.vida > 0);
+        if (st.marcasDerrape.length > 500) st.marcasDerrape.splice(0, st.marcasDerrape.length - 500);
+        if (st.particulas.length > 400) st.particulas.splice(0, st.particulas.length - 400);
+
+        // Cámara: sigue al auto propio (o al primero que siga en carrera si nos retiramos), mismo
+        // criterio que el modo solo — adelanto en la dirección en que se mueve, no hacia donde mira.
+        const centro = (st.jugador && !st.jugador.retirado) ? st.jugador : st.autos.find((a) => !a.retirado);
+        if (centro) {
+          const velAbsCam = Math.hypot(centro.vx, centro.vy);
+          const dirCam = velAbsCam > 25 ? { x: centro.vx / velAbsCam, y: centro.vy / velAbsCam } : { x: Math.cos(centro.heading), y: Math.sin(centro.heading) };
+          const factorCam = Math.min(1, velAbsCam / GP_VEL_MAX_BASE);
+          const objX = centro.x + dirCam.x * GP_CAMARA_LOOKAHEAD * factorCam;
+          const objY = centro.y + dirCam.y * GP_CAMARA_LOOKAHEAD * factorCam;
+          const suavidadCam = 1 - Math.pow(GP_CAMARA_SUAVIDAD, dt);
+          st.camara.x += (objX - st.camara.x) * suavidadCam;
+          st.camara.y += (objY - st.camara.y) * suavidadCam;
+        }
+      }
+
+      dibujarGP(ctx, st, assetsRef.current);
+
+      if (st.jugador) {
+        const vueltaMostrar = Math.max(0, st.jugador.vueltas);
+        const ordenados = [...st.autos].sort((a, b) => progresoGP(b, st.pista) - progresoGP(a, st.pista));
+        const posicion = ordenados.indexOf(st.jugador) + 1;
+        const velocidad = Math.round(Math.hypot(st.jugador.vx, st.jugador.vy));
+        const poderActual = st.jugador.powerUp;
+        if (vueltaMostrar !== vueltaPrev || posicion !== posPrev || Math.abs(velocidad - velPrev) > 2 || poderActual !== poderPrev) {
+          vueltaPrev = vueltaMostrar; posPrev = posicion; velPrev = velocidad; poderPrev = poderActual;
+          setHud({ vuelta: vueltaMostrar, posicion, velocidad, powerUp: poderActual, mejorVuelta: st.jugador.mejorVuelta, peorVuelta: st.jugador.peorVuelta });
+        }
+      }
+
+      // El input se manda cada ~40ms (no en cada cuadro) — de sobra para que se sienta bien y sin
+      // saturar la red innecesariamente.
+      envioAcumulador += dt;
+      if (envioAcumulador >= 0.04 && netRef.current) {
+        envioAcumulador = 0;
+        netRef.current.enviarInput(entradaLocal);
+      }
+
+      if (st.terminado) {
+        setResultadosOnline([...st.autos].sort((a, b) => (a.posicionFinal || 99) - (b.posicionFinal || 99)));
+        setFase("online-terminado");
+        return;
+      }
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [fase]);
+
+  // Si se sale de esta pantalla por cualquier otro camino (menú, volver a Cúpula Games) mientras
+  // seguíamos conectados a una sala en línea, nos desconectamos igual al desmontar.
+  useEffect(() => {
+    return () => { if (netRef.current) { netRef.current.desconectar(); netRef.current = null; } };
+  }, []);
 
   if (fase === "menu") {
     const skins = Array.from({ length: 16 }, (_, i) => i);
@@ -6407,6 +6779,161 @@ function CupulaGPView({ user, onVolver }) {
             ))}
           </div>
           <NeonButton active onClick={empezarCarrera}>{modoTorneo ? `🏆 Empezar Torneo (${carrerasTorneo} carreras)` : "🏁 Empezar Carrera"}</NeonButton>
+          <div style={{ marginTop: 10 }}>
+            <NeonButton onClick={() => { setErrorOnline(""); setFase("online-inicio"); }}>🌐 Jugar en línea con la Cúpula</NeonButton>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  if (fase === "online-inicio") {
+    const skins = Array.from({ length: 16 }, (_, i) => i);
+    return (
+      <div>
+        <button onClick={onVolver} style={ESTILO_BOTON_VOLVER}>← Volver a Cúpula Games</button>
+        <SectionTitle>Cúpula GP — En línea</SectionTitle>
+        <Card>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>SIN BOTS — SOLO CORREDORES CONECTADOS</div>
+          <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+            <NeonButton active={modoOnlineForm === "crear"} onClick={() => setModoOnlineForm("crear")}>Crear sala</NeonButton>
+            <NeonButton active={modoOnlineForm === "unirse"} onClick={() => setModoOnlineForm("unirse")}>Unirse con código</NeonButton>
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>TU NOMBRE</div>
+          <input
+            value={nombreOnline}
+            onChange={(e) => setNombreOnline(e.target.value.slice(0, 24))}
+            placeholder="Piloto"
+            style={{
+              width: "100%", maxWidth: 260, padding: "9px 12px", borderRadius: 8, marginBottom: 20,
+              background: "rgba(255,255,255,0.06)", border: `1px solid ${COLORS.neonBlue}55`,
+              color: COLORS.white, fontFamily: FONT_MONO, fontSize: 13, boxSizing: "border-box",
+            }}
+          />
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>ELEGÍ TU AUTO</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+            {skins.map((s) => (
+              <button key={s} onClick={() => setSkinElegida(s)} style={{
+                width: 42, height: 42, borderRadius: 8, cursor: "pointer",
+                background: `hsl(${(s * 47) % 360},80%,50%)`,
+                border: skinElegida === s ? `3px solid ${COLORS.white}` : "2px solid transparent",
+                boxShadow: skinElegida === s ? `0 0 14px ${COLORS.neonBlue}` : "none",
+              }} />
+            ))}
+          </div>
+          {modoOnlineForm === "crear" ? (
+            <>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>ELEGÍ LA PISTA</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+                {GP_PISTAS.map((p) => {
+                  const activa = pistaElegidaId === p.id;
+                  return (
+                    <button key={p.id} onClick={() => setPistaElegidaId(p.id)} style={{
+                      padding: "8px 14px", borderRadius: 8, cursor: "pointer", textAlign: "left",
+                      background: activa ? "rgba(47,168,255,0.15)" : "rgba(255,255,255,0.04)",
+                      border: activa ? `2px solid ${COLORS.neonBlue}` : "1px solid rgba(255,255,255,0.12)",
+                      boxShadow: activa ? `0 0 14px ${COLORS.neonBlue}55` : "none",
+                      color: COLORS.white, fontFamily: FONT_MONO,
+                    }}>
+                      <div style={{ fontSize: 12, letterSpacing: 0.5 }}>{p.nombre}</div>
+                      <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>{Math.round(p.largoVuelta)}m de vuelta</div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>VUELTAS</div>
+              <div style={{ display: "flex", gap: 10, marginBottom: 22 }}>
+                {GP_VUELTAS_OPCIONES.map((v) => (
+                  <NeonButton key={v} active={vueltasElegidas === v} onClick={() => setVueltasElegidas(v)}>{v}</NeonButton>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>CÓDIGO DE LA SALA</div>
+              <input
+                value={codigoIngresado}
+                onChange={(e) => setCodigoIngresado(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 4))}
+                placeholder="ABCD"
+                style={{
+                  width: 140, padding: "10px 12px", borderRadius: 8, marginBottom: 22,
+                  background: "rgba(255,255,255,0.06)", border: `1px solid ${COLORS.neonAmber}55`,
+                  color: COLORS.white, fontFamily: FONT_MONO, fontSize: 20, letterSpacing: 6, textAlign: "center",
+                  boxSizing: "border-box", textTransform: "uppercase",
+                }}
+              />
+            </>
+          )}
+          {errorOnline && (
+            <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonRed, marginBottom: 14 }}>{errorOnline}</div>
+          )}
+          <NeonButton active onClick={crearOUnirseOnline}>{modoOnlineForm === "crear" ? "Crear sala" : "Unirse a la sala"}</NeonButton>
+        </Card>
+      </div>
+    );
+  }
+
+  if (fase === "online-lobby") {
+    const pistaElegida = GP_PISTAS.find((p) => p.id === pistaElegidaId);
+    return (
+      <div>
+        <button onClick={salirSalaOnline} style={ESTILO_BOTON_VOLVER}>← Salir de la sala</button>
+        <SectionTitle>Cúpula GP — Sala en línea</SectionTitle>
+        <Card style={{ textAlign: "center" }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 8 }}>COMPARTÍ ESTE CÓDIGO</div>
+          <div style={{ fontFamily: FONT_DISPLAY, fontSize: 40, letterSpacing: 10, color: COLORS.neonAmber, textShadow: `0 0 20px ${COLORS.neonAmber}88`, marginBottom: 18 }}>
+            {codigoSala}
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>PILOTOS EN LA SALA ({jugadoresSala.length})</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 20, alignItems: "center" }}>
+            {jugadoresSala.map((j) => (
+              <Badge key={j.id} color={j.esHost ? COLORS.neonAmber : COLORS.neonBlue}>
+                {j.nombre}{j.esHost ? " — anfitrión" : ""}
+              </Badge>
+            ))}
+          </div>
+          {soyHostSala && pistaElegida && (
+            <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.textMuted, marginBottom: 18 }}>
+              {pistaElegida.nombre} · {vueltasElegidas} vueltas
+            </div>
+          )}
+          {errorOnline && (
+            <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonRed, marginBottom: 14 }}>{errorOnline}</div>
+          )}
+          {soyHostSala ? (
+            <NeonButton active onClick={empezarOnline}>🏁 Empezar carrera</NeonButton>
+          ) : (
+            <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted }}>Esperando a que el anfitrión empiece la carrera...</div>
+          )}
+        </Card>
+      </div>
+    );
+  }
+
+  if (fase === "online-terminado") {
+    return (
+      <div>
+        <SectionTitle>Cúpula GP — Carrera en línea terminada</SectionTitle>
+        <Card>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 10 }}>RESULTADOS</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 22 }}>
+            {resultadosOnline.map((auto, i) => (
+              <div key={auto.jugadorId} style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "7px 12px", borderRadius: 6,
+                background: auto.jugadorId === (netRef.current && netRef.current.miId) ? "rgba(47,168,255,0.15)" : "rgba(255,255,255,0.04)",
+                border: auto.jugadorId === (netRef.current && netRef.current.miId) ? `1px solid ${COLORS.neonBlue}` : "1px solid transparent",
+              }}>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.textMuted, width: 24 }}>{auto.posicionFinal || i + 1}°</div>
+                <div style={{ width: 18, height: 18, borderRadius: 4, background: `hsl(${(auto.skinIndex * 47) % 360},80%,50%)`, flexShrink: 0 }} />
+                <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: COLORS.white, flex: 1 }}>{auto.nombre || "Piloto"}{auto.retirado ? " (se retiró)" : ""}</div>
+                {auto.mejorVuelta != null && <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: COLORS.neonSuccess }}>{auto.mejorVuelta.toFixed(1)}s</div>}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <NeonButton active onClick={() => { if (netRef.current) { netRef.current.desconectar(); netRef.current = null; } setFase("menu"); }}>Volver al menú</NeonButton>
+            <NeonButton onClick={onVolver}>Salir a Cúpula Games</NeonButton>
+          </div>
         </Card>
       </div>
     );
@@ -6521,21 +7048,27 @@ function CupulaGPView({ user, onVolver }) {
     );
   }
 
+  const esOnline = fase === "online-jugando";
+  const stOnlineActual = stOnlineRef.current;
+  const pistaHud = esOnline ? (stOnlineActual && stOnlineActual.pista.nombre) || "" : (estadoRef.current && estadoRef.current.pista.nombre) || "";
+  const totalVueltasHud = esOnline ? (stOnlineActual ? stOnlineActual.totalVueltas : 0) : vueltasElegidas;
+  const totalRivalesHud = esOnline ? (stOnlineActual ? stOnlineActual.autos.length : 1) : GP_NUM_BOTS + 1;
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "#000", zIndex: 100 }}>
       <div ref={contenedorRef} style={{ position: "absolute", inset: 0 }}>
         <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
       </div>
 
-      <button onClick={retirarse} style={{
+      <button onClick={esOnline ? retirarseOnline : retirarse} style={{
         position: "absolute", top: 14, left: 14, zIndex: 21, fontFamily: FONT_MONO, fontSize: 10, letterSpacing: 1,
         color: COLORS.textMuted, background: "rgba(0,0,0,0.55)", border: `1px solid ${COLORS.neonRed}55`,
         borderRadius: 8, padding: "5px 10px", cursor: "pointer",
       }}>✕ Retirarse</button>
       <div style={{ position: "absolute", top: 44, left: 14, zIndex: 20, fontFamily: FONT_MONO, color: COLORS.white, background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "8px 14px", border: `1px solid ${COLORS.neonBlue}55` }}>
-        <div style={{ fontSize: 9, letterSpacing: 1, color: COLORS.textMuted, marginBottom: 3 }}>{(estadoRef.current && estadoRef.current.pista.nombre) || ""}</div>
-        <div style={{ fontSize: 12, letterSpacing: 1 }}>VUELTA {hud.vuelta}/{vueltasElegidas}</div>
-        <div style={{ fontSize: 12, letterSpacing: 1 }}>POS {hud.posicion}°/{GP_NUM_BOTS + 1}</div>
+        <div style={{ fontSize: 9, letterSpacing: 1, color: COLORS.textMuted, marginBottom: 3 }}>{pistaHud}</div>
+        <div style={{ fontSize: 12, letterSpacing: 1 }}>VUELTA {hud.vuelta}/{totalVueltasHud}</div>
+        <div style={{ fontSize: 12, letterSpacing: 1 }}>POS {hud.posicion}°/{totalRivalesHud}</div>
         {(hud.mejorVuelta != null || hud.peorVuelta != null) && (
           <div style={{ fontSize: 9, letterSpacing: 0.5, color: COLORS.textMuted, marginTop: 4, display: "flex", gap: 8 }}>
             {hud.mejorVuelta != null && <span>Mejor <span style={{ color: COLORS.neonSuccess }}>{hud.mejorVuelta.toFixed(1)}s</span></span>}
