@@ -64,15 +64,51 @@ class NetworkManager {
     this.miId = null;
     this.codigo = null;
     this.juego = null;
+    // Identificador propio que NO cambia aunque el socket se corte y Socket.io reconecte solo (a
+    // diferencia de this.miId, que es el id del socket de turno y cambia en cada reconexión). Se
+    // manda al crear/unirse a una sala y de nuevo al reconectar, para que el servidor pueda saber
+    // "este es el mismo jugador de antes" y devolverle su mismo auto/jugador en vez de tratarlo como
+    // uno nuevo. Ver el comentario grande más abajo, en conectar().
+    this.idEstable = (typeof crypto !== "undefined" && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `p${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    this._reconectando = false;
     this._offJugadores = null;
     this._offEmpezando = null;
     this._offEstado = null;
     this._offTerminado = null;
+    this._alReconectar = null; // callback opcional: (miIdNuevo) => {} — ver onReconectado()
   }
 
   conectar() {
     if (this.socket) return this.socket;
     this.socket = io(CUPULA_SERVER_URL, { transports: ["websocket", "polling"] });
+    // Un wifi/datos móviles que titubea un instante, una VPN que se recicla, o el servidor gratis que
+    // da un hipo de un par de segundos: TODO eso corta el socket, y Socket.io lo reconecta solo por
+    // debajo (reconnection viene prendido de fábrica) — pero antes de este arreglo eso pasaba
+    // totalmente desapercibido para el resto del código: el servidor ya había sacado al jugador de la
+    // sala (ver salas.js), y el navegador seguía mandando botones y esperando paquetes de una sala de
+    // la que ya no era parte, sin ningún aviso ni forma de darse cuenta. Eso es lo que se venía viendo
+    // como "el auto pierde el control y se va para los lados" o "el balón/rival se traba", cada vez
+    // peor con el rato — no era un bug de física, era la reconexión de red que nunca se manejaba.
+    // Ahora: apenas la conexión vuelve (evento "connect", que Socket.io dispara también después de
+    // cada reconexión, no solo la primera vez), si se venía de un corte real se le pide al servidor
+    // reingresar a la MISMA sala con el identificador estable, retomando el mismo auto/jugador.
+    this.socket.on("connect", () => {
+      const veniaDeUnCorte = this._reconectando;
+      this._reconectando = false;
+      if (!veniaDeUnCorte || !this.codigo) return;
+      this.socket.emit("reconectar", { codigo: this.codigo, idEstable: this.idEstable }, (res) => {
+        if (res && res.ok) {
+          const miIdViejo = this.miId;
+          this.miId = res.miId;
+          if (this._alReconectar) this._alReconectar(res.miId, miIdViejo, res);
+        }
+      });
+    });
+    this.socket.on("disconnect", () => {
+      if (this.codigo) this._reconectando = true;
+    });
     return this.socket;
   }
 
@@ -80,7 +116,7 @@ class NetworkManager {
     this.conectar();
     this.juego = juego;
     return new Promise((resolve) => {
-      this.socket.emit("crearSala", { juego, nombre, config, skinIndex }, (res) => {
+      this.socket.emit("crearSala", { juego, nombre, config, skinIndex, idEstable: this.idEstable }, (res) => {
         if (res && res.ok) { this.codigo = res.codigo; this.miId = res.miId; }
         resolve(res);
       });
@@ -90,12 +126,17 @@ class NetworkManager {
   unirseSala({ codigo, nombre, skinIndex }) {
     this.conectar();
     return new Promise((resolve) => {
-      this.socket.emit("unirseSala", { codigo, nombre, skinIndex }, (res) => {
+      this.socket.emit("unirseSala", { codigo, nombre, skinIndex, idEstable: this.idEstable }, (res) => {
         if (res && res.ok) { this.codigo = res.codigo; this.miId = res.miId; this.juego = res.juego; }
         resolve(res);
       });
     });
   }
+
+  // Se llama cuando el jugador retoma su lugar después de un corte de red — recibe el miId NUEVO
+  // (el de socket) y el VIEJO, por si el que escucha necesita re-etiquetar algo que tenía guardado
+  // con el id anterior (Cúpula GP lo usa para esto: ver más abajo, cerca de "construirStOnlineDesdeInicial").
+  onReconectado(cb) { this._alReconectar = cb; }
 
   empezar() {
     return new Promise((resolve) => { this.socket.emit("empezar", {}, (res) => resolve(res)); });
@@ -6568,6 +6609,18 @@ function CupulaGPView({ user, onVolver }) {
       setFase("online-jugando");
     });
     net.onEstado(({ estado }) => { aplicarEstadoLigeroGP(stOnlineRef.current, estado); });
+    // Después de un corte de red, el servidor sigue jugando con el MISMO auto pero bajo un id de
+    // socket nuevo (ver salas.js: reconectar()) — acá adentro "st" todavía tiene el auto propio
+    // etiquetado con el id VIEJO (se copió una sola vez al arrancar la carrera), así que si no se
+    // actualiza acá, los próximos paquetes del servidor (que ya vienen con el id nuevo) dejan de
+    // encontrar coincidencia y el auto propio se queda sin ninguna corrección nunca más.
+    net.onReconectado((miIdNuevo, miIdViejo) => {
+      const st = stOnlineRef.current;
+      if (!st) return;
+      const miAuto = st.autos.find((a) => a.jugadorId === (miIdViejo || st.miId));
+      if (miAuto) miAuto.jugadorId = miIdNuevo;
+      st.miId = miIdNuevo;
+    });
 
     const nombre = (nombreOnline || "Piloto").trim() || "Piloto";
     if (modoOnlineForm === "crear") {
