@@ -6372,15 +6372,19 @@ function aplicarEstadoLigeroGP(st, ligero) {
       // usan para decidir efectos visuales (humo, polvo, marcas), nunca para moverlos.
       local.vx = remoto.vx; local.vy = remoto.vy;
       local.enDerrape = remoto.enDerrape; local.offRoad = remoto.offRoad;
+    } else {
+      // Al auto PROPIO no se le pisa vx/vy en seco (eso causaba el "tirón" que se arregló antes) —
+      // pero TAMPOCO se puede dejar la velocidad local sin corregir nunca: si por lo que sea la
+      // predicción local se desvía de la real del servidor (paquete perdido, un choque que el
+      // servidor resolvió distinto, etc.) y nada la corrige, ese error de velocidad queda ahí para
+      // siempre empujando el auto en una dirección que ya no es la correcta — la posición se
+      // corrige suave hacia la del servidor, pero la velocidad lo vuelve a sacar de curso al
+      // instante siguiente, y así se ve como que el auto pierde el rumbo y lo van empujando para
+      // los lados sin control, cada vez peor con el rato (justo lo reportado). Por eso acá solo se
+      // GUARDA la velocidad real del servidor como objetivo — la corrección de verdad, suave y con
+      // zona muerta (igual que la posición), pasa más abajo en el bucle de la carrera.
+      local.servidorVx = remoto.vx; local.servidorVy = remoto.vy;
     }
-    // Al auto PROPIO, en cambio, NO se le pisan vx/vy/enDerrape/offRoad acá: esos los sigue
-    // produciendo la predicción local cuadro a cuadro con la física real (actualizarFisicaAutoGP,
-    // 60 veces por segundo). Antes se sobreescribían con el valor del servidor cada vez que llegaba
-    // un paquete (hasta 20 veces por segundo) — y como ese valor siempre viene con algo de retraso de
-    // red, cortaba en seco la velocidad que la física local venía integrando en ese instante. Eso se
-    // sentía exactamente como un tirón/campo de fuerza manejando derecho, sin ningún choque de por
-    // medio, cada vez que llegaba un paquete nuevo. La posición sigue reconciliándose suave más abajo
-    // (servidorX/Y) — que es lo único que de verdad hace falta corregir cuando hay desync real.
     local.powerUp = remoto.powerUp; local.turboHasta = remoto.turboHasta; local.escudoHasta = remoto.escudoHasta; local.lentoHasta = remoto.lentoHasta;
     local.vueltas = remoto.vueltas; local.llego = remoto.llego; local.retirado = remoto.retirado; local.posicionFinal = remoto.posicionFinal;
     local.mejorVuelta = remoto.mejorVuelta; local.peorVuelta = remoto.peorVuelta;
@@ -6727,6 +6731,15 @@ function CupulaGPView({ user, onVolver }) {
             const diffX = auto.servidorX - auto.x, diffY = auto.servidorY - auto.y;
             const f = factorSuavizadoRed(Math.hypot(diffX, diffY), 30, 160, dt, 1.2, 6);
             if (f > 0) { auto.x += diffX * f; auto.y += diffY * f; }
+            // Misma idea que la posición, para la velocidad: una zona muerta amplia absorbe la
+            // diferencia normal entre predicción local y servidor (no corrige nada de más, así no
+            // vuelve el "tirón" de antes), pero un desync de verdad SÍ se corrige, suave, en vez de
+            // quedar arrastrando al auto para siempre en la dirección equivocada.
+            if (auto.servidorVx != null) {
+              const diffVx = auto.servidorVx - auto.vx, diffVy = auto.servidorVy - auto.vy;
+              const fV = factorSuavizadoRed(Math.hypot(diffVx, diffVy), 50, 220, dt, 1, 5);
+              if (fV > 0) { auto.vx += diffVx * fV; auto.vy += diffVy * fV; }
+            }
             auto.nuevoPaquete = false;
           }
         }
