@@ -7987,6 +7987,20 @@ export default function LaCupula() {
         await saveData(k("migracion_baja_cristian"), true);
       }
 
+      // Migración de una sola vez (2026-09-29): alta de Valentina al equipo. La lista de usuarios
+      // ya vive en Firebase (se creó una sola vez a partir de USUARIOS_REALES cuando el sistema
+      // arrancó por primera vez), así que agregarla solo al array de código no alcanza — hay que
+      // sumarla también a los datos ya guardados, una única vez.
+      const migracionAltaValentina = await fetchData(k("migracion_alta_valentina"));
+      if (!migracionAltaValentina) {
+        if (!u.find((usr) => usr.id === "valentina6")) {
+          const valentina = USUARIOS_REALES.find((usr) => usr.id === "valentina6");
+          if (valentina) u = [...u, valentina];
+        }
+        await saveData(k("users"), u);
+        await saveData(k("migracion_alta_valentina"), true);
+      }
+
       let m = await loadOrSeed(k("chat_mensajes"), seedChatMensajes);
       // Poda automática: los mensajes normales se borran cada 24 horas.
       const mPodado = m.filter((msg) => Date.now() - msg.ts < VEINTICUATRO_HORAS_MS);
